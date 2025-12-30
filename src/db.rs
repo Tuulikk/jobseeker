@@ -30,6 +30,7 @@ impl Db {
                 last_application_date TEXT,
                 occupation_label TEXT,
                 city TEXT,
+                municipality TEXT,
                 is_read BOOLEAN NOT NULL DEFAULT 0,
                 rating INTEGER,
                 bookmarked_at TEXT,
@@ -45,6 +46,7 @@ impl Db {
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN webpage_url TEXT").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN status INTEGER DEFAULT 0").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN applied_at TEXT").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN municipality TEXT").execute(&pool).await;
 
         Ok(Self { pool })
     }
@@ -54,9 +56,9 @@ impl Db {
             "INSERT OR REPLACE INTO job_ads (
                 id, headline, description, employer_name, employer_workplace,
                 application_url, webpage_url, publication_date, last_application_date,
-                occupation_label, city, is_read, rating, bookmarked_at,
+                occupation_label, city, municipality, is_read, rating, bookmarked_at,
                 internal_created_at, search_keyword, status, applied_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(&ad.id)
         .bind(&ad.headline)
@@ -69,6 +71,7 @@ impl Db {
         .bind(&ad.last_application_date)
         .bind(ad.occupation.as_ref().and_then(|o| o.label.as_ref()))
         .bind(ad.workplace_address.as_ref().and_then(|w| w.city.as_ref()))
+        .bind(ad.workplace_address.as_ref().and_then(|w| w.municipality.as_ref()))
         .bind(ad.is_read)
         .bind(ad.rating.map(|r| r as i32))
         .bind(ad.bookmarked_at.map(|d| d.to_rfc3339()))
@@ -84,7 +87,6 @@ impl Db {
 
     pub async fn get_filtered_jobs(&self, status_filter: &[AdStatus], year: i32, month: u32) -> Result<Vec<JobAd>> {
         let query_str = if status_filter.is_empty() {
-            // "Alla" filter: Return everything not rejected
             "SELECT * FROM job_ads WHERE status != 1 ORDER BY publication_date DESC".to_string()
         } else {
             let status_ints: Vec<i32> = status_filter.iter().map(|s| *s as i32).collect();
@@ -104,14 +106,11 @@ impl Db {
         
         for row in rows {
             let ad = self.map_row_to_ad(row)?;
-            
-            // Strictly check the relevant date based on status
             let date_to_check = if ad.status == Some(AdStatus::Applied) {
                 ad.applied_at
             } else if ad.status == Some(AdStatus::Bookmarked) || ad.status == Some(AdStatus::ThumbsUp) {
                 ad.bookmarked_at
             } else {
-                // For "New" or general view, use internal creation date
                 Some(ad.internal_created_at)
             };
 
@@ -176,12 +175,12 @@ impl Db {
     }
 
     fn map_row_to_ad(&self, row: sqlx::sqlite::SqliteRow) -> Result<JobAd> {
-        let created_at_str: String = row.get("internal_created_at");
+        let created_at_str: String = row.try_get("internal_created_at").unwrap_or_else(|_| Utc::now().to_rfc3339());
         let internal_created_at = DateTime::parse_from_rfc3339(&created_at_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now());
 
-        let status_int: i32 = row.get("status");
+        let status_int: i32 = row.try_get("status").unwrap_or(0);
         let status = match status_int {
             1 => AdStatus::Rejected,
             2 => AdStatus::Bookmarked,
@@ -191,30 +190,33 @@ impl Db {
         };
 
         Ok(JobAd {
-            id: row.get("id"),
-            headline: row.get("headline"),
-            description: Some(Description { text: row.get("description") }),
+            id: row.try_get("id").unwrap_or_default(),
+            headline: row.try_get("headline").unwrap_or_default(),
+            description: Some(Description { text: row.try_get("description").ok() }),
             employer: Some(Employer { 
-                name: row.get("employer_name"), 
-                workplace: row.get("employer_workplace") 
+                name: row.try_get("employer_name").ok(), 
+                workplace: row.try_get("employer_workplace").ok() 
             }),
             application_details: Some(ApplicationDetails {
-                url: row.get("application_url"),
+                url: row.try_get("application_url").ok(),
             }),
-            webpage_url: row.get("webpage_url"),
-            publication_date: row.get("publication_date"),
-            last_application_date: row.get("last_application_date"),
-            occupation: Some(Occupation { label: row.get("occupation_label") }),
-            workplace_address: Some(WorkplaceAddress { city: row.get("city") }),
-            is_read: row.get("is_read"),
-            rating: row.get::<Option<i32>, _>("rating").map(|r| r as u8),
-            bookmarked_at: row.get::<Option<String>, _>("bookmarked_at")
+            webpage_url: row.try_get("webpage_url").ok(),
+            publication_date: row.try_get("publication_date").unwrap_or_default(),
+            last_application_date: row.try_get("last_application_date").ok(),
+            occupation: Some(Occupation { label: row.try_get("occupation_label").ok() }),
+            workplace_address: Some(WorkplaceAddress { 
+                city: row.try_get("city").ok(),
+                municipality: row.try_get("municipality").ok(),
+            }),
+            is_read: row.try_get("is_read").unwrap_or(false),
+            rating: row.try_get::<Option<i32>, _>("rating").ok().flatten().map(|r| r as u8),
+            bookmarked_at: row.try_get::<Option<String>, _>("bookmarked_at").ok().flatten()
                 .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                 .map(|dt| dt.with_timezone(&Utc)),
             internal_created_at,
-            search_keyword: row.get("search_keyword"),
+            search_keyword: row.try_get("search_keyword").ok(),
             status: Some(status),
-            applied_at: row.get::<Option<String>, _>("applied_at")
+            applied_at: row.try_get::<Option<String>, _>("applied_at").ok().flatten()
                 .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                 .map(|dt| dt.with_timezone(&Utc)),
         })

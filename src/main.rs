@@ -3,7 +3,7 @@ mod api;
 mod db;
 mod ai;
 
-use iced::{Element, Task, Theme, Length, Color, Alignment};
+use iced::{Element, Task, Theme, Length, Color, Alignment, Padding};
 use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule, svg};
 use crate::models::{JobAd, AppSettings, AdStatus};
 use crate::api::JobSearchClient;
@@ -124,6 +124,8 @@ enum Message {
     OpenBrowser(usize),
     SendEmail(usize),
     CopyAd(usize),
+    NextAd,
+    PrevAd,
 }
 
 impl Jobseeker {
@@ -376,6 +378,24 @@ impl Jobseeker {
                 }
                 Task::none()
             }
+            Message::NextAd => {
+                if let Some(current) = self.selected_ad {
+                    if current + 1 < self.ads.len() {
+                        return Task::done(Message::SelectAd(current + 1));
+                    }
+                } else if !self.ads.is_empty() {
+                    return Task::done(Message::SelectAd(0));
+                }
+                Task::none()
+            }
+            Message::PrevAd => {
+                if let Some(current) = self.selected_ad {
+                    if current > 0 {
+                        return Task::done(Message::SelectAd(current - 1));
+                    }
+                }
+                Task::none()
+            }
         }
     }
 
@@ -415,6 +435,9 @@ impl Jobseeker {
                 button("1").on_press(Message::Search(1)),
                 button("2").on_press(Message::Search(2)),
                 button("3").on_press(Message::Search(3)),
+                space::horizontal(),
+                button(svg(svg::Handle::from_memory(SVG_PREV)).width(20).height(20)).on_press(Message::PrevAd),
+                button(svg(svg::Handle::from_memory(SVG_NEXT)).width(20).height(20)).on_press(Message::NextAd),
                 space::horizontal(),
                 button(row![svg(svg::Handle::from_memory(SVG_REJECTED)).width(20).height(20), text(" Töm")].align_y(Alignment::Center)).on_press(Message::ClearAds),
             ].spacing(10).align_y(Alignment::Center)
@@ -476,7 +499,7 @@ impl Jobseeker {
         let sidebar = container(scrollable(sidebar_content))
             .width(Length::Fixed(400.0))
             .height(Length::Fill)
-            .padding(5);
+            .padding(Padding { top: 5.0, right: 15.0, bottom: 5.0, left: 5.0 });
 
         let details = if let Some(index) = self.selected_ad {
             if let Some(ad) = self.ads.get(index) {
@@ -536,6 +559,7 @@ impl Jobseeker {
         let date_str = ad.publication_date.split('T').next().unwrap_or(&ad.publication_date);
         let short_date = if date_str.len() > 5 { &date_str[5..] } else { date_str };
         let keyword_text = ad.search_keyword.as_deref().unwrap_or("---");
+        let municipality_text = ad.workplace_address.as_ref().and_then(|a| a.municipality.as_deref()).unwrap_or("Okänd");
 
         button(
             row![
@@ -550,7 +574,7 @@ impl Jobseeker {
                             .width(Length::Fill),
                         text(short_date).size(14).color(Color::from_rgb(0.7, 0.7, 0.7)),
                     ].spacing(5),
-                    text(format!("Sökord: {}", keyword_text)).size(14).color(Color::from_rgb(0.0, 0.8, 0.8))
+                    text(format!("{} • {}", keyword_text, municipality_text)).size(14).color(Color::from_rgb(0.0, 0.8, 0.8))
                 ].spacing(2)
             ].spacing(10).align_y(Alignment::Center)
         )

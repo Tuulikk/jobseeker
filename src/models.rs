@@ -63,6 +63,7 @@ pub struct Occupation {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WorkplaceAddress {
     pub city: Option<String>,
+    pub municipality: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
