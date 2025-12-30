@@ -35,6 +35,10 @@ pub fn main() -> iced::Result {
     iced::application(|| (Jobseeker::new(), Task::done(Message::Init)), Jobseeker::update, Jobseeker::view)
         .title(get_title)
         .theme(Jobseeker::theme)
+        .window(iced::window::Settings {
+            size: iced::Size::new(1200.0, 800.0),
+            ..Default::default()
+        })
         .run()
 }
 
@@ -480,7 +484,7 @@ impl Jobseeker {
 
         let mut sidebar_content = column![filter_bar, month_navigator]
             .spacing(10)
-            .padding(Padding { top: 0.0, right: 20.0, bottom: 0.0, left: 0.0 })
+            .padding(Padding { top: 0.0, right: 30.0, bottom: 0.0, left: 15.0 })
             .width(Length::Fill);
 
         if let Some(err) = &self.error_msg {
@@ -528,7 +532,7 @@ impl Jobseeker {
                             ].spacing(20),
                             button("Betygsätt med AI").on_press(Message::RateAd(index)),
                             text(ad.description.as_ref().and_then(|d| d.text.clone()).unwrap_or_else(|| "Ingen beskrivning tillgänglig".into()))
-                        ].spacing(15).padding(10)
+                        ].spacing(15).padding(Padding { top: 10.0, right: 30.0, bottom: 10.0, left: 10.0 })
                     )
                 ).width(Length::Fill).height(Length::Fill).padding(10)
             } else {
