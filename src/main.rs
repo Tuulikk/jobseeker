@@ -4,7 +4,7 @@ mod db;
 mod ai;
 
 use iced::{Element, Task, Theme, Length, Color, Alignment};
-use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule};
+use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule, svg};
 use crate::models::{JobAd, AppSettings, AdStatus};
 use crate::api::JobSearchClient;
 use crate::db::Db;
@@ -12,6 +12,21 @@ use crate::ai::AiRanker;
 use std::sync::Arc;
 use chrono::{Utc, Datelike};
 use tracing::{info, error};
+
+// SVG Icon bytes embedded in the binary
+const SVG_UNREAD: &[u8] = include_bytes!("../assets/icons/circle-fill.svg");
+const SVG_BOOKMARK: &[u8] = include_bytes!("../assets/icons/bookmark-star-fill.svg");
+const SVG_THUMBS_UP: &[u8] = include_bytes!("../assets/icons/hand-thumbs-up-fill.svg");
+const SVG_THUMBS_DOWN: &[u8] = include_bytes!("../assets/icons/hand-thumbs-down-fill.svg");
+const SVG_APPLIED: &[u8] = include_bytes!("../assets/icons/check-circle-fill.svg");
+const SVG_REJECTED: &[u8] = include_bytes!("../assets/icons/trash3-fill.svg");
+const SVG_WEB: &[u8] = include_bytes!("../assets/icons/globe.svg");
+const SVG_EMAIL: &[u8] = include_bytes!("../assets/icons/envelope-fill.svg");
+const SVG_COPY: &[u8] = include_bytes!("../assets/icons/clipboard-plus-fill.svg");
+const SVG_SETTINGS: &[u8] = include_bytes!("../assets/icons/gear-fill.svg");
+const SVG_INBOX: &[u8] = include_bytes!("../assets/icons/inbox-fill.svg");
+const SVG_PREV: &[u8] = include_bytes!("../assets/icons/chevron-left.svg");
+const SVG_NEXT: &[u8] = include_bytes!("../assets/icons/chevron-right.svg");
 
 pub fn main() -> iced::Result {
     tracing_subscriber::fmt::init();
@@ -386,8 +401,8 @@ impl Jobseeker {
 
     fn view(&self) -> Element<'_, Message> {
         let nav_bar = row![
-            button("Inbox").on_press(Message::GoToPage(Page::Inbox)),
-            button("Inställningar").on_press(Message::GoToPage(Page::Settings)),
+            button(row![svg(svg::Handle::from_memory(SVG_INBOX)).width(20).height(20), text(" Inbox")].align_y(Alignment::Center)).on_press(Message::GoToPage(Page::Inbox)),
+            button(row![svg(svg::Handle::from_memory(SVG_SETTINGS)).width(20).height(20), text(" Inställningar")].align_y(Alignment::Center)).on_press(Message::GoToPage(Page::Settings)),
             space::horizontal(),
             text("Jobseeker Gnag").size(20).color(Color::from_rgb(0.4, 0.4, 0.4)),
         ].spacing(10).padding(10).align_y(Alignment::Center);
@@ -401,7 +416,7 @@ impl Jobseeker {
                 button("2").on_press(Message::Search(2)),
                 button("3").on_press(Message::Search(3)),
                 space::horizontal(),
-                button("Töm").on_press(Message::ClearAds),
+                button(row![svg(svg::Handle::from_memory(SVG_REJECTED)).width(20).height(20), text(" Töm")].align_y(Alignment::Center)).on_press(Message::ClearAds),
             ].spacing(10).align_y(Alignment::Center)
         };
 
@@ -429,15 +444,15 @@ impl Jobseeker {
     fn view_inbox(&self) -> Element<'_, Message> {
         let filter_bar = row![
             button("Alla").on_press(Message::SetFilter(InboxFilter::All)),
-            button("🔖 Bokm.").on_press(Message::SetFilter(InboxFilter::Bookmarked)),
-            button("👍 Toppen").on_press(Message::SetFilter(InboxFilter::ThumbsUp)),
-            button("✅ Sökta").on_press(Message::SetFilter(InboxFilter::Applied)),
+            button(row![svg(svg::Handle::from_memory(SVG_BOOKMARK)).width(20).height(20), text(" Bokm.")].align_y(Alignment::Center)).on_press(Message::SetFilter(InboxFilter::Bookmarked)),
+            button(row![svg(svg::Handle::from_memory(SVG_THUMBS_UP)).width(20).height(20), text(" Toppen")].align_y(Alignment::Center)).on_press(Message::SetFilter(InboxFilter::ThumbsUp)),
+            button(row![svg(svg::Handle::from_memory(SVG_APPLIED)).width(20).height(20), text(" Sökta")].align_y(Alignment::Center)).on_press(Message::SetFilter(InboxFilter::Applied)),
         ].spacing(5).align_y(Alignment::Center);
 
         let month_navigator = row![
-            button("<").on_press(Message::ChangeMonth(-1)),
+            button(svg(svg::Handle::from_memory(SVG_PREV)).width(24).height(24)).on_press(Message::ChangeMonth(-1)),
             text(format!("{:04}-{:02}", self.current_year, self.current_month)).size(16),
-            button(">").on_press(Message::ChangeMonth(1)),
+            button(svg(svg::Handle::from_memory(SVG_NEXT)).width(24).height(24)).on_press(Message::ChangeMonth(1)),
         ].spacing(10).align_y(Alignment::Center);
 
         let mut sidebar_content = column![filter_bar, month_navigator].spacing(10).width(Length::Fill);
@@ -466,14 +481,14 @@ impl Jobseeker {
         let details = if let Some(index) = self.selected_ad {
             if let Some(ad) = self.ads.get(index) {
                 let action_toolbar = row![
-                    button("Nej 👎").on_press(Message::UpdateStatus(index, AdStatus::Rejected)),
-                    button("Spara 🔖").on_press(Message::UpdateStatus(index, AdStatus::Bookmarked)),
-                    button("Toppen 👍").on_press(Message::UpdateStatus(index, AdStatus::ThumbsUp)),
-                    button("HAR SÖKT ✅").on_press(Message::UpdateStatus(index, AdStatus::Applied)),
+                    button(row![svg(svg::Handle::from_memory(SVG_THUMBS_DOWN)).width(20).height(20), text(" Nej")].align_y(Alignment::Center)).on_press(Message::UpdateStatus(index, AdStatus::Rejected)),
+                    button(row![svg(svg::Handle::from_memory(SVG_BOOKMARK)).width(20).height(20), text(" Spara")].align_y(Alignment::Center)).on_press(Message::UpdateStatus(index, AdStatus::Bookmarked)),
+                    button(row![svg(svg::Handle::from_memory(SVG_THUMBS_UP)).width(20).height(20), text(" Toppen")].align_y(Alignment::Center)).on_press(Message::UpdateStatus(index, AdStatus::ThumbsUp)),
+                    button(row![svg(svg::Handle::from_memory(SVG_APPLIED)).width(20).height(20), text(" HAR SÖKT")].align_y(Alignment::Center)).on_press(Message::UpdateStatus(index, AdStatus::Applied)),
                     space::horizontal(),
-                    button("Webb 🌐").on_press(Message::OpenBrowser(index)),
-                    button("E-post ✉").on_press(Message::SendEmail(index)),
-                    button("Kopiera 📋").on_press(Message::CopyAd(index)),
+                    button(svg(svg::Handle::from_memory(SVG_WEB)).width(20).height(20)).on_press(Message::OpenBrowser(index)),
+                    button(svg(svg::Handle::from_memory(SVG_EMAIL)).width(20).height(20)).on_press(Message::SendEmail(index)),
+                    button(svg(svg::Handle::from_memory(SVG_COPY)).width(20).height(20)).on_press(Message::CopyAd(index)),
                 ].spacing(10);
 
                 container(
@@ -505,12 +520,12 @@ impl Jobseeker {
     }
 
     fn ad_row<'a>(&self, i: usize, ad: &'a JobAd) -> Element<'a, Message> {
-        let (status_text, _icon_color) = match ad.status {
-            Some(AdStatus::Rejected) => ("[X] ", Color::from_rgb(0.8, 0.3, 0.3)),
-            Some(AdStatus::Bookmarked) => ("[*] ", Color::from_rgb(0.3, 0.6, 0.8)),
-            Some(AdStatus::ThumbsUp) => ("[+] ", Color::from_rgb(0.3, 0.8, 0.3)),
-            Some(AdStatus::Applied) => ("[OK] ", Color::from_rgb(0.5, 0.5, 0.5)),
-            _ => if !ad.is_read { ("( ) ", Color::WHITE) } else { ("    ", Color::WHITE) },
+        let (status_svg, _icon_color) = match ad.status {
+            Some(AdStatus::Rejected) => (SVG_REJECTED, Color::from_rgb(0.8, 0.3, 0.3)),
+            Some(AdStatus::Bookmarked) => (SVG_BOOKMARK, Color::from_rgb(0.3, 0.6, 0.8)),
+            Some(AdStatus::ThumbsUp) => (SVG_THUMBS_UP, Color::from_rgb(0.3, 0.8, 0.3)),
+            Some(AdStatus::Applied) => (SVG_APPLIED, Color::from_rgb(0.5, 0.5, 0.5)),
+            _ => if !ad.is_read { (SVG_UNREAD, Color::from_rgb(0.0, 0.5, 1.0)) } else { (SVG_UNREAD, Color::TRANSPARENT) },
         };
 
         let rating_text = match ad.rating {
@@ -524,7 +539,7 @@ impl Jobseeker {
 
         button(
             row![
-                text(status_text).color(Color::WHITE),
+                svg(svg::Handle::from_memory(status_svg)).width(20).height(20),
                 column![
                     text(&ad.headline).size(18).width(Length::Fill).color(Color::WHITE),
                     row![
