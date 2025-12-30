@@ -478,7 +478,10 @@ impl Jobseeker {
             button(svg(svg::Handle::from_memory(SVG_NEXT)).width(24).height(24)).on_press(Message::ChangeMonth(1)),
         ].spacing(10).align_y(Alignment::Center);
 
-        let mut sidebar_content = column![filter_bar, month_navigator].spacing(10).width(Length::Fill);
+        let mut sidebar_content = column![filter_bar, month_navigator]
+            .spacing(10)
+            .padding(Padding { top: 0.0, right: 20.0, bottom: 0.0, left: 0.0 })
+            .width(Length::Fill);
 
         if let Some(err) = &self.error_msg {
             sidebar_content = sidebar_content.push(
@@ -499,7 +502,7 @@ impl Jobseeker {
         let sidebar = container(scrollable(sidebar_content))
             .width(Length::Fixed(400.0))
             .height(Length::Fill)
-            .padding(Padding { top: 5.0, right: 15.0, bottom: 5.0, left: 5.0 });
+            .padding(5);
 
         let details = if let Some(index) = self.selected_ad {
             if let Some(ad) = self.ads.get(index) {
@@ -543,12 +546,18 @@ impl Jobseeker {
     }
 
     fn ad_row<'a>(&self, i: usize, ad: &'a JobAd) -> Element<'a, Message> {
-        let (status_svg, _icon_color) = match ad.status {
+        let is_selected = self.selected_ad == Some(i);
+        
+        let (status_svg, icon_color) = match ad.status {
             Some(AdStatus::Rejected) => (SVG_REJECTED, Color::from_rgb(0.8, 0.3, 0.3)),
             Some(AdStatus::Bookmarked) => (SVG_BOOKMARK, Color::from_rgb(0.3, 0.6, 0.8)),
             Some(AdStatus::ThumbsUp) => (SVG_THUMBS_UP, Color::from_rgb(0.3, 0.8, 0.3)),
             Some(AdStatus::Applied) => (SVG_APPLIED, Color::from_rgb(0.5, 0.5, 0.5)),
-            _ => if !ad.is_read { (SVG_UNREAD, Color::from_rgb(0.0, 0.5, 1.0)) } else { (SVG_UNREAD, Color::TRANSPARENT) },
+            _ => if !ad.is_read { 
+                (SVG_UNREAD, Color::from_rgb(0.0, 0.5, 1.0)) 
+            } else { 
+                (SVG_UNREAD, Color::from_rgb(0.2, 0.2, 0.3)) 
+            },
         };
 
         let rating_text = match ad.rating {
@@ -561,26 +570,58 @@ impl Jobseeker {
         let keyword_text = ad.search_keyword.as_deref().unwrap_or("---");
         let municipality_text = ad.workplace_address.as_ref().and_then(|a| a.municipality.as_deref()).unwrap_or("Okänd");
 
-        button(
-            row![
-                svg(svg::Handle::from_memory(status_svg)).width(20).height(20),
-                column![
-                    text(&ad.headline).size(18).width(Length::Fill).color(Color::WHITE),
-                    row![
-                        text(rating_text).size(14).color(Color::from_rgb(1.0, 1.0, 0.0)),
-                        text(ad.employer.as_ref().and_then(|e| e.name.clone()).unwrap_or_default())
-                            .size(14)
-                            .color(Color::from_rgb(0.8, 0.8, 0.8))
-                            .width(Length::Fill),
-                        text(short_date).size(14).color(Color::from_rgb(0.7, 0.7, 0.7)),
-                    ].spacing(5),
-                    text(format!("{} • {}", keyword_text, municipality_text)).size(14).color(Color::from_rgb(0.0, 0.8, 0.8))
-                ].spacing(2)
-            ].spacing(10).align_y(Alignment::Center)
+        let title_color = if !ad.is_read { Color::WHITE } else { Color::from_rgb(0.6, 0.6, 0.7) };
+        let bg_color = if is_selected {
+            Color::from_rgb(0.2, 0.2, 0.3)
+        } else if ad.is_read {
+            Color::from_rgb(0.08, 0.08, 0.12)
+        } else {
+            Color::TRANSPARENT
+        };
+
+        container(
+            button(
+                row![
+                    svg(svg::Handle::from_memory(status_svg))
+                        .width(20)
+                        .height(20)
+                        .style(move |_, _| svg::Style { color: Some(icon_color) }),
+                    column![
+                        text(&ad.headline).size(18).width(Length::Fill).color(title_color),
+                        row![
+                            text(rating_text).size(14).color(Color::from_rgb(1.0, 1.0, 0.0)),
+                            text(ad.employer.as_ref().and_then(|e| e.name.clone()).unwrap_or_default())
+                                .size(14)
+                                .color(Color::from_rgb(0.8, 0.8, 0.8))
+                                .width(Length::Fill),
+                            text(short_date).size(14).color(Color::from_rgb(0.7, 0.7, 0.7)),
+                        ].spacing(5),
+                        text(format!("{} • {}", keyword_text, municipality_text)).size(14).color(Color::from_rgb(0.0, 0.8, 0.8))
+                    ].spacing(2)
+                ].spacing(10).align_y(Alignment::Center)
+            )
+            .on_press(Message::SelectAd(i))
+            .width(Length::Fill)
+            .padding(8)
+            .style(move |_theme, status| {
+                if status == button::Status::Hovered {
+                    button::Style {
+                        background: Some(Color::from_rgb(0.15, 0.15, 0.2).into()),
+                        ..Default::default()
+                    }
+                } else {
+                    button::Style {
+                        background: None,
+                        ..Default::default()
+                    }
+                }
+            })
         )
-        .on_press(Message::SelectAd(i))
-        .width(Length::Fill)
-        .padding(8)
+        .style(move |_theme| container::Style {
+            background: Some(bg_color.into()),
+            ..Default::default()
+        })
+        .padding(Padding { top: 0.0, right: 5.0, bottom: 0.0, left: 0.0 })
         .into()
     }
 
