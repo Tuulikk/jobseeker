@@ -1,0 +1,222 @@
+use sqlx::{sqlite::SqlitePool, Row};
+use crate::models::{JobAd, Description, Employer, ApplicationDetails, Occupation, WorkplaceAddress, AdStatus};
+use anyhow::Result;
+use chrono::{DateTime, Utc, Datelike};
+use std::str::FromStr;
+
+#[derive(Debug, Clone)]
+pub struct Db {
+    pool: SqlitePool,
+}
+
+impl Db {
+    pub async fn new(filename: &str) -> Result<Self> {
+        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite:{}", filename))?
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+
+        let pool = SqlitePool::connect_with(options).await?;
+        
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS job_ads (
+                id TEXT PRIMARY KEY,
+                headline TEXT NOT NULL,
+                description TEXT,
+                employer_name TEXT,
+                employer_workplace TEXT,
+                application_url TEXT,
+                webpage_url TEXT,
+                publication_date TEXT NOT NULL,
+                last_application_date TEXT,
+                occupation_label TEXT,
+                city TEXT,
+                is_read BOOLEAN NOT NULL DEFAULT 0,
+                rating INTEGER,
+                bookmarked_at TEXT,
+                internal_created_at TEXT NOT NULL,
+                search_keyword TEXT,
+                status INTEGER DEFAULT 0,
+                applied_at TEXT
+            )"
+        ).execute(&pool).await?;
+
+        // Migrations
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN search_keyword TEXT").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN webpage_url TEXT").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN status INTEGER DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN applied_at TEXT").execute(&pool).await;
+
+        Ok(Self { pool })
+    }
+
+    pub async fn save_job_ad(&self, ad: &JobAd) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO job_ads (
+                id, headline, description, employer_name, employer_workplace,
+                application_url, webpage_url, publication_date, last_application_date,
+                occupation_label, city, is_read, rating, bookmarked_at,
+                internal_created_at, search_keyword, status, applied_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&ad.id)
+        .bind(&ad.headline)
+        .bind(ad.description.as_ref().and_then(|d| d.text.as_ref()))
+        .bind(ad.employer.as_ref().and_then(|e| e.name.as_ref()))
+        .bind(ad.employer.as_ref().and_then(|e| e.workplace.as_ref()))
+        .bind(ad.application_details.as_ref().and_then(|a| a.url.as_ref()))
+        .bind(&ad.webpage_url)
+        .bind(&ad.publication_date)
+        .bind(&ad.last_application_date)
+        .bind(ad.occupation.as_ref().and_then(|o| o.label.as_ref()))
+        .bind(ad.workplace_address.as_ref().and_then(|w| w.city.as_ref()))
+        .bind(ad.is_read)
+        .bind(ad.rating.map(|r| r as i32))
+        .bind(ad.bookmarked_at.map(|d| d.to_rfc3339()))
+        .bind(ad.internal_created_at.to_rfc3339())
+        .bind(&ad.search_keyword)
+        .bind(ad.status.unwrap_or(AdStatus::New) as i32)
+        .bind(ad.applied_at.map(|d| d.to_rfc3339()))
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_filtered_jobs(&self, status_filter: &[AdStatus], year: i32, month: u32) -> Result<Vec<JobAd>> {
+        let query_str = if status_filter.is_empty() {
+            // "Alla" filter: Return everything not rejected
+            "SELECT * FROM job_ads WHERE status != 1 ORDER BY publication_date DESC".to_string()
+        } else {
+            let status_ints: Vec<i32> = status_filter.iter().map(|s| *s as i32).collect();
+            let placeholders = status_ints.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            format!("SELECT * FROM job_ads WHERE status IN ({}) ORDER BY publication_date DESC", placeholders)
+        };
+
+        let mut query = sqlx::query(&query_str);
+        if !status_filter.is_empty() {
+            for s in status_filter {
+                query = query.bind(*s as i32);
+            }
+        }
+
+        let rows = query.fetch_all(&self.pool).await?;
+        let mut ads = Vec::new();
+        
+        for row in rows {
+            let ad = self.map_row_to_ad(row)?;
+            
+            // Strictly check the relevant date based on status
+            let date_to_check = if ad.status == Some(AdStatus::Applied) {
+                ad.applied_at
+            } else if ad.status == Some(AdStatus::Bookmarked) || ad.status == Some(AdStatus::ThumbsUp) {
+                ad.bookmarked_at
+            } else {
+                // For "New" or general view, use internal creation date
+                Some(ad.internal_created_at)
+            };
+
+            if let Some(dt) = date_to_check {
+                if dt.year() == year && dt.month() == month {
+                    ads.push(ad);
+                }
+            }
+        }
+        Ok(ads)
+    }
+
+    pub async fn update_ad_status(&self, id: &str, status: AdStatus) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        match status {
+            AdStatus::Applied => {
+                sqlx::query("UPDATE job_ads SET status = ?, applied_at = ? WHERE id = ?")
+                    .bind(status as i32)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool).await?;
+            },
+            AdStatus::Bookmarked | AdStatus::ThumbsUp => {
+                sqlx::query("UPDATE job_ads SET status = ?, bookmarked_at = ? WHERE id = ?")
+                    .bind(status as i32)
+                    .bind(now)
+                    .bind(id)
+                    .execute(&self.pool).await?;
+            },
+            _ => {
+                sqlx::query("UPDATE job_ads SET status = ? WHERE id = ?")
+                    .bind(status as i32)
+                    .bind(id)
+                    .execute(&self.pool).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn mark_as_read(&self, id: &str) -> Result<()> {
+        sqlx::query("UPDATE job_ads SET is_read = 1 WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_rating(&self, id: &str, rating: u8) -> Result<()> {
+        sqlx::query("UPDATE job_ads SET rating = ? WHERE id = ?")
+            .bind(rating as i32)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn clear_non_bookmarked(&self) -> Result<()> {
+        sqlx::query("DELETE FROM job_ads WHERE status IN (0, 1)")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    fn map_row_to_ad(&self, row: sqlx::sqlite::SqliteRow) -> Result<JobAd> {
+        let created_at_str: String = row.get("internal_created_at");
+        let internal_created_at = DateTime::parse_from_rfc3339(&created_at_str)
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+
+        let status_int: i32 = row.get("status");
+        let status = match status_int {
+            1 => AdStatus::Rejected,
+            2 => AdStatus::Bookmarked,
+            3 => AdStatus::ThumbsUp,
+            4 => AdStatus::Applied,
+            _ => AdStatus::New,
+        };
+
+        Ok(JobAd {
+            id: row.get("id"),
+            headline: row.get("headline"),
+            description: Some(Description { text: row.get("description") }),
+            employer: Some(Employer { 
+                name: row.get("employer_name"), 
+                workplace: row.get("employer_workplace") 
+            }),
+            application_details: Some(ApplicationDetails {
+                url: row.get("application_url"),
+            }),
+            webpage_url: row.get("webpage_url"),
+            publication_date: row.get("publication_date"),
+            last_application_date: row.get("last_application_date"),
+            occupation: Some(Occupation { label: row.get("occupation_label") }),
+            workplace_address: Some(WorkplaceAddress { city: row.get("city") }),
+            is_read: row.get("is_read"),
+            rating: row.get::<Option<i32>, _>("rating").map(|r| r as u8),
+            bookmarked_at: row.get::<Option<String>, _>("bookmarked_at")
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc)),
+            internal_created_at,
+            search_keyword: row.get("search_keyword"),
+            status: Some(status),
+            applied_at: row.get::<Option<String>, _>("applied_at")
+                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+                .map(|dt| dt.with_timezone(&Utc)),
+        })
+    }
+}
