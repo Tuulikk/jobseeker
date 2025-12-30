@@ -53,12 +53,25 @@ impl Db {
 
     pub async fn save_job_ad(&self, ad: &JobAd) -> Result<()> {
         sqlx::query(
-            "INSERT OR REPLACE INTO job_ads (
+            "INSERT INTO job_ads (
                 id, headline, description, employer_name, employer_workplace,
                 application_url, webpage_url, publication_date, last_application_date,
                 occupation_label, city, municipality, is_read, rating, bookmarked_at,
                 internal_created_at, search_keyword, status, applied_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                headline = excluded.headline,
+                description = excluded.description,
+                employer_name = excluded.employer_name,
+                employer_workplace = excluded.employer_workplace,
+                application_url = excluded.application_url,
+                webpage_url = excluded.webpage_url,
+                publication_date = excluded.publication_date,
+                last_application_date = excluded.last_application_date,
+                occupation_label = excluded.occupation_label,
+                city = excluded.city,
+                municipality = excluded.municipality,
+                search_keyword = COALESCE(job_ads.search_keyword, excluded.search_keyword)"
         )
         .bind(&ad.id)
         .bind(&ad.headline)
