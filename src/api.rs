@@ -110,6 +110,16 @@ impl JobSearchClient {
             match serde_json::from_value::<JobAd>(ad_val.clone()) {
                 Ok(mut ad) => {
                     ad.webpage_url = webpage_url;
+                    
+                    // Extrahera working_hours_type om det saknas i automatisk deserialisering
+                    if ad.working_hours_type.is_none() {
+                        if let Some(label) = hit["working_hours_type"]["label"].as_str() {
+                            ad.working_hours_type = Some(crate::models::WorkingHours {
+                                label: Some(label.to_string()),
+                            });
+                        }
+                    }
+                    
                     ads.push(ad);
                 },
                 Err(e) => {

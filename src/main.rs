@@ -164,6 +164,7 @@ enum Message {
     SwitchTab(usize),
     CloseTab(usize),
     OpenEditor(String, String), // job_id, job_headline
+    DraftLoaded(String, String), // job_id, content
     ToggleEditMode(usize),
     EditorContentChanged(usize, text_editor::Action),
     SetFilter(InboxFilter),
@@ -244,15 +245,39 @@ impl Jobseeker {
 
                 if let Some(idx) = existing {
                     self.active_tab = idx;
+                    Task::none()
                 } else {
+                    let db_clone = Arc::clone(&self.db);
+                    let id_clone = id.clone();
+                    
+                    // Skapa fliken direkt med tomt innehåll först
                     let new_tab = Tab::ApplicationEditor {
-                        job_id: id,
+                        job_id: id.clone(),
                         job_headline: headline,
                         content: text_editor::Content::new(),
                         is_editing: true,
                     };
                     self.tabs.push(new_tab);
                     self.active_tab = self.tabs.len() - 1;
+
+                    // Ladda utkast från DB asynkront
+                    let id_for_task = id_clone.clone();
+                    Task::perform(async move {
+                        if let Some(db) = &*db_clone {
+                            db.get_application_draft(&id_for_task).await.unwrap_or(None)
+                        } else {
+                            None
+                        }
+                    }, move |content| Message::DraftLoaded(id_clone, content.unwrap_or_default()))
+                }
+            }
+            Message::DraftLoaded(id, content_str) => {
+                for tab in self.tabs.iter_mut() {
+                    if let Tab::ApplicationEditor { job_id, content, .. } = tab {
+                        if job_id == &id {
+                            *content = text_editor::Content::with_text(&content_str);
+                        }
+                    }
                 }
                 Task::none()
             }
@@ -263,8 +288,18 @@ impl Jobseeker {
                 Task::none()
             }
             Message::EditorContentChanged(index, action) => {
-                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                if let Some(Tab::ApplicationEditor { job_id, content, .. }) = self.tabs.get_mut(index) {
                     content.perform(action);
+                    
+                    // Spara till DB automatiskt vid ändring
+                    let db_clone = Arc::clone(&self.db);
+                    let id_clone = job_id.clone();
+                    let text_clone = content.text();
+                    return Task::perform(async move {
+                        if let Some(db) = &*db_clone {
+                            let _ = db.save_application_draft(&id_clone, &text_clone).await;
+                        }
+                    }, |_| Message::SaveSettings);
                 }
                 Task::none()
             }
@@ -980,7 +1015,11 @@ impl Jobseeker {
             container(
                 text_editor(content)
                     .on_action(move |action| Message::EditorContentChanged(tab_index, action))
-            ).padding(20).style(|_theme: &Theme| container::Style {
+            )
+            .padding(Padding { top: 40.0, right: 60.0, bottom: 40.0, left: 60.0 })
+            .width(Length::Fixed(800.0)) // Ungefärlig A4-bredd i pixlar
+            .height(Length::Fill)
+            .style(|_theme: &Theme| container::Style {
                 background: Some(Color::WHITE.into()),
                 ..Default::default()
             }).into()
@@ -991,7 +1030,11 @@ impl Jobseeker {
                         .color(Color::BLACK)
                         .size(16)
                 )
-            ).padding(40).style(|_theme: &Theme| container::Style {
+            )
+            .padding(Padding { top: 60.0, right: 80.0, bottom: 60.0, left: 80.0 })
+            .width(Length::Fixed(800.0))
+            .height(Length::Fill)
+            .style(|_theme: &Theme| container::Style {
                 background: Some(Color::WHITE.into()),
                 border: iced::Border {
                     color: Color::from_rgb(0.8, 0.8, 0.8),
@@ -1031,10 +1074,11 @@ impl Jobseeker {
             row![
                 ad_side,
                 container(editor_side)
-                    .width(Length::FillPortion(1))
+                    .width(Length::FillPortion(2))
                     .height(Length::Fill)
+                    .center_x(Length::Fill)
                     .style(|_theme: &Theme| container::Style {
-                        background: Some(Color::from_rgb(0.95, 0.95, 0.95).into()),
+                        background: Some(Color::from_rgb(0.85, 0.85, 0.85).into()),
                         ..Default::default()
                     })
             ]

@@ -42,14 +42,50 @@ impl Db {
             )"
         ).execute(&pool).await?;
 
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS job_applications (
+                job_id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(job_id) REFERENCES job_ads(id)
+            )"
+        ).execute(&pool).await?;
+
         // Migrations
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN search_keyword TEXT").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN webpage_url TEXT").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN status INTEGER DEFAULT 0").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN applied_at TEXT").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN municipality TEXT").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN working_hours_label TEXT").execute(&pool).await;
 
         Ok(Self { pool })
+    }
+
+    pub async fn save_application_draft(&self, job_id: &str, content: &str) -> Result<()> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO job_applications (job_id, content, updated_at) 
+             VALUES (?, ?, ?) 
+             ON CONFLICT(job_id) DO UPDATE SET 
+                content = excluded.content, 
+                updated_at = excluded.updated_at"
+        )
+        .bind(job_id)
+        .bind(content)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_application_draft(&self, job_id: &str) -> Result<Option<String>> {
+        let row = sqlx::query("SELECT content FROM job_applications WHERE job_id = ?")
+            .bind(job_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        
+        Ok(row.map(|r| r.get("content")))
     }
 
     pub async fn save_job_ad(&self, ad: &JobAd) -> Result<()> {
