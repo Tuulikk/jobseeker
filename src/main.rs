@@ -612,26 +612,59 @@ impl Jobseeker {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let search_controls = if self.is_searching {
-            row![text("Söker...").color(Color::from_rgb(0.0, 0.5, 1.0))]
-        } else {
-            row![
-                text("Område:").size(16).color(Color::from_rgb(0.9, 0.9, 0.9)),
-                button("1").on_press(Message::Search(1)),
-                button("2").on_press(Message::Search(2)),
-                button("3").on_press(Message::Search(3)),
-                space::horizontal(),
-                button(svg(svg::Handle::from_memory(SVG_PREV)).width(20).height(20)).on_press(Message::PrevAd),
-                button(svg(svg::Handle::from_memory(SVG_NEXT)).width(20).height(20)).on_press(Message::NextAd),
-                space::horizontal(),
-                button(row![svg(svg::Handle::from_memory(SVG_REJECTED)).width(20).height(20), text(" Töm")].align_y(Alignment::Center)).on_press(Message::ClearAds),
-            ].spacing(10).align_y(Alignment::Center)
+        let active_tab_content = &self.tabs[self.active_tab];
+
+        let toolbar_content: Element<Message> = match active_tab_content {
+            Tab::Inbox => {
+                if self.is_searching {
+                    row![text("Söker...").color(Color::from_rgb(0.0, 0.5, 1.0))].into()
+                } else {
+                    row![
+                        text("Område:").size(16).color(Color::from_rgb(0.9, 0.9, 0.9)),
+                        button("1").on_press(Message::Search(1)),
+                        button("2").on_press(Message::Search(2)),
+                        button("3").on_press(Message::Search(3)),
+                        space::horizontal(),
+                        button(svg(svg::Handle::from_memory(SVG_PREV)).width(20).height(20)).on_press(Message::PrevAd),
+                        button(svg(svg::Handle::from_memory(SVG_NEXT)).width(20).height(20)).on_press(Message::NextAd),
+                        space::horizontal(),
+                        button(row![svg(svg::Handle::from_memory(SVG_REJECTED)).width(20).height(20), text(" Töm")].align_y(Alignment::Center)).on_press(Message::ClearAds),
+                    ].spacing(10).align_y(Alignment::Center).into()
+                }
+            },
+            Tab::Drafts => {
+                row![
+                    text("Mina sparade utkast").size(16).color(Color::from_rgb(0.9, 0.9, 0.9)),
+                    space::horizontal(),
+                    button("Uppdatera lista").on_press(Message::LoadDrafts),
+                ].spacing(10).align_y(Alignment::Center).into()
+            },
+            Tab::ApplicationEditor { is_editing, .. } => {
+                row![
+                    button(if *is_editing { "Klar (Läs-läge)" } else { "Redigera" })
+                        .on_press(Message::ToggleEditMode(self.active_tab)),
+                    space::horizontal(),
+                    button("Exportera PDF").style(|_theme: &Theme, _status| button::Style {
+                        background: Some(Color::from_rgb(0.1, 0.3, 0.1).into()),
+                        ..Default::default()
+                    }),
+                    button("Exportera Word").style(|_theme: &Theme, _status| button::Style {
+                        background: Some(Color::from_rgb(0.1, 0.1, 0.3).into()),
+                        ..Default::default()
+                    }),
+                ].spacing(10).align_y(Alignment::Center).into()
+            },
+            Tab::Settings => {
+                row![
+                    text("Applikationsinställningar").size(16).color(Color::from_rgb(0.9, 0.9, 0.9)),
+                ].into()
+            }
         };
 
-        let toolbar = container(search_controls)
+        let toolbar = container(toolbar_content)
             .width(Length::Fill)
             .padding(10)
-            .style(|_theme| container::Style {
+            .style(|_theme: &Theme| container::Style {
                 background: Some(Color::from_rgb(0.1, 0.1, 0.15).into()),
                 ..Default::default()
             });
@@ -1074,20 +1107,6 @@ impl Jobseeker {
     }
 
     fn view_application_editor<'a>(&'a self, tab_index: usize, _headline: &str, content: &'a text_editor::Content, is_editing: bool) -> Element<'a, Message> {
-        let toolbar = row![
-            button(if is_editing { "Klar (Läs-läge)" } else { "Redigera" })
-                .on_press(Message::ToggleEditMode(tab_index)),
-            space::horizontal(),
-            button("Exportera PDF").style(|_theme: &Theme, _status| button::Style {
-                background: Some(Color::from_rgb(0.1, 0.3, 0.1).into()),
-                ..Default::default()
-            }),
-            button("Exportera Word").style(|_theme: &Theme, _status| button::Style {
-                background: Some(Color::from_rgb(0.1, 0.1, 0.3).into()),
-                ..Default::default()
-            }),
-        ].spacing(10).padding(10);
-
         let editor_side: Element<'a, Message> = if is_editing {
             container(
                 text_editor(content)
@@ -1146,19 +1165,16 @@ impl Jobseeker {
             container(text("Annonstext saknas")).padding(20).width(Length::FillPortion(1))
         };
 
-        column![
-            toolbar,
-            row![
-                ad_side,
-                container(editor_side)
-                    .width(Length::FillPortion(2))
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .style(|_theme: &Theme| container::Style {
-                        background: Some(Color::from_rgb(0.85, 0.85, 0.85).into()),
-                        ..Default::default()
-                    })
-            ]
+        row![
+            ad_side,
+            container(editor_side)
+                .width(Length::FillPortion(2))
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .style(|_theme: &Theme| container::Style {
+                    background: Some(Color::from_rgb(0.85, 0.85, 0.85).into()),
+                    ..Default::default()
+                })
         ].into()
     }
 }
