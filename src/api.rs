@@ -8,12 +8,45 @@ pub struct JobSearchClient {
     base_url: String,
 }
 
+const MUNICIPALITIES: &[(&str, &str)] = &[
+    ("helsingborg", "1283"), ("ängelholm", "1292"), ("höganäs", "1284"), ("bjuv", "1260"),
+    ("klippan", "1276"), ("åstorp", "1277"), ("örkelljunga", "1257"), ("båstad", "1278"),
+    ("perstorp", "1275"), ("landskrona", "1282"), ("svalöv", "1214"), ("burlöv", "1231"),
+    ("kävlinge", "1261"), ("malmö", "1280"), ("lund", "1281"), ("eslöv", "1285"),
+    ("vellinge", "1233"), ("trelleborg", "1287"), ("ystad", "1286"), ("kristianstad", "1290"),
+    ("hässleholm", "1293"), ("lomma", "1262"), ("staffanstorp", "1230"), ("svedala", "1263"),
+    ("skurup", "1264"), ("sjöbo", "1265"), ("höör", "1267"), ("hörby", "1266"),
+    ("tomelilla", "1270"), ("simrishamn", "1291"), ("osby", "1272"), ("östra göinge", "1273"),
+    ("bromölla", "1271"), ("stockholm", "0180"), ("göteborg", "1480"), ("uppsala", "0380"),
+    ("västerås", "1980"), ("örebro", "1880"), ("linköping", "0580"), ("norrköping", "0581"),
+    ("jönköping", "0680"), ("umeå", "2480"),
+];
+
 impl JobSearchClient {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
             base_url: "https://jobsearch.api.jobtechdev.se".to_string(),
         }
+    }
+
+    pub fn get_municipality_code(name: &str) -> Option<&'static str> {
+        let name_lower = name.to_lowercase();
+        MUNICIPALITIES.iter()
+            .find(|(n, _)| *n == name_lower.as_str())
+            .map(|(_, c)| *c)
+    }
+
+    pub fn get_municipality_name(code: &str) -> Option<String> {
+        MUNICIPALITIES.iter()
+            .find(|(_, c)| *c == code)
+            .map(|(n, _)| {
+                let mut chars = n.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            })
     }
 
     pub async fn search(&self, query: &str, municipalities: &[String], limit: u32) -> Result<Vec<JobAd>> {

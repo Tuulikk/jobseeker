@@ -4,7 +4,7 @@ mod db;
 mod ai;
 
 use iced::{Element, Task, Theme, Length, Color, Alignment, Padding};
-use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule, svg};
+use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule, svg, text_editor};
 use crate::models::{JobAd, AppSettings, AdStatus};
 use crate::api::JobSearchClient;
 use crate::db::Db;
@@ -73,23 +73,57 @@ struct Jobseeker {
     error_msg: Option<String>,
     current_year: i32,
     current_month: u32,
+    
+    // Editor states for settings
+    keywords_content: text_editor::Content,
+    blacklist_content: text_editor::Content,
+    profile_content: text_editor::Content,
 }
 
 impl Jobseeker {
     fn new() -> Self {
         let now = Utc::now();
+        let mut settings = AppSettings::load();
+        
+        // Beautify existing locations (convert codes to names)
+        settings.locations_p1 = Self::beautify_locations(&settings.locations_p1);
+        settings.locations_p2 = Self::beautify_locations(&settings.locations_p2);
+        settings.locations_p3 = Self::beautify_locations(&settings.locations_p3);
+
+        let keywords_content = text_editor::Content::with_text(&settings.keywords);
+        let blacklist_content = text_editor::Content::with_text(&settings.blacklist_keywords);
+        let profile_content = text_editor::Content::with_text(&settings.my_profile);
+
         Self {
             page: Page::Inbox,
             ads: Vec::new(),
             selected_ad: None,
-            settings: AppSettings::load(),
+            settings,
             db: Arc::new(None),
             filter: InboxFilter::All,
             is_searching: false,
             error_msg: None,
             current_year: now.year(),
             current_month: now.month(),
+            keywords_content,
+            blacklist_content,
+            profile_content,
         }
+    }
+
+    fn beautify_locations(raw: &str) -> String {
+        raw.split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                if s.chars().all(|c| c.is_numeric()) {
+                    JobSearchClient::get_municipality_name(s).unwrap_or_else(|| s.to_string())
+                } else {
+                    s.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     fn theme(&self) -> Theme {
@@ -109,17 +143,17 @@ enum Message {
     InitDb(Arc<Result<Db, String>>),
     GoToPage(Page),
     SetFilter(InboxFilter),
-    ChangeMonth(i8),
-    Search(u8),
+    ChangeMonth(i32),
+    Search(u32),
     SearchResult(Result<Vec<JobAd>, String>),
     SelectAd(usize),
-    SettingsKeywordsChanged(String),
-    SettingsBlacklistChanged(String),
     SettingsLocP1Changed(String),
     SettingsLocP2Changed(String),
     SettingsLocP3Changed(String),
-    SettingsProfileChanged(String),
     SettingsOllamaUrlChanged(String),
+    EditorKeywordsChanged(text_editor::Action),
+    EditorBlacklistChanged(text_editor::Action),
+    EditorProfileChanged(text_editor::Action),
     SaveSettings,
     RateAd(usize),
     RateResult(usize, u8),
@@ -198,7 +232,20 @@ impl Jobseeker {
                 
                 Task::perform(async move {
                     let client = JobSearchClient::new();
-                    let loc_vec: Vec<String> = locations.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    let loc_vec: Vec<String> = locations.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| {
+                            // Om det är sifferkod, behåll den. Annars försök mappa namn.
+                            if s.chars().all(|c| c.is_numeric()) {
+                                s
+                            } else if let Some(code) = JobSearchClient::get_municipality_code(&s) {
+                                code.to_string()
+                            } else {
+                                s // Behåll originalet som fallback
+                            }
+                        })
+                        .collect();
                     let keyword_vec: Vec<String> = keywords_raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
                     let blacklist_vec: Vec<String> = blacklist_raw.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect();
                     
@@ -278,14 +325,6 @@ impl Jobseeker {
                 }
                 Task::none()
             }
-            Message::SettingsKeywordsChanged(val) => {
-                self.settings.keywords = val;
-                Task::done(Message::SaveSettings)
-            }
-            Message::SettingsBlacklistChanged(val) => {
-                self.settings.blacklist_keywords = val;
-                Task::done(Message::SaveSettings)
-            }
             Message::SettingsLocP1Changed(val) => {
                 self.settings.locations_p1 = val;
                 Task::done(Message::SaveSettings)
@@ -298,12 +337,23 @@ impl Jobseeker {
                 self.settings.locations_p3 = val;
                 Task::done(Message::SaveSettings)
             }
-            Message::SettingsProfileChanged(val) => {
-                self.settings.my_profile = val;
-                Task::done(Message::SaveSettings)
-            }
             Message::SettingsOllamaUrlChanged(val) => {
                 self.settings.ollama_url = val;
+                Task::done(Message::SaveSettings)
+            }
+            Message::EditorKeywordsChanged(action) => {
+                self.keywords_content.perform(action);
+                self.settings.keywords = self.keywords_content.text();
+                Task::done(Message::SaveSettings)
+            }
+            Message::EditorBlacklistChanged(action) => {
+                self.blacklist_content.perform(action);
+                self.settings.blacklist_keywords = self.blacklist_content.text();
+                Task::done(Message::SaveSettings)
+            }
+            Message::EditorProfileChanged(action) => {
+                self.profile_content.perform(action);
+                self.settings.my_profile = self.profile_content.text();
                 Task::done(Message::SaveSettings)
             }
             Message::SaveSettings => {
@@ -681,43 +731,90 @@ impl Jobseeker {
         container(
             scrollable(
                 column![
-                    text("Inställningar").size(30),
+                    text("Inställningar").size(30).color(Color::WHITE),
+                    
                     column![
-                        text("Sökord"),
-                        text_input("t.ex. rust, go", &self.settings.keywords)
-                            .on_input(Message::SettingsKeywordsChanged),
-                    ].spacing(5),
+                        text("Sökord").size(18).color(Color::from_rgb(0.0, 0.8, 0.8)),
+                        text("Ange sökord separerade med kommatecken (t.ex. rust, python, support)").size(14).color(Color::from_rgb(0.6, 0.6, 0.6)),
+                        container(
+                            text_editor(&self.keywords_content)
+                                .on_action(Message::EditorKeywordsChanged)
+                        ).height(80).padding(5).style(|_theme: &Theme| container::Style {
+                            border: iced::Border {
+                                color: Color::from_rgb(0.3, 0.3, 0.3),
+                                width: 1.0,
+                                radius: 5.0.into(),
+                            },
+                            ..Default::default()
+                        }),
+                    ].spacing(10),
+
                     column![
-                        text("Svartlista"),
-                        text_input("Ord att dölja", &self.settings.blacklist_keywords)
-                            .on_input(Message::SettingsBlacklistChanged),
-                    ].spacing(5),
+                        text("Svartlista").size(18).color(Color::from_rgb(0.8, 0.3, 0.3)),
+                        text("Annonser med dessa ord i rubrik eller beskrivning döljs").size(14).color(Color::from_rgb(0.6, 0.6, 0.6)),
+                        container(
+                            text_editor(&self.blacklist_content)
+                                .on_action(Message::EditorBlacklistChanged)
+                        ).height(80).padding(5).style(|_theme: &Theme| container::Style {
+                            border: iced::Border {
+                                color: Color::from_rgb(0.3, 0.3, 0.3),
+                                width: 1.0,
+                                radius: 5.0.into(),
+                            },
+                            ..Default::default()
+                        }),
+                    ].spacing(10),
+
                     column![
-                        text("Område 1: Nordvästra Skåne"),
-                        text_input("Koder", &self.settings.locations_p1)
-                            .on_input(Message::SettingsLocP1Changed),
-                    ].spacing(5),
+                        text("Geografiska områden").size(18).color(Color::from_rgb(0.3, 0.6, 0.8)),
+                        text("Du kan nu skriva kommunnamn (t.ex. Helsingborg, Malmö) eller koder").size(14).color(Color::from_rgb(0.6, 0.6, 0.6)),
+                        
+                        column![
+                            text("Område 1 (Högsta prioritet)").size(14),
+                            text_input("Kommuner eller koder", &self.settings.locations_p1)
+                                .on_input(Message::SettingsLocP1Changed)
+                                .padding(10),
+                        ].spacing(5),
+
+                        column![
+                            text("Område 2").size(14),
+                            text_input("Kommuner eller koder", &self.settings.locations_p2)
+                                .on_input(Message::SettingsLocP2Changed)
+                                .padding(10),
+                        ].spacing(5),
+
+                        column![
+                            text("Område 3").size(14),
+                            text_input("Kommuner eller koder", &self.settings.locations_p3)
+                                .on_input(Message::SettingsLocP3Changed)
+                                .padding(10),
+                        ].spacing(5),
+                    ].spacing(15),
+
                     column![
-                        text("Område 2: Malmö / Lund"),
-                        text_input("Koder", &self.settings.locations_p2)
-                            .on_input(Message::SettingsLocP2Changed),
-                    ].spacing(5),
-                    column![
-                        text("Område 3: Resten"),
-                        text_input("Koder", &self.settings.locations_p3)
-                            .on_input(Message::SettingsLocP3Changed),
-                    ].spacing(5),
-                    column![
-                        text("Min Profil"),
-                        text_input("Beskrivning", &self.settings.my_profile)
-                            .on_input(Message::SettingsProfileChanged),
-                    ].spacing(5),
-                    column![
-                        text("AI Endpoint"),
-                        text_input("URL", &self.settings.ollama_url)
-                            .on_input(Message::SettingsOllamaUrlChanged),
-                    ].spacing(5),
-                ].spacing(20).padding(20)
+                        text("AI & Profil").size(18).color(Color::from_rgb(1.0, 1.0, 0.0)),
+                        column![
+                            text("Min bakgrund (används för AI-matchning)").size(14),
+                            container(
+                                text_editor(&self.profile_content)
+                                    .on_action(Message::EditorProfileChanged)
+                            ).height(120).padding(5).style(|_theme: &Theme| container::Style {
+                                border: iced::Border {
+                                    color: Color::from_rgb(0.3, 0.3, 0.3),
+                                    width: 1.0,
+                                    radius: 5.0.into(),
+                                },
+                                ..Default::default()
+                            }),
+                        ].spacing(5),
+                        column![
+                            text("Ollama API URL").size(14),
+                            text_input("http://localhost:11434/v1", &self.settings.ollama_url)
+                                .on_input(Message::SettingsOllamaUrlChanged)
+                                .padding(10),
+                        ].spacing(5),
+                    ].spacing(15),
+                ].spacing(30).padding(Padding { top: 20.0, right: 40.0, bottom: 20.0, left: 20.0 })
             )
         ).width(Length::Fill).height(Length::Fill).into()
     }
