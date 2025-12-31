@@ -9,6 +9,7 @@ pub struct JobSearchClient {
 }
 
 const MUNICIPALITIES: &[(&str, &str)] = &[
+    // Skåne (Befintliga + Fler)
     ("helsingborg", "1283"), ("ängelholm", "1292"), ("höganäs", "1284"), ("bjuv", "1260"),
     ("klippan", "1276"), ("åstorp", "1277"), ("örkelljunga", "1257"), ("båstad", "1278"),
     ("perstorp", "1275"), ("landskrona", "1282"), ("svalöv", "1214"), ("burlöv", "1231"),
@@ -17,9 +18,27 @@ const MUNICIPALITIES: &[(&str, &str)] = &[
     ("hässleholm", "1293"), ("lomma", "1262"), ("staffanstorp", "1230"), ("svedala", "1263"),
     ("skurup", "1264"), ("sjöbo", "1265"), ("höör", "1267"), ("hörby", "1266"),
     ("tomelilla", "1270"), ("simrishamn", "1291"), ("osby", "1272"), ("östra göinge", "1273"),
-    ("bromölla", "1271"), ("stockholm", "0180"), ("göteborg", "1480"), ("uppsala", "0380"),
-    ("västerås", "1980"), ("örebro", "1880"), ("linköping", "0580"), ("norrköping", "0581"),
-    ("jönköping", "0680"), ("umeå", "2480"),
+    ("bromölla", "1271"), 
+
+    // Stor-Stockholm & Mälardalen
+    ("stockholm", "0180"), ("huddinge", "0126"), ("nacka", "0182"), ("botkyrka", "0127"),
+    ("haninge", "0136"), ("tyresö", "0138"), ("täby", "0160"), ("sollentuna", "0163"),
+    ("järfälla", "0180"), ("solna", "0184"), ("upplands väsby", "0114"), ("södertälje", "0181"),
+    ("lidingö", "0186"), ("sigtuna", "0191"), ("sundbyberg", "0115"), ("uppsala", "0380"),
+    ("enköping", "0381"), ("västerås", "1980"), ("eskilstuna", "0484"), ("nyköping", "0480"),
+
+    // Stor-Göteborg & Västkusten
+    ("göteborg", "1480"), ("mölndal", "1481"), ("partille", "1402"), ("härryda", "1401"),
+    ("kungälv", "1482"), ("lerum", "1441"), ("alingsås", "1489"), ("borås", "1490"),
+    ("kungsbacka", "1384"), ("varberg", "1383"), ("halmstad", "1380"), ("uddevalla", "1485"),
+    ("trollhättan", "1488"), ("skövde", "1496"),
+
+    // Övriga Större Städer & Regioner
+    ("linköping", "0580"), ("norrköping", "0581"), ("jönköping", "0680"), ("växjö", "0780"),
+    ("kalmar", "0880"), ("karlskrona", "1080"), ("karlstad", "1780"), ("örebro", "1880"),
+    ("falun", "2080"), ("borlänge", "2081"), ("gävle", "2180"), ("sundsvall", "2281"),
+    ("östersund", "2380"), ("umeå", "2480"), ("skellefteå", "2482"), ("luleå", "2580"),
+    ("öckerö", "1407"), ("stenungsund", "1415"), ("tjörn", "1419"),
 ];
 
 impl JobSearchClient {
