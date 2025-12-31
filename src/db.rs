@@ -88,6 +88,23 @@ impl Db {
         Ok(row.map(|r| r.get("content")))
     }
 
+    pub async fn get_all_drafts(&self) -> Result<Vec<(String, String, String)>> {
+        let rows = sqlx::query(
+            "SELECT ja.job_id, ja.updated_at, ads.headline 
+             FROM job_applications ja
+             JOIN job_ads ads ON ja.job_id = ads.id
+             ORDER BY ja.updated_at DESC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|r| (
+            r.get("job_id"),
+            r.get("headline"),
+            r.get("updated_at")
+        )).collect())
+    }
+
     pub async fn save_job_ad(&self, ad: &JobAd) -> Result<()> {
         sqlx::query(
             "INSERT INTO job_ads (

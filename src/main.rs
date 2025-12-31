@@ -49,6 +49,7 @@ fn get_title(_: &Jobseeker) -> String {
 #[derive(Debug, Clone)]
 enum Tab {
     Inbox,
+    Drafts,
     Settings,
     ApplicationEditor { 
         job_id: String, 
@@ -56,9 +57,7 @@ enum Tab {
         content: text_editor::Content,
         is_editing: bool,
     },
-}
-
-impl PartialEq for Tab {
+}impl PartialEq for Tab {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Tab::Inbox, Tab::Inbox) => true,
@@ -92,6 +91,7 @@ struct Jobseeker {
     error_msg: Option<String>,
     current_year: i32,
     current_month: u32,
+    drafts_list: Vec<(String, String, String)>, // id, headline, updated_at
     
     // Editor states for settings
     keywords_content: text_editor::Content,
@@ -115,7 +115,7 @@ impl Jobseeker {
 
         Self {
             active_tab: 0,
-            tabs: vec![Tab::Inbox, Tab::Settings],
+            tabs: vec![Tab::Inbox, Tab::Drafts, Tab::Settings],
             ads: Vec::new(),
             selected_ad: None,
             settings,
@@ -125,6 +125,7 @@ impl Jobseeker {
             error_msg: None,
             current_year: now.year(),
             current_month: now.month(),
+            drafts_list: Vec::new(),
             keywords_content,
             blacklist_content,
             profile_content,
@@ -164,6 +165,8 @@ enum Message {
     SwitchTab(usize),
     CloseTab(usize),
     OpenEditor(String, String), // job_id, job_headline
+    LoadDrafts,
+    DraftsResult(Result<Vec<(String, String, String)>, String>), // id, headline, updated_at
     DraftLoaded(String, String), // job_id, content
     ToggleEditMode(usize),
     EditorContentChanged(usize, text_editor::Action),
@@ -218,7 +221,29 @@ impl Jobseeker {
             Message::SwitchTab(index) => {
                 if index < self.tabs.len() {
                     self.active_tab = index;
+                    // Ladda utkast om vi går till Drafts-fliken
+                    if matches!(self.tabs[index], Tab::Drafts) {
+                        return Task::done(Message::LoadDrafts);
+                    }
                 }
+                Task::none()
+            }
+            Message::LoadDrafts => {
+                let db_clone = Arc::clone(&self.db);
+                Task::perform(async move {
+                    if let Some(db) = &*db_clone {
+                        db.get_all_drafts().await
+                    } else {
+                        Ok(vec![])
+                    }
+                }, |res| Message::DraftsResult(res.map_err(|e| e.to_string())))
+            }
+            Message::DraftsResult(Ok(drafts)) => {
+                self.drafts_list = drafts;
+                Task::none()
+            }
+            Message::DraftsResult(Err(e)) => {
+                self.error_msg = Some(format!("Kunde inte ladda utkast: {}", e));
                 Task::none()
             }
             Message::CloseTab(index) => {
@@ -614,23 +639,26 @@ impl Jobseeker {
         let mut tab_row = row![].spacing(5).padding(Padding { top: 5.0, right: 10.0, bottom: 0.0, left: 10.0 });
         
         for (i, tab) in self.tabs.iter().enumerate() {
-            let label = match tab {
-                Tab::Inbox => "Inbox".to_string(),
-                Tab::Settings => "Inställningar".to_string(),
+            let (label, svg_icon) = match tab {
+                Tab::Inbox => (" Inbox".to_string(), Some(SVG_INBOX)),
+                Tab::Drafts => (" Utkast".to_string(), Some(SVG_COPY)), // Använd CLIPBOARD_PLUS för utkast
+                Tab::Settings => (" Inställningar".to_string(), Some(SVG_SETTINGS)),
                 Tab::ApplicationEditor { job_headline, .. } => {
                     let mut short = job_headline.clone();
                     if short.len() > 15 { short.truncate(12); short.push_str("..."); }
-                    short
+                    (short, None)
                 }
             };
 
             let is_active = self.active_tab == i;
             
-            let content = row![
-                text(label).size(14),
-            ].align_y(Alignment::Center);
+            let mut content = row![].align_y(Alignment::Center).spacing(5);
+            if let Some(svg_data) = svg_icon {
+                content = content.push(svg(svg::Handle::from_memory(svg_data)).width(16).height(16));
+            }
+            content = content.push(text(label).size(14));
 
-            let content = if !matches!(tab, Tab::Inbox | Tab::Settings) {
+            let content = if !matches!(tab, Tab::Inbox | Tab::Drafts | Tab::Settings) {
                 content.push(
                     button(text(" x").size(12))
                         .on_press(Message::CloseTab(i))
@@ -682,6 +710,7 @@ impl Jobseeker {
 
         let content: Element<Message> = match &self.tabs[self.active_tab] {
             Tab::Inbox => self.view_inbox(),
+            Tab::Drafts => self.view_drafts(),
             Tab::Settings => self.view_settings(),
             Tab::ApplicationEditor { job_id: _, job_headline, content, is_editing } => {
                 self.view_application_editor(self.active_tab, job_headline, content, *is_editing)
@@ -822,6 +851,54 @@ impl Jobseeker {
         };
 
         row![sidebar, details].into()
+    }
+
+    fn view_drafts(&self) -> Element<'_, Message> {
+        let mut list_content = column![
+            text("Mina ansökningsutkast").size(30).color(Color::WHITE),
+            space::vertical(),
+        ].spacing(10);
+
+        if self.drafts_list.is_empty() {
+            list_content = list_content.push(text("Inga utkast sparade ännu.").color(Color::from_rgb(0.5, 0.5, 0.5)));
+        } else {
+            for (id, headline, updated_at) in &self.drafts_list {
+                let date_part = updated_at.split('T').next().unwrap_or(updated_at);
+                
+                list_content = list_content.push(
+                    button(
+                        row![
+                            column![
+                                text(headline).size(18).color(Color::WHITE),
+                                text(format!("Senast sparad: {}", date_part)).size(14).color(Color::from_rgb(0.5, 0.5, 0.5)),
+                            ].spacing(5).width(Length::Fill),
+                            text("Öppna →").size(14).color(Color::from_rgb(0.3, 0.6, 0.8)),
+                        ].align_y(Alignment::Center).padding(10)
+                    )
+                    .on_press(Message::OpenEditor(id.clone(), headline.clone()))
+                    .width(Length::Fill)
+                    .style(|_theme, status| {
+                        if status == button::Status::Hovered {
+                            button::Style {
+                                background: Some(Color::from_rgb(0.15, 0.15, 0.2).into()),
+                                ..Default::default()
+                            }
+                        } else {
+                            button::Style {
+                                background: Some(Color::from_rgb(0.1, 0.1, 0.12).into()),
+                                ..Default::default()
+                            }
+                        }
+                    })
+                );
+            }
+        }
+
+        container(scrollable(list_content))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(40)
+            .into()
     }
 
     fn ad_row<'a>(&self, i: usize, ad: &'a JobAd) -> Element<'a, Message> {
