@@ -128,6 +128,7 @@ enum Message {
     OpenBrowser(usize),
     SendEmail(usize),
     CopyAd(usize),
+    CopyText(String),
     NextAd,
     PrevAd,
 }
@@ -382,6 +383,9 @@ impl Jobseeker {
                 }
                 Task::none()
             }
+            Message::CopyText(val) => {
+                return iced::clipboard::write(val);
+            }
             Message::NextAd => {
                 if let Some(current) = self.selected_ad {
                     if current + 1 < self.ads.len() {
@@ -539,10 +543,35 @@ impl Jobseeker {
                     space::vertical().into()
                 };
 
+                let report_buttons: Element<Message> = if ad.status == Some(AdStatus::Applied) {
+                    let job_type = ad.occupation.as_ref().and_then(|o| o.label.clone()).unwrap_or_else(|| ad.headline.clone());
+                    let company = ad.employer.as_ref().and_then(|e| e.name.clone()).unwrap_or_default();
+                    let date = ad.applied_at.map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string()).unwrap_or_default();
+                    let hours = ad.working_hours_type.as_ref().and_then(|w| w.label.clone()).unwrap_or_else(|| "Heltid".into());
+                    let muni = ad.workplace_address.as_ref().and_then(|w| w.municipality.clone()).unwrap_or_default();
+
+                    container(
+                        row![
+                            text("Rapport urklipp:").size(14).color(Color::from_rgb(0.7, 0.7, 0.7)),
+                            button(text("Typ")).on_press(Message::CopyText(job_type)),
+                            button(text("Företag")).on_press(Message::CopyText(company)),
+                            button(text("Datum")).on_press(Message::CopyText(date)),
+                            button(text("Omf.")).on_press(Message::CopyText(hours)),
+                            button(text("Kommun")).on_press(Message::CopyText(muni)),
+                        ].spacing(10).align_y(Alignment::Center)
+                    ).padding(10).style(|_theme: &Theme| container::Style {
+                        background: Some(Color::from_rgb(0.1, 0.15, 0.2).into()),
+                        ..Default::default()
+                    }).into()
+                } else {
+                    space::vertical().into()
+                };
+
                 container(
                     scrollable(
                         column![
                             action_toolbar,
+                            report_buttons,
                             text(&ad.headline).size(30).width(Length::Fill).color(Color::WHITE),
                             row![
                                 text(ad.employer.as_ref().and_then(|e| e.name.clone()).unwrap_or_else(|| "Okänd arbetsgivare".into())).size(20),

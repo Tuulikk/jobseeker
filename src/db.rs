@@ -1,5 +1,5 @@
 use sqlx::{sqlite::SqlitePool, Row};
-use crate::models::{JobAd, Description, Employer, ApplicationDetails, Occupation, WorkplaceAddress, AdStatus};
+use crate::models::{JobAd, Description, Employer, ApplicationDetails, Occupation, WorkplaceAddress, AdStatus, WorkingHours};
 use anyhow::Result;
 use chrono::{DateTime, Utc, Datelike};
 use std::str::FromStr;
@@ -26,12 +26,13 @@ impl Db {
                 employer_workplace TEXT,
                 application_url TEXT,
                 webpage_url TEXT,
-                publication_date TEXT NOT NULL,
+                publication_date TEXT,
                 last_application_date TEXT,
                 occupation_label TEXT,
                 city TEXT,
                 municipality TEXT,
-                is_read BOOLEAN NOT NULL DEFAULT 0,
+                working_hours_label TEXT,
+                is_read BOOLEAN DEFAULT 0,
                 rating INTEGER,
                 bookmarked_at TEXT,
                 internal_created_at TEXT NOT NULL,
@@ -220,6 +221,9 @@ impl Db {
             workplace_address: Some(WorkplaceAddress { 
                 city: row.try_get("city").ok(),
                 municipality: row.try_get("municipality").ok(),
+            }),
+            working_hours_type: Some(WorkingHours {
+                label: row.try_get("working_hours_label").ok(),
             }),
             is_read: row.try_get("is_read").unwrap_or(false),
             rating: row.try_get::<Option<i32>, _>("rating").ok().flatten().map(|r| r as u8),

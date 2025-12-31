@@ -22,6 +22,7 @@ pub struct JobAd {
     pub last_application_date: Option<String>,
     pub occupation: Option<Occupation>,
     pub workplace_address: Option<WorkplaceAddress>,
+    pub working_hours_type: Option<WorkingHours>,
     
     #[serde(default)]
     pub is_read: bool,
@@ -37,6 +38,11 @@ pub struct JobAd {
     pub status: Option<AdStatus>,
     #[serde(default)]
     pub applied_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WorkingHours {
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
