@@ -168,6 +168,9 @@ enum Message {
     LoadDrafts,
     DraftsResult(Result<Vec<(String, String, String)>, String>), // id, headline, updated_at
     DraftLoaded(String, String), // job_id, content
+    ImportFile(usize),
+    ExportPDF(usize),
+    ExportWord(usize),
     ToggleEditMode(usize),
     EditorContentChanged(usize, text_editor::Action),
     SetFilter(InboxFilter),
@@ -305,6 +308,74 @@ impl Jobseeker {
                     }
                 }
                 Task::none()
+            }
+            Message::ImportFile(index) => {
+                if let Some(Tab::ApplicationEditor { job_id, .. }) = self.tabs.get(index) {
+                    let id_clone = job_id.clone();
+                    Task::perform(async move {
+                        if let Some(path) = rfd::AsyncFileDialog::new()
+                            .add_filter("Text", &["txt", "md"])
+                            .pick_file()
+                            .await 
+                        {
+                            tokio::fs::read_to_string(path.path()).await.ok()
+                        } else {
+                            None
+                        }
+                    }, move |res| Message::DraftLoaded(id_clone, res.unwrap_or_default()))
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ExportPDF(index) => {
+                if let Some(Tab::ApplicationEditor { job_headline, content, .. }) = self.tabs.get(index) {
+                    let text = content.text();
+                    let headline = job_headline.clone();
+                    Task::perform(async move {
+                        if let Some(path) = rfd::AsyncFileDialog::new()
+                            .set_file_name(&format!("Ansokan_{}.pdf", headline))
+                            .save_file()
+                            .await 
+                        {
+                            // Enkel PDF-generering
+                            let font_family = genpdf::fonts::from_files("/usr/share/fonts/truetype/liberation", "LiberationSans", None)
+                                .expect("Failed to load font");
+                            let mut doc = genpdf::Document::new(font_family);
+                            doc.set_title(format!("Ansökan: {}", headline));
+                            let mut decorator = genpdf::SimplePageDecorator::new();
+                            decorator.set_margins(10);
+                            doc.set_page_decorator(decorator);
+                            for line in text.lines() {
+                                doc.push(genpdf::elements::Paragraph::new(line));
+                            }
+                            let _ = doc.render_to_file(path.path());
+                        }
+                    }, |_| Message::SaveSettings)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::ExportWord(index) => {
+                if let Some(Tab::ApplicationEditor { job_headline, content, .. }) = self.tabs.get(index) {
+                    let text = content.text();
+                    let headline = job_headline.clone();
+                    Task::perform(async move {
+                        if let Some(path) = rfd::AsyncFileDialog::new()
+                            .set_file_name(&format!("Ansokan_{}.docx", headline))
+                            .save_file()
+                            .await 
+                        {
+                            use docx_rs::*;
+                            let mut doc = Docx::new();
+                            for line in text.lines() {
+                                doc = doc.add_paragraph(Paragraph::new().add_run(Run::new().add_text(line)));
+                            }
+                            let _ = std::fs::File::create(path.path()).map(|file| doc.build().pack(file));
+                        }
+                    }, |_| Message::SaveSettings)
+                } else {
+                    Task::none()
+                }
             }
             Message::ToggleEditMode(index) => {
                 if let Some(Tab::ApplicationEditor { is_editing, .. }) = self.tabs.get_mut(index) {
@@ -643,15 +714,20 @@ impl Jobseeker {
                 row![
                     button(if *is_editing { "Klar (Läs-läge)" } else { "Redigera" })
                         .on_press(Message::ToggleEditMode(self.active_tab)),
+                    button("Öppna fil").on_press(Message::ImportFile(self.active_tab)),
                     space::horizontal(),
-                    button("Exportera PDF").style(|_theme: &Theme, _status| button::Style {
-                        background: Some(Color::from_rgb(0.1, 0.3, 0.1).into()),
-                        ..Default::default()
-                    }),
-                    button("Exportera Word").style(|_theme: &Theme, _status| button::Style {
-                        background: Some(Color::from_rgb(0.1, 0.1, 0.3).into()),
-                        ..Default::default()
-                    }),
+                    button("Exportera PDF")
+                        .on_press(Message::ExportPDF(self.active_tab))
+                        .style(|_theme: &Theme, _status| button::Style {
+                            background: Some(Color::from_rgb(0.1, 0.3, 0.1).into()),
+                            ..Default::default()
+                        }),
+                    button("Exportera Word")
+                        .on_press(Message::ExportWord(self.active_tab))
+                        .style(|_theme: &Theme, _status| button::Style {
+                            background: Some(Color::from_rgb(0.1, 0.1, 0.3).into()),
+                            ..Default::default()
+                        }),
                 ].spacing(10).align_y(Alignment::Center).into()
             },
             Tab::Settings => {
