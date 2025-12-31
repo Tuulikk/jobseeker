@@ -46,12 +46,30 @@ fn get_title(_: &Jobseeker) -> String {
     "Jobseeker Gnag v0.2 - NY".to_string()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Page {
-    #[default]
+#[derive(Debug, Clone)]
+enum Tab {
     Inbox,
     Settings,
+    ApplicationEditor { 
+        job_id: String, 
+        job_headline: String,
+        content: text_editor::Content,
+        is_editing: bool,
+    },
 }
+
+impl PartialEq for Tab {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Tab::Inbox, Tab::Inbox) => true,
+            (Tab::Settings, Tab::Settings) => true,
+            (Tab::ApplicationEditor { job_id: id1, .. }, Tab::ApplicationEditor { job_id: id2, .. }) => id1 == id2,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Tab {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum InboxFilter {
@@ -63,7 +81,8 @@ enum InboxFilter {
 }
 
 struct Jobseeker {
-    page: Page,
+    active_tab: usize,
+    tabs: Vec<Tab>,
     ads: Vec<JobAd>,
     selected_ad: Option<usize>,
     settings: AppSettings,
@@ -95,7 +114,8 @@ impl Jobseeker {
         let profile_content = text_editor::Content::with_text(&settings.my_profile);
 
         Self {
-            page: Page::Inbox,
+            active_tab: 0,
+            tabs: vec![Tab::Inbox, Tab::Settings],
             ads: Vec::new(),
             selected_ad: None,
             settings,
@@ -141,7 +161,11 @@ impl Default for Jobseeker {
 enum Message {
     Init,
     InitDb(Arc<Result<Db, String>>),
-    GoToPage(Page),
+    SwitchTab(usize),
+    CloseTab(usize),
+    OpenEditor(String, String), // job_id, job_headline
+    ToggleEditMode(usize),
+    EditorContentChanged(usize, text_editor::Action),
     SetFilter(InboxFilter),
     ChangeMonth(i32),
     Search(u32),
@@ -190,8 +214,58 @@ impl Jobseeker {
                     }
                 }
             }
-            Message::GoToPage(page) => {
-                self.page = page;
+            Message::SwitchTab(index) => {
+                if index < self.tabs.len() {
+                    self.active_tab = index;
+                }
+                Task::none()
+            }
+            Message::CloseTab(index) => {
+                if index < self.tabs.len() && self.tabs.len() > 1 {
+                    // Stäng inte Inbox eller Settings om de är de sista
+                    if !matches!(self.tabs[index], Tab::Inbox | Tab::Settings) {
+                        self.tabs.remove(index);
+                        if self.active_tab >= self.tabs.len() {
+                            self.active_tab = self.tabs.len() - 1;
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::OpenEditor(id, headline) => {
+                // Kolla om den redan är öppen
+                let existing = self.tabs.iter().position(|t| {
+                    if let Tab::ApplicationEditor { job_id, .. } = t {
+                        job_id == &id
+                    } else {
+                        false
+                    }
+                });
+
+                if let Some(idx) = existing {
+                    self.active_tab = idx;
+                } else {
+                    let new_tab = Tab::ApplicationEditor {
+                        job_id: id,
+                        job_headline: headline,
+                        content: text_editor::Content::new(),
+                        is_editing: true,
+                    };
+                    self.tabs.push(new_tab);
+                    self.active_tab = self.tabs.len() - 1;
+                }
+                Task::none()
+            }
+            Message::ToggleEditMode(index) => {
+                if let Some(Tab::ApplicationEditor { is_editing, .. }) = self.tabs.get_mut(index) {
+                    *is_editing = !*is_editing;
+                }
+                Task::none()
+            }
+            Message::EditorContentChanged(index, action) => {
+                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                    content.perform(action);
+                }
                 Task::none()
             }
             Message::SetFilter(filter) => {
@@ -478,13 +552,6 @@ impl Jobseeker {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let nav_bar = row![
-            button(row![svg(svg::Handle::from_memory(SVG_INBOX)).width(20).height(20), text(" Inbox")].align_y(Alignment::Center)).on_press(Message::GoToPage(Page::Inbox)),
-            button(row![svg(svg::Handle::from_memory(SVG_SETTINGS)).width(20).height(20), text(" Inställningar")].align_y(Alignment::Center)).on_press(Message::GoToPage(Page::Settings)),
-            space::horizontal(),
-            text("Jobseeker Gnag").size(20).color(Color::from_rgb(0.4, 0.4, 0.4)),
-        ].spacing(10).padding(10).align_y(Alignment::Center);
-
         let search_controls = if self.is_searching {
             row![text("Söker...").color(Color::from_rgb(0.0, 0.5, 1.0))]
         } else {
@@ -509,14 +576,86 @@ impl Jobseeker {
                 ..Default::default()
             });
 
-        let content: Element<Message> = match self.page {
-            Page::Inbox => self.view_inbox(),
-            Page::Settings => self.view_settings(),
+        let mut tab_row = row![].spacing(5).padding(Padding { top: 5.0, right: 10.0, bottom: 0.0, left: 10.0 });
+        
+        for (i, tab) in self.tabs.iter().enumerate() {
+            let label = match tab {
+                Tab::Inbox => "Inbox".to_string(),
+                Tab::Settings => "Inställningar".to_string(),
+                Tab::ApplicationEditor { job_headline, .. } => {
+                    let mut short = job_headline.clone();
+                    if short.len() > 15 { short.truncate(12); short.push_str("..."); }
+                    short
+                }
+            };
+
+            let is_active = self.active_tab == i;
+            
+            let content = row![
+                text(label).size(14),
+            ].align_y(Alignment::Center);
+
+            let content = if !matches!(tab, Tab::Inbox | Tab::Settings) {
+                content.push(
+                    button(text(" x").size(12))
+                        .on_press(Message::CloseTab(i))
+                        .style(|_theme: &Theme, _status| button::Style {
+                            background: None,
+                            text_color: Color::from_rgb(0.8, 0.2, 0.2),
+                            ..Default::default()
+                        })
+                )
+            } else {
+                content
+            };
+
+            let mut tab_btn = button(content)
+                .on_press(Message::SwitchTab(i))
+                .padding([5, 10]);
+
+            if is_active {
+                tab_btn = tab_btn.style(|_theme: &Theme, _status| button::Style {
+                    background: Some(Color::from_rgb(0.2, 0.2, 0.25).into()),
+                    border: iced::Border {
+                        color: Color::from_rgb(0.3, 0.6, 0.8),
+                        width: 1.0,
+                        radius: iced::border::Radius {
+                            top_left: 5.0,
+                            top_right: 5.0,
+                            bottom_right: 0.0,
+                            bottom_left: 0.0,
+                        },
+                    },
+                    ..Default::default()
+                });
+            } else {
+                tab_btn = tab_btn.style(|_theme: &Theme, _status| button::Style {
+                    background: Some(Color::from_rgb(0.1, 0.1, 0.1).into()),
+                    ..Default::default()
+                });
+            }
+
+            tab_row = tab_row.push(tab_btn);
+        }
+
+        let tab_bar = container(tab_row)
+            .width(Length::Fill)
+            .style(|_theme: &Theme| container::Style {
+                background: Some(Color::from_rgb(0.05, 0.05, 0.05).into()),
+                ..Default::default()
+            });
+
+        let content: Element<Message> = match &self.tabs[self.active_tab] {
+            Tab::Inbox => self.view_inbox(),
+            Tab::Settings => self.view_settings(),
+            Tab::ApplicationEditor { job_id: _, job_headline, content, is_editing } => {
+                self.view_application_editor(self.active_tab, job_headline, content, *is_editing)
+            }
         };
 
         column![
-            nav_bar,
-            toolbar,
+            tab_bar,
+            toolbar, // Vi kan ha toolbar kvar eller integrera den i flikarna
             rule::horizontal(1),
             container(content).width(Length::Fill).height(Length::Fill)
         ].into()
@@ -628,7 +767,10 @@ impl Jobseeker {
                                 text(format!("Publicerad: {}", ad.publication_date.split('T').next().unwrap_or(&ad.publication_date))).color(Color::from_rgb(0.5, 0.5, 0.5)),
                             ].spacing(20),
                             timestamp_info,
-                            button("Betygsätt med AI").on_press(Message::RateAd(index)),
+                            row![
+                                button("Betygsätt med AI").on_press(Message::RateAd(index)),
+                                button("Skriv ansökan").on_press(Message::OpenEditor(ad.id.clone(), ad.headline.clone())),
+                            ].spacing(10),
                             text(ad.description.as_ref().and_then(|d| d.text.clone()).unwrap_or_else(|| "Ingen beskrivning tillgänglig".into()))
                         ].spacing(15).padding(Padding { top: 10.0, right: 30.0, bottom: 10.0, left: 10.0 })
                     )
@@ -817,5 +959,85 @@ impl Jobseeker {
                 ].spacing(30).padding(Padding { top: 20.0, right: 40.0, bottom: 20.0, left: 20.0 })
             )
         ).width(Length::Fill).height(Length::Fill).into()
+    }
+
+    fn view_application_editor<'a>(&'a self, tab_index: usize, _headline: &str, content: &'a text_editor::Content, is_editing: bool) -> Element<'a, Message> {
+        let toolbar = row![
+            button(if is_editing { "Klar (Läs-läge)" } else { "Redigera" })
+                .on_press(Message::ToggleEditMode(tab_index)),
+            space::horizontal(),
+            button("Exportera PDF").style(|_theme: &Theme, _status| button::Style {
+                background: Some(Color::from_rgb(0.1, 0.3, 0.1).into()),
+                ..Default::default()
+            }),
+            button("Exportera Word").style(|_theme: &Theme, _status| button::Style {
+                background: Some(Color::from_rgb(0.1, 0.1, 0.3).into()),
+                ..Default::default()
+            }),
+        ].spacing(10).padding(10);
+
+        let editor_side: Element<'a, Message> = if is_editing {
+            container(
+                text_editor(content)
+                    .on_action(move |action| Message::EditorContentChanged(tab_index, action))
+            ).padding(20).style(|_theme: &Theme| container::Style {
+                background: Some(Color::WHITE.into()),
+                ..Default::default()
+            }).into()
+        } else {
+            container(
+                scrollable(
+                    text(content.text())
+                        .color(Color::BLACK)
+                        .size(16)
+                )
+            ).padding(40).style(|_theme: &Theme| container::Style {
+                background: Some(Color::WHITE.into()),
+                border: iced::Border {
+                    color: Color::from_rgb(0.8, 0.8, 0.8),
+                    width: 1.0,
+                    radius: 2.0.into(),
+                },
+                ..Default::default()
+            }).into()
+        };
+
+        // Hitta annonsen för vänstra sidan
+        let job_id = if let Tab::ApplicationEditor { job_id, .. } = &self.tabs[tab_index] {
+            job_id
+        } else {
+            ""
+        };
+        
+        let ad_ref = self.ads.iter().find(|a| &a.id == job_id);
+
+        let ad_side = if let Some(ad) = ad_ref {
+            container(
+                scrollable(
+                    column![
+                        text(&ad.headline).size(24).color(Color::WHITE),
+                        text(ad.employer.as_ref().and_then(|e| e.name.clone()).unwrap_or_default()).size(18),
+                        rule::horizontal(1),
+                        text(ad.description.as_ref().and_then(|d| d.text.clone()).unwrap_or_default())
+                    ].spacing(15)
+                )
+            ).padding(20).width(Length::FillPortion(1))
+        } else {
+            container(text("Annonstext saknas")).padding(20).width(Length::FillPortion(1))
+        };
+
+        column![
+            toolbar,
+            row![
+                ad_side,
+                container(editor_side)
+                    .width(Length::FillPortion(1))
+                    .height(Length::Fill)
+                    .style(|_theme: &Theme| container::Style {
+                        background: Some(Color::from_rgb(0.95, 0.95, 0.95).into()),
+                        ..Default::default()
+                    })
+            ]
+        ].into()
     }
 }
