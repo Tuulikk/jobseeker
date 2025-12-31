@@ -1110,19 +1110,37 @@ impl Jobseeker {
         let editor_side: Element<'a, Message> = if is_editing {
             container(
                 text_editor(content)
+                    .placeholder("Skriv ditt personliga brev här...")
                     .on_action(move |action| Message::EditorContentChanged(tab_index, action))
             )
             .padding(Padding { top: 40.0, right: 60.0, bottom: 40.0, left: 60.0 })
-            .width(Length::Fixed(800.0)) // Ungefärlig A4-bredd i pixlar
+            .width(Length::Fixed(800.0))
             .height(Length::Fill)
             .style(|_theme: &Theme| container::Style {
                 background: Some(Color::WHITE.into()),
+                border: iced::Border {
+                    color: Color::from_rgb(0.7, 0.7, 0.7),
+                    width: 1.0,
+                    radius: 2.0.into(),
+                },
+                shadow: iced::Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.1),
+                    offset: iced::Vector::new(2.0, 2.0),
+                    blur_radius: 10.0,
+                },
                 ..Default::default()
             }).into()
         } else {
+            let body = content.text();
+            let display_text = if body.is_empty() { 
+                "Inget skrivet ännu. Tryck på Redigera för att börja.".to_string() 
+            } else { 
+                body 
+            };
+
             container(
                 scrollable(
-                    text(content.text())
+                    text(display_text)
                         .color(Color::BLACK)
                         .size(16)
                 )
