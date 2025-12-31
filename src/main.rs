@@ -521,6 +521,24 @@ impl Jobseeker {
                     button(svg(svg::Handle::from_memory(SVG_COPY)).width(20).height(20)).on_press(Message::CopyAd(index)),
                 ].spacing(10);
 
+                let timestamp_info: Element<Message> = if let Some(applied_at) = ad.applied_at {
+                    container(
+                        text(format!("SÖKT: {}", applied_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S")))
+                            .color(Color::from_rgb(0.0, 1.0, 0.0))
+                            .size(16)
+                    ).padding(5).style(|_theme: &Theme| container::Style {
+                        background: Some(Color::from_rgb(0.0, 0.2, 0.0).into()),
+                        ..Default::default()
+                    }).into()
+                } else if let Some(bookmarked_at) = ad.bookmarked_at {
+                    text(format!("Sparad: {}", bookmarked_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S")))
+                        .color(Color::from_rgb(0.3, 0.6, 0.8))
+                        .size(14)
+                        .into()
+                } else {
+                    space::vertical().into()
+                };
+
                 container(
                     scrollable(
                         column![
@@ -530,6 +548,7 @@ impl Jobseeker {
                                 text(ad.employer.as_ref().and_then(|e| e.name.clone()).unwrap_or_else(|| "Okänd arbetsgivare".into())).size(20),
                                 text(format!("Publicerad: {}", ad.publication_date.split('T').next().unwrap_or(&ad.publication_date))).color(Color::from_rgb(0.5, 0.5, 0.5)),
                             ].spacing(20),
+                            timestamp_info,
                             button("Betygsätt med AI").on_press(Message::RateAd(index)),
                             text(ad.description.as_ref().and_then(|d| d.text.clone()).unwrap_or_else(|| "Ingen beskrivning tillgänglig".into()))
                         ].spacing(15).padding(Padding { top: 10.0, right: 30.0, bottom: 10.0, left: 10.0 })
