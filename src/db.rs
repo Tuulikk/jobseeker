@@ -10,13 +10,9 @@ pub struct Db {
 }
 
 impl Db {
-    pub async fn new(filename: &str) -> Result<Self> {
-        let options = sqlx::sqlite::SqliteConnectOptions::from_str(&format!("sqlite:{}", filename))?
-            .create_if_missing(true)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+    pub async fn new(db_url: &str) -> Result<Self> {
+        let pool = SqlitePool::connect(db_url).await?;
 
-        let pool = SqlitePool::connect_with(options).await?;
-        
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS job_ads (
                 id TEXT PRIMARY KEY,
@@ -51,13 +47,13 @@ impl Db {
             )"
         ).execute(&pool).await?;
 
-        // Migrations
+        // Säkerställ att kolumner finns för äldre databaser
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN search_keyword TEXT").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN webpage_url TEXT").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN status INTEGER DEFAULT 0").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN applied_at TEXT").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN municipality TEXT").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN working_hours_label TEXT").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN webpage_url TEXT").execute(&pool).await;
 
         Ok(Self { pool })
     }
@@ -152,7 +148,7 @@ impl Db {
         Ok(())
     }
 
-    pub async fn get_filtered_jobs(&self, status_filter: &[AdStatus], year: i32, month: u32) -> Result<Vec<JobAd>> {
+    pub async fn get_filtered_jobs(&self, status_filter: &[AdStatus], year: Option<i32>, month: Option<u32>) -> Result<Vec<JobAd>> {
         let query_str = if status_filter.is_empty() {
             "SELECT * FROM job_ads WHERE status != 1 ORDER BY publication_date DESC".to_string()
         } else {
@@ -173,18 +169,24 @@ impl Db {
         
         for row in rows {
             let ad = self.map_row_to_ad(row)?;
-            let date_to_check = if ad.status == Some(AdStatus::Applied) {
-                ad.applied_at
-            } else if ad.status == Some(AdStatus::Bookmarked) || ad.status == Some(AdStatus::ThumbsUp) {
-                ad.bookmarked_at
-            } else {
-                Some(ad.internal_created_at)
-            };
+            
+            if let (Some(y), Some(m)) = (year, month) {
+                let date_to_check = if ad.status == Some(AdStatus::Applied) {
+                    ad.applied_at
+                } else if ad.status == Some(AdStatus::Bookmarked) || ad.status == Some(AdStatus::ThumbsUp) {
+                    ad.bookmarked_at
+                } else {
+                    Some(ad.internal_created_at)
+                };
 
-            if let Some(dt) = date_to_check {
-                if dt.year() == year && dt.month() == month {
-                    ads.push(ad);
+                if let Some(dt) = date_to_check {
+                    if dt.year() == y && dt.month() == m {
+                        ads.push(ad);
+                    }
                 }
+            } else {
+                // Inget tidsfilter, inkludera alla
+                ads.push(ad);
             }
         }
         Ok(ads)

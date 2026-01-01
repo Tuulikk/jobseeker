@@ -3,8 +3,8 @@ mod api;
 mod db;
 mod ai;
 
-use iced::{Element, Task, Theme, Length, Color, Alignment, Padding};
-use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule, svg, text_editor};
+use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule, svg, text_editor, stack};
+use iced::{Element, Task, Theme, Length, Color, Alignment, Padding, mouse};
 use crate::models::{JobAd, AppSettings, AdStatus};
 use crate::api::JobSearchClient;
 use crate::db::Db;
@@ -35,6 +35,7 @@ pub fn main() -> iced::Result {
     iced::application(|| (Jobseeker::new(), Task::done(Message::Init)), Jobseeker::update, Jobseeker::view)
         .title(get_title)
         .theme(Jobseeker::theme)
+        .subscription(Jobseeker::subscription)
         .window(iced::window::Settings {
             size: iced::Size::new(1200.0, 800.0),
             ..Default::default()
@@ -92,6 +93,7 @@ struct Jobseeker {
     current_year: i32,
     current_month: u32,
     drafts_list: Vec<(String, String, String)>, // id, headline, updated_at
+    show_editor_tools: bool,
     
     // Editor states for settings
     keywords_content: text_editor::Content,
@@ -126,6 +128,7 @@ impl Jobseeker {
             current_year: now.year(),
             current_month: now.month(),
             drafts_list: Vec::new(),
+            show_editor_tools: true,
             keywords_content,
             blacklist_content,
             profile_content,
@@ -172,6 +175,10 @@ enum Message {
     ExportPDF(usize),
     ExportWord(usize),
     ToggleEditMode(usize),
+    ToggleEditorTools,
+    EditorPasteProfile(usize),
+    EditorAiImprove(usize),
+    EventOccurred(iced::Event),
     EditorContentChanged(usize, text_editor::Action),
     SetFilter(InboxFilter),
     ChangeMonth(i32),
@@ -383,6 +390,43 @@ impl Jobseeker {
                 }
                 Task::none()
             }
+            Message::ToggleEditorTools => {
+                self.show_editor_tools = !self.show_editor_tools;
+                Task::none()
+            }
+            Message::EditorPasteProfile(index) => {
+                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                    let current_text = content.text();
+                    let profile = self.settings.my_profile.clone();
+                    let new_text = format!("{}\n\n{}", current_text, profile);
+                    *content = text_editor::Content::with_text(&new_text);
+                }
+                Task::none()
+            }
+            Message::EditorAiImprove(index) => {
+                if let Some(Tab::ApplicationEditor { job_id, content, .. }) = self.tabs.get(index) {
+                    let current_text = content.text();
+                    let ad_ref = self.ads.iter().find(|a| &a.id == job_id);
+                    let ad_desc = ad_ref.and_then(|a| a.description.as_ref()).and_then(|d| d.text.clone()).unwrap_or_default();
+                    let url = self.settings.ollama_url.clone();
+                    let job_id_clone = job_id.clone();
+
+                    Task::perform(async move {
+                        let ranker = AiRanker::new(&url, "not-needed").ok()?;
+                        let prompt = format!("Här är en jobbannons: {}\n\nHär är mitt nuvarande utkast på ansökan: {}\n\nFörbättra texten så den blir mer professionell och matchar annonsen bättre. Svara bara med den förbättrade texten.", ad_desc, current_text);
+                        // Vi återanvänder AiRanker för enkelhetens skull eller lägger till en metod för chat
+                        Some(prompt) // Placeholder för faktiskt AI-anrop
+                    }, move |_res| Message::SaveSettings) // Placeholder
+                } else {
+                    Task::none()
+                }
+            }
+            Message::EventOccurred(event) => {
+                if let iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Middle)) = event {
+                    self.show_editor_tools = !self.show_editor_tools;
+                }
+                Task::none()
+            }
             Message::EditorContentChanged(index, action) => {
                 if let Some(Tab::ApplicationEditor { job_id, content, .. }) = self.tabs.get_mut(index) {
                     content.perform(action);
@@ -478,7 +522,7 @@ impl Jobseeker {
                         for ad in &filtered_ads {
                             let _ = db.save_job_ad(ad).await;
                         }
-                        db.get_filtered_jobs(&[], Utc::now().year(), Utc::now().month()).await
+                        db.get_filtered_jobs(&[], None, None).await
                     } else {
                         Ok(filtered_ads)
                     }
@@ -596,7 +640,7 @@ impl Jobseeker {
                 Task::perform(async move {
                     if let Some(db) = &*db_clone {
                         let _ = db.clear_non_bookmarked().await;
-                        db.get_filtered_jobs(&[], Utc::now().year(), Utc::now().month()).await
+                        db.get_filtered_jobs(&[], Some(Utc::now().year()), Some(Utc::now().month())).await
                     } else {
                         Ok(vec![])
                     }
@@ -671,10 +715,10 @@ impl Jobseeker {
         Task::perform(async move {
             if let Some(db) = &*db_clone {
                 match filter {
-                    InboxFilter::All => db.get_filtered_jobs(&[], year, month).await,
-                    InboxFilter::Bookmarked => db.get_filtered_jobs(&[AdStatus::Bookmarked, AdStatus::ThumbsUp], year, month).await,
-                    InboxFilter::ThumbsUp => db.get_filtered_jobs(&[AdStatus::ThumbsUp], year, month).await,
-                    InboxFilter::Applied => db.get_filtered_jobs(&[AdStatus::Applied], year, month).await,
+                    InboxFilter::All => db.get_filtered_jobs(&[], Some(year), Some(month)).await,
+                    InboxFilter::Bookmarked => db.get_filtered_jobs(&[AdStatus::Bookmarked, AdStatus::ThumbsUp], Some(year), Some(month)).await,
+                    InboxFilter::ThumbsUp => db.get_filtered_jobs(&[AdStatus::ThumbsUp], Some(year), Some(month)).await,
+                    InboxFilter::Applied => db.get_filtered_jobs(&[AdStatus::Applied], Some(year), Some(month)).await,
                 }
             } else {
                 Ok(vec![])
@@ -1010,6 +1054,10 @@ impl Jobseeker {
             .into()
     }
 
+    fn subscription(&self) -> iced::Subscription<Message> {
+        iced::event::listen().map(Message::EventOccurred)
+    }
+
     fn ad_row<'a>(&self, i: usize, ad: &'a JobAd) -> Element<'a, Message> {
         let is_selected = self.selected_ad == Some(i);
         
@@ -1183,8 +1231,29 @@ impl Jobseeker {
     }
 
     fn view_application_editor<'a>(&'a self, tab_index: usize, _headline: &str, content: &'a text_editor::Content, is_editing: bool) -> Element<'a, Message> {
+        let toolbar = row![
+            button(if is_editing { "Klar (Läs-läge)" } else { "Redigera" })
+                .on_press(Message::ToggleEditMode(tab_index)),
+            button("Öppna fil").on_press(Message::ImportFile(self.active_tab)),
+            button(if self.show_editor_tools { "Dölj verktyg" } else { "Visa verktyg" })
+                .on_press(Message::ToggleEditorTools),
+            space::horizontal(),
+            button("Exportera PDF")
+                .on_press(Message::ExportPDF(self.active_tab))
+                .style(|_theme: &Theme, _status| button::Style {
+                    background: Some(Color::from_rgb(0.1, 0.3, 0.1).into()),
+                    ..Default::default()
+                }),
+            button("Exportera Word")
+                .on_press(Message::ExportWord(self.active_tab))
+                .style(|_theme: &Theme, _status| button::Style {
+                    background: Some(Color::from_rgb(0.1, 0.1, 0.3).into()),
+                    ..Default::default()
+                }),
+        ].spacing(10).padding(10);
+
         let editor_side: Element<'a, Message> = if is_editing {
-            container(
+            let edit_field = container(
                 text_editor(content)
                     .placeholder("Skriv ditt personliga brev här...")
                     .on_action(move |action| Message::EditorContentChanged(tab_index, action))
@@ -1205,7 +1274,41 @@ impl Jobseeker {
                     blur_radius: 10.0,
                 },
                 ..Default::default()
-            }).into()
+            });
+
+            if self.show_editor_tools {
+                let floating_tools = container(
+                    row![
+                        button("Klistra in profil").on_press(Message::EditorPasteProfile(tab_index)),
+                        button("AI Förbättra (Beta)").on_press(Message::EditorAiImprove(tab_index)),
+                        button("Rensa").on_press(Message::DraftLoaded(
+                            if let Tab::ApplicationEditor { job_id, .. } = &self.tabs[tab_index] { job_id.clone() } else { "".into() },
+                            "".to_string()
+                        )),
+                    ].spacing(10).padding(10)
+                )
+                .style(|_theme: &Theme| container::Style {
+                    background: Some(Color::from_rgba(0.1, 0.1, 0.15, 0.9).into()),
+                    border: iced::Border {
+                        color: Color::from_rgb(0.3, 0.6, 0.8),
+                        width: 1.0,
+                        radius: 10.0.into(),
+                    },
+                    ..Default::default()
+                });
+
+                stack![
+                    edit_field,
+                    container(floating_tools)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .padding(20)
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::End)
+                ].into()
+            } else {
+                edit_field.into()
+            }
         } else {
             let body = content.text();
             let display_text = if body.is_empty() { 
@@ -1235,7 +1338,6 @@ impl Jobseeker {
             }).into()
         };
 
-        // Hitta annonsen för vänstra sidan
         let job_id = if let Tab::ApplicationEditor { job_id, .. } = &self.tabs[tab_index] {
             job_id
         } else {
@@ -1259,16 +1361,19 @@ impl Jobseeker {
             container(text("Annonstext saknas")).padding(20).width(Length::FillPortion(1))
         };
 
-        row![
-            ad_side,
-            container(editor_side)
-                .width(Length::FillPortion(2))
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .style(|_theme: &Theme| container::Style {
-                    background: Some(Color::from_rgb(0.85, 0.85, 0.85).into()),
-                    ..Default::default()
-                })
+        column![
+            toolbar,
+            row![
+                ad_side,
+                container(editor_side)
+                    .width(Length::FillPortion(2))
+                    .height(Length::Fill)
+                    .center_x(Length::Fill)
+                    .style(|_theme: &Theme| container::Style {
+                        background: Some(Color::from_rgb(0.85, 0.85, 0.85).into()),
+                        ..Default::default()
+                    })
+            ]
         ].into()
     }
 }
