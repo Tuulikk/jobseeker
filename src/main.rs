@@ -3,7 +3,7 @@ mod api;
 mod db;
 mod ai;
 
-use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule, svg, text_editor, stack};
+use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule, svg, text_editor, stack, tooltip};
 use iced::{Element, Task, Theme, Length, Color, Alignment, Padding, mouse};
 use crate::models::{JobAd, AppSettings, AdStatus};
 use crate::api::JobSearchClient;
@@ -27,6 +27,13 @@ const SVG_SETTINGS: &[u8] = include_bytes!("../assets/icons/gear-fill.svg");
 const SVG_INBOX: &[u8] = include_bytes!("../assets/icons/inbox-fill.svg");
 const SVG_PREV: &[u8] = include_bytes!("../assets/icons/chevron-left.svg");
 const SVG_NEXT: &[u8] = include_bytes!("../assets/icons/chevron-right.svg");
+const SVG_BOLD: &[u8] = include_bytes!("../assets/icons/type-bold.svg");
+const SVG_ITALIC: &[u8] = include_bytes!("../assets/icons/type-italic.svg");
+const SVG_UNDERLINE: &[u8] = include_bytes!("../assets/icons/type-underline.svg");
+const SVG_ALIGN_LEFT: &[u8] = include_bytes!("../assets/icons/text-left.svg");
+const SVG_ALIGN_CENTER: &[u8] = include_bytes!("../assets/icons/text-center.svg");
+const SVG_ALIGN_RIGHT: &[u8] = include_bytes!("../assets/icons/text-right.svg");
+const SVG_ALIGN_JUSTIFY: &[u8] = include_bytes!("../assets/icons/justify.svg");
 
 pub fn main() -> iced::Result {
     tracing_subscriber::fmt::init();
@@ -758,6 +765,8 @@ impl Jobseeker {
                 row![
                     button(if *is_editing { "Klar (Läs-läge)" } else { "Redigera" })
                         .on_press(Message::ToggleEditMode(self.active_tab)),
+                    button(if self.show_editor_tools { "Dölj verktyg" } else { "Visa verktyg" })
+                        .on_press(Message::ToggleEditorTools),
                     button("Öppna fil").on_press(Message::ImportFile(self.active_tab)),
                     space::horizontal(),
                     button("Exportera PDF")
@@ -1231,27 +1240,6 @@ impl Jobseeker {
     }
 
     fn view_application_editor<'a>(&'a self, tab_index: usize, _headline: &str, content: &'a text_editor::Content, is_editing: bool) -> Element<'a, Message> {
-        let toolbar = row![
-            button(if is_editing { "Klar (Läs-läge)" } else { "Redigera" })
-                .on_press(Message::ToggleEditMode(tab_index)),
-            button("Öppna fil").on_press(Message::ImportFile(self.active_tab)),
-            button(if self.show_editor_tools { "Dölj verktyg" } else { "Visa verktyg" })
-                .on_press(Message::ToggleEditorTools),
-            space::horizontal(),
-            button("Exportera PDF")
-                .on_press(Message::ExportPDF(self.active_tab))
-                .style(|_theme: &Theme, _status| button::Style {
-                    background: Some(Color::from_rgb(0.1, 0.3, 0.1).into()),
-                    ..Default::default()
-                }),
-            button("Exportera Word")
-                .on_press(Message::ExportWord(self.active_tab))
-                .style(|_theme: &Theme, _status| button::Style {
-                    background: Some(Color::from_rgb(0.1, 0.1, 0.3).into()),
-                    ..Default::default()
-                }),
-        ].spacing(10).padding(10);
-
         let editor_side: Element<'a, Message> = if is_editing {
             let edit_field = container(
                 text_editor(content)
@@ -1277,22 +1265,167 @@ impl Jobseeker {
             });
 
             if self.show_editor_tools {
+                let job_id = if let Tab::ApplicationEditor { job_id, .. } = &self.tabs[tab_index] { job_id } else { "" };
+                let ad_ref = self.ads.iter().find(|a| &a.id == job_id);
+
                 let floating_tools = container(
-                    row![
-                        button("Klistra in profil").on_press(Message::EditorPasteProfile(tab_index)),
-                        button("AI Förbättra (Beta)").on_press(Message::EditorAiImprove(tab_index)),
-                        button("Rensa").on_press(Message::DraftLoaded(
-                            if let Tab::ApplicationEditor { job_id, .. } = &self.tabs[tab_index] { job_id.clone() } else { "".into() },
-                            "".to_string()
-                        )),
+                    column![
+                        row![
+                            text("Text:").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
+                            tooltip(
+                                button(svg(svg::Handle::from_memory(SVG_BOLD)).width(16).height(16))
+                                    .padding(5)
+                                    .style(|_theme: &Theme, status| {
+                                        if status == button::Status::Hovered {
+                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
+                                        } else {
+                                            button::Style { background: None, ..Default::default() }
+                                        }
+                                    }),
+                                "Fetstil (Ctrl+B)",
+                                tooltip::Position::Top
+                            ).style(|_theme: &Theme| container::Style {
+                                background: Some(Color::BLACK.into()),
+                                text_color: Some(Color::WHITE),
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                            tooltip(
+                                button(svg(svg::Handle::from_memory(SVG_ITALIC)).width(16).height(16))
+                                    .padding(5)
+                                    .style(|_theme: &Theme, status| {
+                                        if status == button::Status::Hovered {
+                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
+                                        } else {
+                                            button::Style { background: None, ..Default::default() }
+                                        }
+                                    }),
+                                "Kursiv (Ctrl+I)",
+                                tooltip::Position::Top
+                            ).style(|_theme: &Theme| container::Style {
+                                background: Some(Color::BLACK.into()),
+                                text_color: Some(Color::WHITE),
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                            tooltip(
+                                button(svg(svg::Handle::from_memory(SVG_UNDERLINE)).width(16).height(16))
+                                    .padding(5)
+                                    .style(|_theme: &Theme, status| {
+                                        if status == button::Status::Hovered {
+                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
+                                        } else {
+                                            button::Style { background: None, ..Default::default() }
+                                        }
+                                    }),
+                                "Understruken (Ctrl+U)",
+                                tooltip::Position::Top
+                            ).style(|_theme: &Theme| container::Style {
+                                background: Some(Color::BLACK.into()),
+                                text_color: Some(Color::WHITE),
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                            space::horizontal(),
+                            button(text("Klistra in profil").size(12))
+                                .on_press(Message::EditorPasteProfile(tab_index))
+                                .style(|_theme: &Theme, _status| button::Style {
+                                    background: Some(Color::from_rgb(0.2, 0.3, 0.5).into()),
+                                    ..Default::default()
+                                }),
+                        ].spacing(8).align_y(Alignment::Center),
+                        rule::horizontal(1),
+                        row![
+                            text("Justera:").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
+                            tooltip(
+                                button(svg(svg::Handle::from_memory(SVG_ALIGN_LEFT)).width(16).height(16))
+                                    .padding(5)
+                                    .style(|_theme: &Theme, status| {
+                                        if status == button::Status::Hovered {
+                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
+                                        } else {
+                                            button::Style { background: None, ..Default::default() }
+                                        }
+                                    }),
+                                "Vänsterställd",
+                                tooltip::Position::Top
+                            ).style(|_theme: &Theme| container::Style {
+                                background: Some(Color::BLACK.into()),
+                                text_color: Some(Color::WHITE),
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                            tooltip(
+                                button(svg(svg::Handle::from_memory(SVG_ALIGN_CENTER)).width(16).height(16))
+                                    .padding(5)
+                                    .style(|_theme: &Theme, status| {
+                                        if status == button::Status::Hovered {
+                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
+                                        } else {
+                                            button::Style { background: None, ..Default::default() }
+                                        }
+                                    }),
+                                "Centrerad",
+                                tooltip::Position::Top
+                            ).style(|_theme: &Theme| container::Style {
+                                background: Some(Color::BLACK.into()),
+                                text_color: Some(Color::WHITE),
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                            tooltip(
+                                button(svg(svg::Handle::from_memory(SVG_ALIGN_RIGHT)).width(16).height(16))
+                                    .padding(5)
+                                    .style(|_theme: &Theme, status| {
+                                        if status == button::Status::Hovered {
+                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
+                                        } else {
+                                            button::Style { background: None, ..Default::default() }
+                                        }
+                                    }),
+                                "Högerställd",
+                                tooltip::Position::Top
+                            ).style(|_theme: &Theme| container::Style {
+                                background: Some(Color::BLACK.into()),
+                                text_color: Some(Color::WHITE),
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                            tooltip(
+                                button(svg(svg::Handle::from_memory(SVG_ALIGN_JUSTIFY)).width(16).height(16))
+                                    .padding(5)
+                                    .style(|_theme: &Theme, status| {
+                                        if status == button::Status::Hovered {
+                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
+                                        } else {
+                                            button::Style { background: None, ..Default::default() }
+                                        }
+                                    }),
+                                "Marginaljusterad",
+                                tooltip::Position::Top
+                            ).style(|_theme: &Theme| container::Style {
+                                background: Some(Color::BLACK.into()),
+                                text_color: Some(Color::WHITE),
+                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
+                                ..Default::default()
+                            }),
+                            space::horizontal(),
+                            button(text("Infoga [Företag]").size(12))
+                                .on_press(Message::CopyText(ad_ref.and_then(|a| a.employer.as_ref()).and_then(|e| e.name.clone()).unwrap_or_default())),
+                        ].spacing(8).align_y(Alignment::Center),
                     ].spacing(10).padding(10)
                 )
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(Color::from_rgba(0.1, 0.1, 0.15, 0.9).into()),
+                    background: Some(Color::from_rgba(0.1, 0.1, 0.15, 0.95).into()),
                     border: iced::Border {
                         color: Color::from_rgb(0.3, 0.6, 0.8),
                         width: 1.0,
-                        radius: 10.0.into(),
+                        radius: 8.0.into(),
+                    },
+                    shadow: iced::Shadow {
+                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
+                        offset: iced::Vector::new(0.0, 4.0),
+                        blur_radius: 15.0,
                     },
                     ..Default::default()
                 });
@@ -1302,7 +1435,7 @@ impl Jobseeker {
                     container(floating_tools)
                         .width(Length::Fill)
                         .height(Length::Fill)
-                        .padding(20)
+                        .padding(30)
                         .align_x(Alignment::Center)
                         .align_y(Alignment::End)
                 ].into()
@@ -1358,22 +1491,19 @@ impl Jobseeker {
                 )
             ).padding(20).width(Length::FillPortion(1))
         } else {
-            container(text("Annonstext saknas")).padding(20).width(Length::FillPortion(1))
+            container(text("Annonstext finns tillgänglig i Inbox-fliken.")).padding(20).width(Length::FillPortion(1))
         };
 
-        column![
-            toolbar,
-            row![
-                ad_side,
-                container(editor_side)
-                    .width(Length::FillPortion(2))
-                    .height(Length::Fill)
-                    .center_x(Length::Fill)
-                    .style(|_theme: &Theme| container::Style {
-                        background: Some(Color::from_rgb(0.85, 0.85, 0.85).into()),
-                        ..Default::default()
-                    })
-            ]
+        row![
+            ad_side,
+            container(editor_side)
+                .width(Length::FillPortion(2))
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .style(|_theme: &Theme| container::Style {
+                    background: Some(Color::from_rgb(0.85, 0.85, 0.85).into()),
+                    ..Default::default()
+                })
         ].into()
     }
 }
