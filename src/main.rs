@@ -1,17 +1,23 @@
-mod models;
+mod ai;
 mod api;
 mod db;
-mod ai;
+mod models;
+mod rich_editor;
 
-use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule, svg, text_editor, stack, tooltip};
-use iced::{Element, Task, Theme, Length, Color, Alignment, Padding, mouse};
-use crate::models::{JobAd, AppSettings, AdStatus};
+use crate::rich_editor::{RichEditor, RichEditorMessage};
+
+use crate::ai::AiRanker;
 use crate::api::JobSearchClient;
 use crate::db::Db;
-use crate::ai::AiRanker;
+use crate::models::{AdStatus, AppSettings, JobAd};
+use chrono::{Datelike, Utc};
+use iced::widget::{
+    button, column, container, row, rule, scrollable, space, stack, svg, text, text_editor,
+    text_input, tooltip,
+};
+use iced::{Alignment, Color, Element, Length, Padding, Task, Theme};
 use std::sync::Arc;
-use chrono::{Utc, Datelike};
-use tracing::{info, error};
+use tracing::{error, info};
 
 // SVG Icon bytes embedded in the binary
 const SVG_UNREAD: &[u8] = include_bytes!("../assets/icons/circle-fill.svg");
@@ -39,15 +45,19 @@ pub fn main() -> iced::Result {
     tracing_subscriber::fmt::init();
     info!("Starting Jobseeker Gnag v0.2...");
 
-    iced::application(|| (Jobseeker::new(), Task::done(Message::Init)), Jobseeker::update, Jobseeker::view)
-        .title(get_title)
-        .theme(Jobseeker::theme)
-        .subscription(Jobseeker::subscription)
-        .window(iced::window::Settings {
-            size: iced::Size::new(1200.0, 800.0),
-            ..Default::default()
-        })
-        .run()
+    iced::application(
+        || (Jobseeker::new(), Task::done(Message::Init)),
+        Jobseeker::update,
+        Jobseeker::view,
+    )
+    .title(get_title)
+    .theme(Jobseeker::theme)
+    .subscription(Jobseeker::subscription)
+    .window(iced::window::Settings {
+        size: iced::Size::new(1200.0, 800.0),
+        ..Default::default()
+    })
+    .run()
 }
 
 fn get_title(_: &Jobseeker) -> String {
@@ -59,18 +69,22 @@ enum Tab {
     Inbox,
     Drafts,
     Settings,
-    ApplicationEditor { 
-        job_id: String, 
+    ApplicationEditor {
+        job_id: String,
         job_headline: String,
-        content: text_editor::Content,
+        content: RichEditor,
         is_editing: bool,
     },
-}impl PartialEq for Tab {
+}
+impl PartialEq for Tab {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Tab::Inbox, Tab::Inbox) => true,
             (Tab::Settings, Tab::Settings) => true,
-            (Tab::ApplicationEditor { job_id: id1, .. }, Tab::ApplicationEditor { job_id: id2, .. }) => id1 == id2,
+            (
+                Tab::ApplicationEditor { job_id: id1, .. },
+                Tab::ApplicationEditor { job_id: id2, .. },
+            ) => id1 == id2,
             _ => false,
         }
     }
@@ -101,7 +115,8 @@ struct Jobseeker {
     current_month: u32,
     drafts_list: Vec<(String, String, String)>, // id, headline, updated_at
     show_editor_tools: bool,
-    
+    show_markdown_preview: bool,
+
     // Editor states for settings
     keywords_content: text_editor::Content,
     blacklist_content: text_editor::Content,
@@ -112,7 +127,7 @@ impl Jobseeker {
     fn new() -> Self {
         let now = Utc::now();
         let mut settings = AppSettings::load();
-        
+
         // Beautify existing locations (convert codes to names)
         settings.locations_p1 = Self::beautify_locations(&settings.locations_p1);
         settings.locations_p2 = Self::beautify_locations(&settings.locations_p2);
@@ -136,6 +151,7 @@ impl Jobseeker {
             current_month: now.month(),
             drafts_list: Vec::new(),
             show_editor_tools: true,
+            show_markdown_preview: false,
             keywords_content,
             blacklist_content,
             profile_content,
@@ -175,18 +191,30 @@ enum Message {
     SwitchTab(usize),
     CloseTab(usize),
     OpenEditor(String, String), // job_id, job_headline
+    NewApplication,
     LoadDrafts,
     DraftsResult(Result<Vec<(String, String, String)>, String>), // id, headline, updated_at
-    DraftLoaded(String, String), // job_id, content
+    DraftLoaded(String, String),                                 // job_id, content
     ImportFile(usize),
     ExportPDF(usize),
     ExportWord(usize),
     ToggleEditMode(usize),
     ToggleEditorTools,
+    ToggleMarkdownPreview(usize),
     EditorPasteProfile(usize),
     EditorAiImprove(usize),
     EventOccurred(iced::Event),
-    EditorContentChanged(usize, text_editor::Action),
+    EditorContentChanged(usize),
+    // Markdown formatting
+    EditorBold(usize),
+    EditorItalic(usize),
+    EditorHeading1(usize),
+    EditorHeading2(usize),
+    EditorHeading3(usize),
+    EditorBulletList(usize),
+    EditorNumberedList(usize),
+    EditorInsertCompany(usize),
+    EditorInsertLink(usize),
     SetFilter(InboxFilter),
     ChangeMonth(i32),
     Search(u32),
@@ -217,24 +245,22 @@ impl Jobseeker {
         match message {
             Message::Init => {
                 info!("Initializing DB...");
-                Task::perform(async {
-                    Db::new("jobseeker.db").await
-                }, |res| Message::InitDb(Arc::new(res.map_err(|e| e.to_string()))))
+                Task::perform(async { Db::new("jobseeker.db").await }, |res| {
+                    Message::InitDb(Arc::new(res.map_err(|e| e.to_string())))
+                })
             }
-            Message::InitDb(res) => {
-                match &*res {
-                    Ok(db) => {
-                        info!("DB initialized successfully.");
-                        self.db = Arc::new(Some(db.clone()));
-                        return self.refresh_list();
-                    }
-                    Err(err_str) => {
-                        error!("DB Init Failed: {}", err_str);
-                        self.error_msg = Some(format!("Database Error: {}", err_str));
-                        Task::none()
-                    }
+            Message::InitDb(res) => match &*res {
+                Ok(db) => {
+                    info!("DB initialized successfully.");
+                    self.db = Arc::new(Some(db.clone()));
+                    return self.refresh_list();
                 }
-            }
+                Err(err_str) => {
+                    error!("DB Init Failed: {}", err_str);
+                    self.error_msg = Some(format!("Database Error: {}", err_str));
+                    Task::none()
+                }
+            },
             Message::SwitchTab(index) => {
                 if index < self.tabs.len() {
                     self.active_tab = index;
@@ -247,13 +273,16 @@ impl Jobseeker {
             }
             Message::LoadDrafts => {
                 let db_clone = Arc::clone(&self.db);
-                Task::perform(async move {
-                    if let Some(db) = &*db_clone {
-                        db.get_all_drafts().await
-                    } else {
-                        Ok(vec![])
-                    }
-                }, |res| Message::DraftsResult(res.map_err(|e| e.to_string())))
+                Task::perform(
+                    async move {
+                        if let Some(db) = &*db_clone {
+                            db.get_all_drafts().await
+                        } else {
+                            Ok(vec![])
+                        }
+                    },
+                    |res| Message::DraftsResult(res.map_err(|e| e.to_string())),
+                )
             }
             Message::DraftsResult(Ok(drafts)) => {
                 self.drafts_list = drafts;
@@ -291,12 +320,12 @@ impl Jobseeker {
                 } else {
                     let db_clone = Arc::clone(&self.db);
                     let id_clone = id.clone();
-                    
+
                     // Skapa fliken direkt med tomt innehåll först
                     let new_tab = Tab::ApplicationEditor {
                         job_id: id.clone(),
                         job_headline: headline,
-                        content: text_editor::Content::new(),
+                        content: RichEditor::with_text(""),
                         is_editing: true,
                     };
                     self.tabs.push(new_tab);
@@ -304,89 +333,171 @@ impl Jobseeker {
 
                     // Ladda utkast från DB asynkront
                     let id_for_task = id_clone.clone();
-                    Task::perform(async move {
-                        if let Some(db) = &*db_clone {
-                            db.get_application_draft(&id_for_task).await.unwrap_or(None)
-                        } else {
-                            None
-                        }
-                    }, move |content| Message::DraftLoaded(id_clone, content.unwrap_or_default()))
+                    Task::perform(
+                        async move {
+                            if let Some(db) = &*db_clone {
+                                db.get_application_draft(&id_for_task).await.unwrap_or(None)
+                            } else {
+                                None
+                            }
+                        },
+                        move |content| Message::DraftLoaded(id_clone, content.unwrap_or_default()),
+                    )
                 }
             }
             Message::DraftLoaded(id, content_str) => {
                 for tab in self.tabs.iter_mut() {
-                    if let Tab::ApplicationEditor { job_id, content, .. } = tab {
+                    if let Tab::ApplicationEditor {
+                        job_id, content, ..
+                    } = tab
+                    {
                         if job_id == &id {
-                            *content = text_editor::Content::with_text(&content_str);
+                            content.set_text(&content_str);
                         }
                     }
                 }
                 Task::none()
             }
+            Message::NewApplication => {
+                // Skapa nytt utkast, öppna editor och spara i DB
+                let id = format!("draft-{}", Utc::now().format("%Y%m%d%H%M%S"));
+                let headline = format!("Nytt utkast {}", Utc::now().format("%Y-%m-%d"));
+                let initial_content = crate::rich_editor::markdown::create_template(
+                    "",
+                    "",
+                    &self.settings.my_profile,
+                );
+
+                let ad = JobAd {
+                    id: id.clone(),
+                    headline: headline.clone(),
+                    description: None,
+                    employer: None,
+                    application_details: None,
+                    webpage_url: None,
+                    publication_date: Utc::now().to_rfc3339(),
+                    last_application_date: None,
+                    occupation: None,
+                    workplace_address: None,
+                    working_hours_type: None,
+                    is_read: false,
+                    rating: None,
+                    bookmarked_at: None,
+                    internal_created_at: Utc::now(),
+                    search_keyword: None,
+                    status: None,
+                    applied_at: None,
+                };
+
+                // Lägg till flik i UI direkt
+                let new_tab = Tab::ApplicationEditor {
+                    job_id: id.clone(),
+                    job_headline: headline,
+                    content: RichEditor::with_text(&initial_content),
+                    is_editing: true,
+                };
+                self.tabs.push(new_tab);
+                self.active_tab = self.tabs.len() - 1;
+
+                // Spara i DB asynkront och uppdatera utkast-listan när färdigt
+                let db_clone = Arc::clone(&self.db);
+                let id_clone = id.clone();
+                let initial_clone = initial_content.clone();
+                let ad_clone = ad.clone();
+                return Task::perform(
+                    async move {
+                        if let Some(db) = &*db_clone {
+                            let _ = db.save_job_ad(&ad_clone).await;
+                            let _ = db.save_application_draft(&id_clone, &initial_clone).await;
+                        }
+                    },
+                    |_| Message::LoadDrafts,
+                );
+            }
             Message::ImportFile(index) => {
                 if let Some(Tab::ApplicationEditor { job_id, .. }) = self.tabs.get(index) {
                     let id_clone = job_id.clone();
-                    Task::perform(async move {
-                        if let Some(path) = rfd::AsyncFileDialog::new()
-                            .add_filter("Text", &["txt", "md"])
-                            .pick_file()
-                            .await 
-                        {
-                            tokio::fs::read_to_string(path.path()).await.ok()
-                        } else {
-                            None
-                        }
-                    }, move |res| Message::DraftLoaded(id_clone, res.unwrap_or_default()))
+                    Task::perform(
+                        async move {
+                            if let Some(path) = rfd::AsyncFileDialog::new()
+                                .add_filter("Text", &["txt", "md"])
+                                .pick_file()
+                                .await
+                            {
+                                tokio::fs::read_to_string(path.path()).await.ok()
+                            } else {
+                                None
+                            }
+                        },
+                        move |res| Message::DraftLoaded(id_clone, res.unwrap_or_default()),
+                    )
                 } else {
                     Task::none()
                 }
             }
             Message::ExportPDF(index) => {
-                if let Some(Tab::ApplicationEditor { job_headline, content, .. }) = self.tabs.get(index) {
-                    let text = content.text();
+                if let Some(Tab::ApplicationEditor {
+                    job_headline,
+                    content,
+                    ..
+                }) = self.tabs.get(index)
+                {
+                    let markdown_text = content.text();
                     let headline = job_headline.clone();
-                    Task::perform(async move {
-                        if let Some(path) = rfd::AsyncFileDialog::new()
-                            .set_file_name(&format!("Ansokan_{}.pdf", headline))
-                            .save_file()
-                            .await 
-                        {
-                            // Enkel PDF-generering
-                            let font_family = genpdf::fonts::from_files("/usr/share/fonts/truetype/liberation", "LiberationSans", None)
-                                .expect("Failed to load font");
-                            let mut doc = genpdf::Document::new(font_family);
-                            doc.set_title(format!("Ansökan: {}", headline));
-                            let mut decorator = genpdf::SimplePageDecorator::new();
-                            decorator.set_margins(10);
-                            doc.set_page_decorator(decorator);
-                            for line in text.lines() {
-                                doc.push(genpdf::elements::Paragraph::new(line));
+                    Task::perform(
+                        async move {
+                            if let Some(path) = rfd::AsyncFileDialog::new()
+                                .set_file_name(&format!("Ansokan_{}.html", headline))
+                                .save_file()
+                                .await
+                            {
+                                // Konvertera Markdown till HTML
+                                let html = crate::rich_editor::markdown::to_html(&markdown_text);
+                                let _ = tokio::fs::write(path.path(), html).await;
+
+                                // Info till användaren
+                                println!("✓ HTML-fil skapad: {:?}", path.path());
+                                println!(
+                                    "  Öppna filen i webbläsare och tryck Ctrl+P för att spara som PDF"
+                                );
                             }
-                            let _ = doc.render_to_file(path.path());
-                        }
-                    }, |_| Message::SaveSettings)
+                        },
+                        |_| Message::SaveSettings,
+                    )
                 } else {
                     Task::none()
                 }
             }
             Message::ExportWord(index) => {
-                if let Some(Tab::ApplicationEditor { job_headline, content, .. }) = self.tabs.get(index) {
-                    let text = content.text();
+                if let Some(Tab::ApplicationEditor {
+                    job_headline,
+                    content,
+                    ..
+                }) = self.tabs.get(index)
+                {
+                    let markdown_text = content.text();
                     let headline = job_headline.clone();
-                    Task::perform(async move {
-                        if let Some(path) = rfd::AsyncFileDialog::new()
-                            .set_file_name(&format!("Ansokan_{}.docx", headline))
-                            .save_file()
-                            .await 
-                        {
-                            use docx_rs::*;
-                            let mut doc = Docx::new();
-                            for line in text.lines() {
-                                doc = doc.add_paragraph(Paragraph::new().add_run(Run::new().add_text(line)));
+                    Task::perform(
+                        async move {
+                            if let Some(path) = rfd::AsyncFileDialog::new()
+                                .set_file_name(&format!("Ansokan_{}.docx", headline))
+                                .save_file()
+                                .await
+                            {
+                                // Använd Markdown-till-DOCX konvertering
+                                match crate::rich_editor::export::markdown_to_docx(
+                                    &markdown_text,
+                                    path.path(),
+                                )
+                                .await
+                                {
+                                    Ok(_) => println!("✓ Word-dokument skapat: {:?}", path.path()),
+                                    Err(e) => eprintln!("✗ Fel vid Word-export: {}", e),
+                                }
                             }
-                            let _ = std::fs::File::create(path.path()).map(|file| doc.build().pack(file));
-                        }
-                    }, |_| Message::SaveSettings)
+                        },
+                        |_| Message::SaveSettings,
+                    )
                 } else {
                     Task::none()
                 }
@@ -401,52 +512,154 @@ impl Jobseeker {
                 self.show_editor_tools = !self.show_editor_tools;
                 Task::none()
             }
+            Message::ToggleMarkdownPreview(index) => {
+                if let Some(Tab::ApplicationEditor { .. }) = self.tabs.get(index) {
+                    self.show_markdown_preview = !self.show_markdown_preview;
+                }
+                Task::none()
+            }
             Message::EditorPasteProfile(index) => {
                 if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
-                    let current_text = content.text();
                     let profile = self.settings.my_profile.clone();
-                    let new_text = format!("{}\n\n{}", current_text, profile);
-                    *content = text_editor::Content::with_text(&new_text);
+                    content.update(RichEditorMessage::InsertText(profile));
+                }
+                Task::none()
+            }
+            Message::EditorInsertCompany(index) => {
+                if let Some(Tab::ApplicationEditor {
+                    job_id, content, ..
+                }) = self.tabs.get_mut(index)
+                {
+                    let company = self
+                        .ads
+                        .iter()
+                        .find(|a| &a.id == job_id)
+                        .and_then(|a| a.employer.as_ref().and_then(|e| e.name.clone()))
+                        .unwrap_or_default();
+                    if !company.is_empty() {
+                        content.update(RichEditorMessage::InsertText(company));
+                    }
+                }
+                Task::none()
+            }
+            Message::EditorInsertLink(index) => {
+                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                    content.update(RichEditorMessage::Link);
                 }
                 Task::none()
             }
             Message::EditorAiImprove(index) => {
-                if let Some(Tab::ApplicationEditor { job_id, content, .. }) = self.tabs.get(index) {
+                if let Some(Tab::ApplicationEditor {
+                    job_id, content, ..
+                }) = self.tabs.get(index)
+                {
                     let current_text = content.text();
                     let ad_ref = self.ads.iter().find(|a| &a.id == job_id);
-                    let ad_desc = ad_ref.and_then(|a| a.description.as_ref()).and_then(|d| d.text.clone()).unwrap_or_default();
+                    let ad_desc = ad_ref
+                        .and_then(|a| a.description.as_ref())
+                        .and_then(|d| d.text.clone())
+                        .unwrap_or_default();
                     let url = self.settings.ollama_url.clone();
-                    let job_id_clone = job_id.clone();
+                    let _job_id_clone = job_id.clone();
 
-                    Task::perform(async move {
-                        let ranker = AiRanker::new(&url, "not-needed").ok()?;
-                        let prompt = format!("Här är en jobbannons: {}\n\nHär är mitt nuvarande utkast på ansökan: {}\n\nFörbättra texten så den blir mer professionell och matchar annonsen bättre. Svara bara med den förbättrade texten.", ad_desc, current_text);
-                        // Vi återanvänder AiRanker för enkelhetens skull eller lägger till en metod för chat
-                        Some(prompt) // Placeholder för faktiskt AI-anrop
-                    }, move |_res| Message::SaveSettings) // Placeholder
+                    Task::perform(
+                        async move {
+                            let _ranker = AiRanker::new(&url, "not-needed").ok()?;
+                            let prompt = format!(
+                                "Här är en jobbannons: {}\n\nHär är mitt nuvarande utkast på ansökan: {}\n\nFörbättra texten så den blir mer professionell och matchar annonsen bättre. Svara bara med den förbättrade texten.",
+                                ad_desc, current_text
+                            );
+                            // Vi återanvänder AiRanker för enkelhetens skull eller lägger till en metod för chat
+                            Some(prompt) // Placeholder för faktiskt AI-anrop
+                        },
+                        move |_res| Message::SaveSettings,
+                    ) // Placeholder
                 } else {
                     Task::none()
                 }
             }
             Message::EventOccurred(event) => {
-                if let iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Middle)) = event {
+                if let iced::Event::Mouse(iced::mouse::Event::ButtonPressed(
+                    iced::mouse::Button::Middle,
+                )) = event
+                {
                     self.show_editor_tools = !self.show_editor_tools;
                 }
                 Task::none()
             }
-            Message::EditorContentChanged(index, action) => {
-                if let Some(Tab::ApplicationEditor { job_id, content, .. }) = self.tabs.get_mut(index) {
-                    content.perform(action);
-                    
-                    // Spara till DB automatiskt vid ändring
+            Message::EditorContentChanged(index) => {
+                if let Some(Tab::ApplicationEditor {
+                    job_id, content, ..
+                }) = self.tabs.get(index)
+                {
                     let db_clone = Arc::clone(&self.db);
                     let id_clone = job_id.clone();
                     let text_clone = content.text();
-                    return Task::perform(async move {
-                        if let Some(db) = &*db_clone {
-                            let _ = db.save_application_draft(&id_clone, &text_clone).await;
-                        }
-                    }, |_| Message::SaveSettings);
+                    return Task::perform(
+                        async move {
+                            if let Some(db) = &*db_clone {
+                                let _ = db.save_application_draft(&id_clone, &text_clone).await;
+                            }
+                        },
+                        |_| Message::SaveSettings,
+                    );
+                }
+                Task::none()
+            }
+            Message::EditorBold(index) => {
+                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                    content.update(RichEditorMessage::Bold);
+                }
+                Task::none()
+            }
+            Message::EditorItalic(index) => {
+                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                    content.update(RichEditorMessage::Italic);
+                }
+                Task::none()
+            }
+            Message::EditorHeading1(index) => {
+                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                    content.update(RichEditorMessage::Heading1);
+                }
+                Task::none()
+            }
+            Message::EditorHeading2(index) => {
+                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                    content.update(RichEditorMessage::Heading2);
+                }
+                Task::none()
+            }
+            Message::EditorHeading3(index) => {
+                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                    content.update(RichEditorMessage::Heading3);
+                }
+                Task::none()
+            }
+            Message::EditorBulletList(index) => {
+                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                    content.update(RichEditorMessage::BulletList);
+                }
+                Task::none()
+            }
+            Message::EditorNumberedList(index) => {
+                if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
+                    content.update(RichEditorMessage::NumberedList);
+                }
+                Task::none()
+            }
+            Message::EditorInsertCompany(index) => {
+                if let Some(Tab::ApplicationEditor {
+                    job_id, content, ..
+                }) = self.tabs.get_mut(index)
+                {
+                    let company = self
+                        .ads
+                        .iter()
+                        .find(|a| &a.id == job_id)
+                        .and_then(|a| a.employer.as_ref().and_then(|e| e.name.clone()))
+                        .unwrap_or_else(|| "[Företagsnamn]".to_string());
+                    content.update(RichEditorMessage::InsertText(company));
                 }
                 Task::none()
             }
@@ -474,7 +687,7 @@ impl Jobseeker {
                 }
                 self.is_searching = true;
                 self.error_msg = None;
-                
+
                 let keywords_raw = self.settings.keywords.clone();
                 let blacklist_raw = self.settings.blacklist_keywords.clone();
                 let locations = match priority {
@@ -483,57 +696,84 @@ impl Jobseeker {
                     _ => self.settings.locations_p3.clone(),
                 };
                 let db_clone = Arc::clone(&self.db);
-                
-                info!("Starting multi-search P{} for keywords: '{}'", priority, keywords_raw);
-                
-                Task::perform(async move {
-                    let client = JobSearchClient::new();
-                    let loc_vec: Vec<String> = locations.split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| {
-                            // Om det är sifferkod, behåll den. Annars försök mappa namn.
-                            if s.chars().all(|c| c.is_numeric()) {
-                                s
-                            } else if let Some(code) = JobSearchClient::get_municipality_code(&s) {
-                                code.to_string()
-                            } else {
-                                s // Behåll originalet som fallback
-                            }
-                        })
-                        .collect();
-                    let keyword_vec: Vec<String> = keywords_raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                    let blacklist_vec: Vec<String> = blacklist_raw.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect();
-                    
-                    let mut all_fetched_ads = Vec::new();
-                    
-                    for kw in keyword_vec {
-                        match client.search(&kw, &loc_vec, 50).await {
-                            Ok(mut ads) => {
-                                for ad in &mut ads {
-                                    ad.search_keyword = Some(kw.clone());
+
+                info!(
+                    "Starting multi-search P{} for keywords: '{}'",
+                    priority, keywords_raw
+                );
+
+                Task::perform(
+                    async move {
+                        let client = JobSearchClient::new();
+                        let loc_vec: Vec<String> = locations
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .map(|s| {
+                                // Om det är sifferkod, behåll den. Annars försök mappa namn.
+                                if s.chars().all(|c| c.is_numeric()) {
+                                    s
+                                } else if let Some(code) =
+                                    JobSearchClient::get_municipality_code(&s)
+                                {
+                                    code.to_string()
+                                } else {
+                                    s // Behåll originalet som fallback
                                 }
-                                all_fetched_ads.extend(ads);
+                            })
+                            .collect();
+                        let keyword_vec: Vec<String> = keywords_raw
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        let blacklist_vec: Vec<String> = blacklist_raw
+                            .split(',')
+                            .map(|s| s.trim().to_lowercase())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+
+                        let mut all_fetched_ads = Vec::new();
+
+                        for kw in keyword_vec {
+                            match client.search(&kw, &loc_vec, 50).await {
+                                Ok(mut ads) => {
+                                    for ad in &mut ads {
+                                        ad.search_keyword = Some(kw.clone());
+                                    }
+                                    all_fetched_ads.extend(ads);
+                                }
+                                Err(e) => error!("Search failed for keyword '{}': {}", kw, e),
                             }
-                            Err(e) => error!("Search failed for keyword '{}': {}", kw, e),
                         }
-                    }
-                    
-                    let filtered_ads: Vec<JobAd> = all_fetched_ads.into_iter().filter(|ad| {
-                        let headline = ad.headline.to_lowercase();
-                        let desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.to_lowercase()).unwrap_or_default();
-                        !blacklist_vec.iter().any(|bad_word| headline.contains(bad_word) || desc.contains(bad_word))
-                    }).collect();
-                    
-                    if let Some(db) = &*db_clone {
-                        for ad in &filtered_ads {
-                            let _ = db.save_job_ad(ad).await;
+
+                        let filtered_ads: Vec<JobAd> = all_fetched_ads
+                            .into_iter()
+                            .filter(|ad| {
+                                let headline = ad.headline.to_lowercase();
+                                let desc = ad
+                                    .description
+                                    .as_ref()
+                                    .and_then(|d| d.text.as_ref())
+                                    .map(|s| s.to_lowercase())
+                                    .unwrap_or_default();
+                                !blacklist_vec.iter().any(|bad_word| {
+                                    headline.contains(bad_word) || desc.contains(bad_word)
+                                })
+                            })
+                            .collect();
+
+                        if let Some(db) = &*db_clone {
+                            for ad in &filtered_ads {
+                                let _ = db.save_job_ad(ad).await;
+                            }
+                            db.get_filtered_jobs(&[], None, None).await
+                        } else {
+                            Ok(filtered_ads)
                         }
-                        db.get_filtered_jobs(&[], None, None).await
-                    } else {
-                        Ok(filtered_ads)
-                    }
-                }, |res| Message::SearchResult(res.map_err(|e| e.to_string())))
+                    },
+                    |res| Message::SearchResult(res.map_err(|e| e.to_string())),
+                )
             }
             Message::SearchResult(Ok(ads)) => {
                 self.is_searching = false;
@@ -553,11 +793,14 @@ impl Jobseeker {
                         ad.is_read = true;
                         let id = ad.id.clone();
                         let db_clone = Arc::clone(&self.db);
-                        return Task::perform(async move {
-                            if let Some(db) = &*db_clone {
-                                let _ = db.mark_as_read(&id).await;
-                            }
-                        }, |_| Message::SaveSettings);
+                        return Task::perform(
+                            async move {
+                                if let Some(db) = &*db_clone {
+                                    let _ = db.mark_as_read(&id).await;
+                                }
+                            },
+                            |_| Message::SaveSettings,
+                        );
                     }
                 }
                 Task::none()
@@ -573,11 +816,14 @@ impl Jobseeker {
                     let id = ad.id.clone();
                     let db_clone = Arc::clone(&self.db);
                     let current_filter = self.filter;
-                    return Task::perform(async move {
-                        if let Some(db) = &*db_clone {
-                            let _ = db.update_ad_status(&id, status).await;
-                        }
-                    }, move |_| Message::SetFilter(current_filter));
+                    return Task::perform(
+                        async move {
+                            if let Some(db) = &*db_clone {
+                                let _ = db.update_ad_status(&id, status).await;
+                            }
+                        },
+                        move |_| Message::SetFilter(current_filter),
+                    );
                 }
                 Task::none()
             }
@@ -621,10 +867,13 @@ impl Jobseeker {
                     let ad_clone = ad.clone();
                     let profile = self.settings.my_profile.clone();
                     let url = self.settings.ollama_url.clone();
-                    Task::perform(async move {
-                        let ranker = AiRanker::new(&url, "not-needed").expect("Invalid AI URL");
-                        ranker.rate_job(&ad_clone, &profile).await.unwrap_or(0)
-                    }, move |res| Message::RateResult(index, res))
+                    Task::perform(
+                        async move {
+                            let ranker = AiRanker::new(&url, "not-needed").expect("Invalid AI URL");
+                            ranker.rate_job(&ad_clone, &profile).await.unwrap_or(0)
+                        },
+                        move |res| Message::RateResult(index, res),
+                    )
                 } else {
                     Task::none()
                 }
@@ -634,24 +883,35 @@ impl Jobseeker {
                     ad.rating = Some(rating);
                     let id = ad.id.clone();
                     let db_clone = Arc::clone(&self.db);
-                    return Task::perform(async move {
-                        if let Some(db) = &*db_clone {
-                            let _ = db.update_rating(&id, rating).await;
-                        }
-                    }, |_| Message::SaveSettings);
+                    return Task::perform(
+                        async move {
+                            if let Some(db) = &*db_clone {
+                                let _ = db.update_rating(&id, rating).await;
+                            }
+                        },
+                        |_| Message::SaveSettings,
+                    );
                 }
                 Task::none()
             }
             Message::ClearAds => {
                 let db_clone = Arc::clone(&self.db);
-                Task::perform(async move {
-                    if let Some(db) = &*db_clone {
-                        let _ = db.clear_non_bookmarked().await;
-                        db.get_filtered_jobs(&[], Some(Utc::now().year()), Some(Utc::now().month())).await
-                    } else {
-                        Ok(vec![])
-                    }
-                }, |res| Message::SearchResult(res.map_err(|e| e.to_string())))
+                Task::perform(
+                    async move {
+                        if let Some(db) = &*db_clone {
+                            let _ = db.clear_non_bookmarked().await;
+                            db.get_filtered_jobs(
+                                &[],
+                                Some(Utc::now().year()),
+                                Some(Utc::now().month()),
+                            )
+                            .await
+                        } else {
+                            Ok(vec![])
+                        }
+                    },
+                    |res| Message::SearchResult(res.map_err(|e| e.to_string())),
+                )
             }
             Message::OpenBrowser(index) => {
                 if let Some(ad) = self.ads.get(index) {
@@ -664,14 +924,21 @@ impl Jobseeker {
             Message::SendEmail(index) => {
                 if let Some(ad) = self.ads.get(index) {
                     let subject = format!("Jobbtips: {}", ad.headline);
-                    let employer = ad.employer.as_ref().and_then(|e| e.name.as_ref()).map(|s| s.as_str()).unwrap_or("Okänd");
-                    let body = format!("Kolla in detta jobb!\n\nRubrik: {}\nArbetsgivare: {}\nLänk: {}", 
-                        ad.headline, 
+                    let employer = ad
+                        .employer
+                        .as_ref()
+                        .and_then(|e| e.name.as_ref())
+                        .map(|s| s.as_str())
+                        .unwrap_or("Okänd");
+                    let body = format!(
+                        "Kolla in detta jobb!\n\nRubrik: {}\nArbetsgivare: {}\nLänk: {}",
+                        ad.headline,
                         employer,
                         ad.webpage_url.as_deref().unwrap_or("Ingen länk")
                     );
-                    let mailto = format!("mailto:?subject={}&body={}", 
-                        urlencoding::encode(&subject), 
+                    let mailto = format!(
+                        "mailto:?subject={}&body={}",
+                        urlencoding::encode(&subject),
                         urlencoding::encode(&body)
                     );
                     let _ = webbrowser::open(&mailto);
@@ -680,10 +947,24 @@ impl Jobseeker {
             }
             Message::CopyAd(index) => {
                 if let Some(ad) = self.ads.get(index) {
-                    let employer = ad.employer.as_ref().and_then(|e| e.name.as_ref()).map(|s| s.as_str()).unwrap_or("Okänd");
-                    let desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
-                    let content = format!("{}\nArbetsgivare: {}\n\n{}\n\nLänk: {}", 
-                        ad.headline, employer, desc, ad.webpage_url.as_deref().unwrap_or("N/A")
+                    let employer = ad
+                        .employer
+                        .as_ref()
+                        .and_then(|e| e.name.as_ref())
+                        .map(|s| s.as_str())
+                        .unwrap_or("Okänd");
+                    let desc = ad
+                        .description
+                        .as_ref()
+                        .and_then(|d| d.text.as_ref())
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
+                    let content = format!(
+                        "{}\nArbetsgivare: {}\n\n{}\n\nLänk: {}",
+                        ad.headline,
+                        employer,
+                        desc,
+                        ad.webpage_url.as_deref().unwrap_or("N/A")
                     );
                     return iced::clipboard::write(content);
                 }
@@ -718,19 +999,37 @@ impl Jobseeker {
         let filter = self.filter;
         let year = self.current_year;
         let month = self.current_month;
-        
-        Task::perform(async move {
-            if let Some(db) = &*db_clone {
-                match filter {
-                    InboxFilter::All => db.get_filtered_jobs(&[], Some(year), Some(month)).await,
-                    InboxFilter::Bookmarked => db.get_filtered_jobs(&[AdStatus::Bookmarked, AdStatus::ThumbsUp], Some(year), Some(month)).await,
-                    InboxFilter::ThumbsUp => db.get_filtered_jobs(&[AdStatus::ThumbsUp], Some(year), Some(month)).await,
-                    InboxFilter::Applied => db.get_filtered_jobs(&[AdStatus::Applied], Some(year), Some(month)).await,
+
+        Task::perform(
+            async move {
+                if let Some(db) = &*db_clone {
+                    match filter {
+                        InboxFilter::All => {
+                            db.get_filtered_jobs(&[], Some(year), Some(month)).await
+                        }
+                        InboxFilter::Bookmarked => {
+                            db.get_filtered_jobs(
+                                &[AdStatus::Bookmarked, AdStatus::ThumbsUp],
+                                Some(year),
+                                Some(month),
+                            )
+                            .await
+                        }
+                        InboxFilter::ThumbsUp => {
+                            db.get_filtered_jobs(&[AdStatus::ThumbsUp], Some(year), Some(month))
+                                .await
+                        }
+                        InboxFilter::Applied => {
+                            db.get_filtered_jobs(&[AdStatus::Applied], Some(year), Some(month))
+                                .await
+                        }
+                    }
+                } else {
+                    Ok(vec![])
                 }
-            } else {
-                Ok(vec![])
-            }
-        }, |res| Message::SearchResult(res.map_err(|e| e.to_string())))
+            },
+            |res| Message::SearchResult(res.map_err(|e| e.to_string())),
+        )
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -742,52 +1041,87 @@ impl Jobseeker {
                     row![text("Söker...").color(Color::from_rgb(0.0, 0.5, 1.0))].into()
                 } else {
                     row![
-                        text("Område:").size(16).color(Color::from_rgb(0.9, 0.9, 0.9)),
+                        text("Område:")
+                            .size(16)
+                            .color(Color::from_rgb(0.9, 0.9, 0.9)),
                         button("1").on_press(Message::Search(1)),
                         button("2").on_press(Message::Search(2)),
                         button("3").on_press(Message::Search(3)),
                         space::horizontal(),
-                        button(svg(svg::Handle::from_memory(SVG_PREV)).width(20).height(20)).on_press(Message::PrevAd),
-                        button(svg(svg::Handle::from_memory(SVG_NEXT)).width(20).height(20)).on_press(Message::NextAd),
+                        button(svg(svg::Handle::from_memory(SVG_PREV)).width(20).height(20))
+                            .on_press(Message::PrevAd),
+                        button(svg(svg::Handle::from_memory(SVG_NEXT)).width(20).height(20))
+                            .on_press(Message::NextAd),
                         space::horizontal(),
-                        button(row![svg(svg::Handle::from_memory(SVG_REJECTED)).width(20).height(20), text(" Töm")].align_y(Alignment::Center)).on_press(Message::ClearAds),
-                    ].spacing(10).align_y(Alignment::Center).into()
+                        button(
+                            row![
+                                svg(svg::Handle::from_memory(SVG_REJECTED))
+                                    .width(20)
+                                    .height(20),
+                                text(" Töm")
+                            ]
+                            .align_y(Alignment::Center)
+                        )
+                        .on_press(Message::ClearAds),
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center)
+                    .into()
                 }
-            },
-            Tab::Drafts => {
-                row![
-                    text("Mina sparade utkast").size(16).color(Color::from_rgb(0.9, 0.9, 0.9)),
-                    space::horizontal(),
-                    button("Uppdatera lista").on_press(Message::LoadDrafts),
-                ].spacing(10).align_y(Alignment::Center).into()
-            },
-            Tab::ApplicationEditor { is_editing, .. } => {
-                row![
-                    button(if *is_editing { "Klar (Läs-läge)" } else { "Redigera" })
-                        .on_press(Message::ToggleEditMode(self.active_tab)),
-                    button(if self.show_editor_tools { "Dölj verktyg" } else { "Visa verktyg" })
-                        .on_press(Message::ToggleEditorTools),
-                    button("Öppna fil").on_press(Message::ImportFile(self.active_tab)),
-                    space::horizontal(),
-                    button("Exportera PDF")
-                        .on_press(Message::ExportPDF(self.active_tab))
-                        .style(|_theme: &Theme, _status| button::Style {
-                            background: Some(Color::from_rgb(0.1, 0.3, 0.1).into()),
-                            ..Default::default()
-                        }),
-                    button("Exportera Word")
-                        .on_press(Message::ExportWord(self.active_tab))
-                        .style(|_theme: &Theme, _status| button::Style {
-                            background: Some(Color::from_rgb(0.1, 0.1, 0.3).into()),
-                            ..Default::default()
-                        }),
-                ].spacing(10).align_y(Alignment::Center).into()
-            },
-            Tab::Settings => {
-                row![
-                    text("Applikationsinställningar").size(16).color(Color::from_rgb(0.9, 0.9, 0.9)),
-                ].into()
             }
+            Tab::Drafts => row![
+                text("Mina sparade utkast")
+                    .size(16)
+                    .color(Color::from_rgb(0.9, 0.9, 0.9)),
+                space::horizontal(),
+                button("Uppdatera lista").on_press(Message::LoadDrafts),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into(),
+            Tab::ApplicationEditor { is_editing, .. } => row![
+                button(if *is_editing {
+                    "Klar (Läs-läge)"
+                } else {
+                    "Redigera"
+                })
+                .on_press(Message::ToggleEditMode(self.active_tab)),
+                button(if self.show_editor_tools {
+                    "Dölj verktyg"
+                } else {
+                    "Visa verktyg"
+                })
+                .on_press(Message::ToggleEditorTools),
+                button(if self.show_markdown_preview {
+                    "Dölj preview"
+                } else {
+                    "Visa preview"
+                })
+                .on_press(Message::ToggleMarkdownPreview(self.active_tab)),
+                button("Öppna fil").on_press(Message::ImportFile(self.active_tab)),
+                space::horizontal(),
+                button("Exportera PDF")
+                    .on_press(Message::ExportPDF(self.active_tab))
+                    .style(|_theme: &Theme, _status| button::Style {
+                        background: Some(Color::from_rgb(0.1, 0.3, 0.1).into()),
+                        ..Default::default()
+                    }),
+                button("Exportera Word")
+                    .on_press(Message::ExportWord(self.active_tab))
+                    .style(|_theme: &Theme, _status| button::Style {
+                        background: Some(Color::from_rgb(0.1, 0.1, 0.3).into()),
+                        ..Default::default()
+                    }),
+            ]
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .into(),
+            Tab::Settings => row![
+                text("Applikationsinställningar")
+                    .size(16)
+                    .color(Color::from_rgb(0.9, 0.9, 0.9)),
+            ]
+            .into(),
         };
 
         let toolbar = container(toolbar_content)
@@ -798,8 +1132,13 @@ impl Jobseeker {
                 ..Default::default()
             });
 
-        let mut tab_row = row![].spacing(5).padding(Padding { top: 5.0, right: 10.0, bottom: 0.0, left: 10.0 });
-        
+        let mut tab_row = row![].spacing(5).padding(Padding {
+            top: 5.0,
+            right: 10.0,
+            bottom: 0.0,
+            left: 10.0,
+        });
+
         for (i, tab) in self.tabs.iter().enumerate() {
             let (label, svg_icon) = match tab {
                 Tab::Inbox => (" Inbox".to_string(), Some(SVG_INBOX)),
@@ -807,16 +1146,20 @@ impl Jobseeker {
                 Tab::Settings => (" Inställningar".to_string(), Some(SVG_SETTINGS)),
                 Tab::ApplicationEditor { job_headline, .. } => {
                     let mut short = job_headline.clone();
-                    if short.len() > 15 { short.truncate(12); short.push_str("..."); }
+                    if short.len() > 15 {
+                        short.truncate(12);
+                        short.push_str("...");
+                    }
                     (short, None)
                 }
             };
 
             let is_active = self.active_tab == i;
-            
+
             let mut content = row![].align_y(Alignment::Center).spacing(5);
             if let Some(svg_data) = svg_icon {
-                content = content.push(svg(svg::Handle::from_memory(svg_data)).width(16).height(16));
+                content =
+                    content.push(svg(svg::Handle::from_memory(svg_data)).width(16).height(16));
             }
             content = content.push(text(label).size(14));
 
@@ -828,7 +1171,7 @@ impl Jobseeker {
                             background: None,
                             text_color: Color::from_rgb(0.8, 0.2, 0.2),
                             ..Default::default()
-                        })
+                        }),
                 )
             } else {
                 content
@@ -874,9 +1217,12 @@ impl Jobseeker {
             Tab::Inbox => self.view_inbox(),
             Tab::Drafts => self.view_drafts(),
             Tab::Settings => self.view_settings(),
-            Tab::ApplicationEditor { job_id: _, job_headline, content, is_editing } => {
-                self.view_application_editor(self.active_tab, job_headline, content, *is_editing)
-            }
+            Tab::ApplicationEditor {
+                job_id: _,
+                job_headline,
+                content,
+                is_editing,
+            } => self.view_application_editor(self.active_tab, job_headline, content, *is_editing),
         };
 
         column![
@@ -884,38 +1230,79 @@ impl Jobseeker {
             toolbar, // Vi kan ha toolbar kvar eller integrera den i flikarna
             rule::horizontal(1),
             container(content).width(Length::Fill).height(Length::Fill)
-        ].into()
+        ]
+        .into()
     }
 
     fn view_inbox(&self) -> Element<'_, Message> {
         let filter_bar = row![
             button("Alla").on_press(Message::SetFilter(InboxFilter::All)),
-            button(row![svg(svg::Handle::from_memory(SVG_BOOKMARK)).width(20).height(20), text(" Bokm.")].align_y(Alignment::Center)).on_press(Message::SetFilter(InboxFilter::Bookmarked)),
-            button(row![svg(svg::Handle::from_memory(SVG_THUMBS_UP)).width(20).height(20), text(" Toppen")].align_y(Alignment::Center)).on_press(Message::SetFilter(InboxFilter::ThumbsUp)),
-            button(row![svg(svg::Handle::from_memory(SVG_APPLIED)).width(20).height(20), text(" Sökta")].align_y(Alignment::Center)).on_press(Message::SetFilter(InboxFilter::Applied)),
-        ].spacing(5).align_y(Alignment::Center);
+            button(
+                row![
+                    svg(svg::Handle::from_memory(SVG_BOOKMARK))
+                        .width(20)
+                        .height(20),
+                    text(" Bokm.")
+                ]
+                .align_y(Alignment::Center)
+            )
+            .on_press(Message::SetFilter(InboxFilter::Bookmarked)),
+            button(
+                row![
+                    svg(svg::Handle::from_memory(SVG_THUMBS_UP))
+                        .width(20)
+                        .height(20),
+                    text(" Toppen")
+                ]
+                .align_y(Alignment::Center)
+            )
+            .on_press(Message::SetFilter(InboxFilter::ThumbsUp)),
+            button(
+                row![
+                    svg(svg::Handle::from_memory(SVG_APPLIED))
+                        .width(20)
+                        .height(20),
+                    text(" Sökta")
+                ]
+                .align_y(Alignment::Center)
+            )
+            .on_press(Message::SetFilter(InboxFilter::Applied)),
+        ]
+        .spacing(5)
+        .align_y(Alignment::Center);
 
         let month_navigator = row![
-            button(svg(svg::Handle::from_memory(SVG_PREV)).width(24).height(24)).on_press(Message::ChangeMonth(-1)),
-            text(format!("{:04}-{:02}", self.current_year, self.current_month)).size(16),
-            button(svg(svg::Handle::from_memory(SVG_NEXT)).width(24).height(24)).on_press(Message::ChangeMonth(1)),
-        ].spacing(10).align_y(Alignment::Center);
+            button(svg(svg::Handle::from_memory(SVG_PREV)).width(24).height(24))
+                .on_press(Message::ChangeMonth(-1)),
+            text(format!(
+                "{:04}-{:02}",
+                self.current_year, self.current_month
+            ))
+            .size(16),
+            button(svg(svg::Handle::from_memory(SVG_NEXT)).width(24).height(24))
+                .on_press(Message::ChangeMonth(1)),
+        ]
+        .spacing(10)
+        .align_y(Alignment::Center);
 
         let mut sidebar_content = column![filter_bar, month_navigator]
             .spacing(10)
-            .padding(Padding { top: 0.0, right: 30.0, bottom: 0.0, left: 15.0 })
+            .padding(Padding {
+                top: 0.0,
+                right: 30.0,
+                bottom: 0.0,
+                left: 15.0,
+            })
             .width(Length::Fill);
 
         if let Some(err) = &self.error_msg {
-            sidebar_content = sidebar_content.push(
-                container(text(err).color(Color::from_rgb(1.0, 0.3, 0.3))).padding(10)
-            );
+            sidebar_content = sidebar_content
+                .push(container(text(err).color(Color::from_rgb(1.0, 0.3, 0.3))).padding(10));
         }
 
         if self.ads.is_empty() && !self.is_searching {
-            sidebar_content = sidebar_content.push(
-                container(text("Här var det tomt.")).padding(20)
-            );
+            sidebar_content =
+                sidebar_content.push(container(text("Här var det tomt.")).padding(20));
         } else {
             for (i, ad) in self.ads.iter().enumerate() {
                 sidebar_content = sidebar_content.push(self.ad_row(i, ad));
@@ -930,79 +1317,201 @@ impl Jobseeker {
         let details = if let Some(index) = self.selected_ad {
             if let Some(ad) = self.ads.get(index) {
                 let action_toolbar = row![
-                    button(row![svg(svg::Handle::from_memory(SVG_THUMBS_DOWN)).width(20).height(20), text(" Nej")].align_y(Alignment::Center)).on_press(Message::UpdateStatus(index, AdStatus::Rejected)),
-                    button(row![svg(svg::Handle::from_memory(SVG_BOOKMARK)).width(20).height(20), text(" Spara")].align_y(Alignment::Center)).on_press(Message::UpdateStatus(index, AdStatus::Bookmarked)),
-                    button(row![svg(svg::Handle::from_memory(SVG_THUMBS_UP)).width(20).height(20), text(" Toppen")].align_y(Alignment::Center)).on_press(Message::UpdateStatus(index, AdStatus::ThumbsUp)),
-                    button(row![svg(svg::Handle::from_memory(SVG_APPLIED)).width(20).height(20), text(" HAR SÖKT")].align_y(Alignment::Center)).on_press(Message::UpdateStatus(index, AdStatus::Applied)),
+                    button(
+                        row![
+                            svg(svg::Handle::from_memory(SVG_THUMBS_DOWN))
+                                .width(20)
+                                .height(20),
+                            text(" Nej")
+                        ]
+                        .align_y(Alignment::Center)
+                    )
+                    .on_press(Message::UpdateStatus(index, AdStatus::Rejected)),
+                    button(
+                        row![
+                            svg(svg::Handle::from_memory(SVG_BOOKMARK))
+                                .width(20)
+                                .height(20),
+                            text(" Spara")
+                        ]
+                        .align_y(Alignment::Center)
+                    )
+                    .on_press(Message::UpdateStatus(index, AdStatus::Bookmarked)),
+                    button(
+                        row![
+                            svg(svg::Handle::from_memory(SVG_THUMBS_UP))
+                                .width(20)
+                                .height(20),
+                            text(" Toppen")
+                        ]
+                        .align_y(Alignment::Center)
+                    )
+                    .on_press(Message::UpdateStatus(index, AdStatus::ThumbsUp)),
+                    button(
+                        row![
+                            svg(svg::Handle::from_memory(SVG_APPLIED))
+                                .width(20)
+                                .height(20),
+                            text(" HAR SÖKT")
+                        ]
+                        .align_y(Alignment::Center)
+                    )
+                    .on_press(Message::UpdateStatus(index, AdStatus::Applied)),
                     space::horizontal(),
-                    button(svg(svg::Handle::from_memory(SVG_WEB)).width(20).height(20)).on_press(Message::OpenBrowser(index)),
-                    button(svg(svg::Handle::from_memory(SVG_EMAIL)).width(20).height(20)).on_press(Message::SendEmail(index)),
-                    button(svg(svg::Handle::from_memory(SVG_COPY)).width(20).height(20)).on_press(Message::CopyAd(index)),
-                ].spacing(10);
+                    button(svg(svg::Handle::from_memory(SVG_WEB)).width(20).height(20))
+                        .on_press(Message::OpenBrowser(index)),
+                    button(
+                        svg(svg::Handle::from_memory(SVG_EMAIL))
+                            .width(20)
+                            .height(20)
+                    )
+                    .on_press(Message::SendEmail(index)),
+                    button(svg(svg::Handle::from_memory(SVG_COPY)).width(20).height(20))
+                        .on_press(Message::CopyAd(index)),
+                ]
+                .spacing(10);
 
                 let timestamp_info: Element<Message> = if let Some(applied_at) = ad.applied_at {
                     container(
-                        text(format!("SÖKT: {}", applied_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S")))
-                            .color(Color::from_rgb(0.0, 1.0, 0.0))
-                            .size(16)
-                    ).padding(5).style(|_theme: &Theme| container::Style {
+                        text(format!(
+                            "SÖKT: {}",
+                            applied_at
+                                .with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d %H:%M:%S")
+                        ))
+                        .color(Color::from_rgb(0.0, 1.0, 0.0))
+                        .size(16),
+                    )
+                    .padding(5)
+                    .style(|_theme: &Theme| container::Style {
                         background: Some(Color::from_rgb(0.0, 0.2, 0.0).into()),
                         ..Default::default()
-                    }).into()
+                    })
+                    .into()
                 } else if let Some(bookmarked_at) = ad.bookmarked_at {
-                    text(format!("Sparad: {}", bookmarked_at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S")))
-                        .color(Color::from_rgb(0.3, 0.6, 0.8))
-                        .size(14)
-                        .into()
+                    text(format!(
+                        "Sparad: {}",
+                        bookmarked_at
+                            .with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d %H:%M:%S")
+                    ))
+                    .color(Color::from_rgb(0.3, 0.6, 0.8))
+                    .size(14)
+                    .into()
                 } else {
                     space::vertical().into()
                 };
 
                 let report_buttons: Element<Message> = if ad.status == Some(AdStatus::Applied) {
-                    let job_type = ad.occupation.as_ref().and_then(|o| o.label.clone()).unwrap_or_else(|| ad.headline.clone());
-                    let company = ad.employer.as_ref().and_then(|e| e.name.clone()).unwrap_or_default();
-                    let date = ad.applied_at.map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string()).unwrap_or_default();
-                    let hours = ad.working_hours_type.as_ref().and_then(|w| w.label.clone()).unwrap_or_else(|| "Heltid".into());
-                    let muni = ad.workplace_address.as_ref().and_then(|w| w.municipality.clone()).unwrap_or_default();
+                    let job_type = ad
+                        .occupation
+                        .as_ref()
+                        .and_then(|o| o.label.clone())
+                        .unwrap_or_else(|| ad.headline.clone());
+                    let company = ad
+                        .employer
+                        .as_ref()
+                        .and_then(|e| e.name.clone())
+                        .unwrap_or_default();
+                    let date = ad
+                        .applied_at
+                        .map(|dt| {
+                            dt.with_timezone(&chrono::Local)
+                                .format("%Y-%m-%d")
+                                .to_string()
+                        })
+                        .unwrap_or_default();
+                    let hours = ad
+                        .working_hours_type
+                        .as_ref()
+                        .and_then(|w| w.label.clone())
+                        .unwrap_or_else(|| "Heltid".into());
+                    let muni = ad
+                        .workplace_address
+                        .as_ref()
+                        .and_then(|w| w.municipality.clone())
+                        .unwrap_or_default();
 
                     container(
                         row![
-                            text("Rapport urklipp:").size(14).color(Color::from_rgb(0.7, 0.7, 0.7)),
+                            text("Rapport urklipp:")
+                                .size(14)
+                                .color(Color::from_rgb(0.7, 0.7, 0.7)),
                             button(text("Typ")).on_press(Message::CopyText(job_type)),
                             button(text("Företag")).on_press(Message::CopyText(company)),
                             button(text("Datum")).on_press(Message::CopyText(date)),
                             button(text("Omf.")).on_press(Message::CopyText(hours)),
                             button(text("Kommun")).on_press(Message::CopyText(muni)),
-                        ].spacing(10).align_y(Alignment::Center)
-                    ).padding(10).style(|_theme: &Theme| container::Style {
+                        ]
+                        .spacing(10)
+                        .align_y(Alignment::Center),
+                    )
+                    .padding(10)
+                    .style(|_theme: &Theme| container::Style {
                         background: Some(Color::from_rgb(0.1, 0.15, 0.2).into()),
                         ..Default::default()
-                    }).into()
+                    })
+                    .into()
                 } else {
                     space::vertical().into()
                 };
 
-                container(
-                    scrollable(
-                        column![
-                            action_toolbar,
-                            report_buttons,
-                            text(&ad.headline).size(30).width(Length::Fill).color(Color::WHITE),
-                            row![
-                                text(ad.employer.as_ref().and_then(|e| e.name.clone()).unwrap_or_else(|| "Okänd arbetsgivare".into())).size(20),
-                                text(format!("Publicerad: {}", ad.publication_date.split('T').next().unwrap_or(&ad.publication_date))).color(Color::from_rgb(0.5, 0.5, 0.5)),
-                            ].spacing(20),
-                            timestamp_info,
-                            row![
-                                button("Betygsätt med AI").on_press(Message::RateAd(index)),
-                                button("Skriv ansökan").on_press(Message::OpenEditor(ad.id.clone(), ad.headline.clone())),
-                            ].spacing(10),
-                            text(ad.description.as_ref().and_then(|d| d.text.clone()).unwrap_or_else(|| "Ingen beskrivning tillgänglig".into()))
-                        ].spacing(15).padding(Padding { top: 10.0, right: 30.0, bottom: 10.0, left: 10.0 })
-                    )
-                ).width(Length::Fill).height(Length::Fill).padding(10)
+                container(scrollable(
+                    column![
+                        action_toolbar,
+                        report_buttons,
+                        text(&ad.headline)
+                            .size(30)
+                            .width(Length::Fill)
+                            .color(Color::WHITE),
+                        row![
+                            text(
+                                ad.employer
+                                    .as_ref()
+                                    .and_then(|e| e.name.clone())
+                                    .unwrap_or_else(|| "Okänd arbetsgivare".into())
+                            )
+                            .size(20),
+                            text(format!(
+                                "Publicerad: {}",
+                                ad.publication_date
+                                    .split('T')
+                                    .next()
+                                    .unwrap_or(&ad.publication_date)
+                            ))
+                            .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                        ]
+                        .spacing(20),
+                        timestamp_info,
+                        row![
+                            button("Betygsätt med AI").on_press(Message::RateAd(index)),
+                            button("Skriv ansökan")
+                                .on_press(Message::OpenEditor(ad.id.clone(), ad.headline.clone())),
+                        ]
+                        .spacing(10),
+                        text(
+                            ad.description
+                                .as_ref()
+                                .and_then(|d| d.text.clone())
+                                .unwrap_or_else(|| "Ingen beskrivning tillgänglig".into())
+                        )
+                    ]
+                    .spacing(15)
+                    .padding(Padding {
+                        top: 10.0,
+                        right: 30.0,
+                        bottom: 10.0,
+                        left: 10.0,
+                    }),
+                ))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(10)
             } else {
-                container(text("Annonsen hittades inte")).width(Length::Fill).height(Length::Fill).padding(10)
+                container(text("Annonsen hittades inte"))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .padding(10)
             }
         } else {
             container(text("Välj en annons i listan för att se detaljer."))
@@ -1017,25 +1526,39 @@ impl Jobseeker {
 
     fn view_drafts(&self) -> Element<'_, Message> {
         let mut list_content = column![
-            text("Mina ansökningsutkast").size(30).color(Color::WHITE),
+            row![
+                text("Mina ansökningsutkast").size(30).color(Color::WHITE),
+                space::horizontal(),
+                button("Ny ansökan").on_press(Message::NewApplication),
+            ],
             space::vertical(),
-        ].spacing(10);
+        ]
+        .spacing(10);
 
         if self.drafts_list.is_empty() {
-            list_content = list_content.push(text("Inga utkast sparade ännu.").color(Color::from_rgb(0.5, 0.5, 0.5)));
+            list_content = list_content
+                .push(text("Inga utkast sparade ännu.").color(Color::from_rgb(0.5, 0.5, 0.5)));
         } else {
             for (id, headline, updated_at) in &self.drafts_list {
                 let date_part = updated_at.split('T').next().unwrap_or(updated_at);
-                
+
                 list_content = list_content.push(
                     button(
                         row![
                             column![
                                 text(headline).size(18).color(Color::WHITE),
-                                text(format!("Senast sparad: {}", date_part)).size(14).color(Color::from_rgb(0.5, 0.5, 0.5)),
-                            ].spacing(5).width(Length::Fill),
-                            text("Öppna →").size(14).color(Color::from_rgb(0.3, 0.6, 0.8)),
-                        ].align_y(Alignment::Center).padding(10)
+                                text(format!("Senast sparad: {}", date_part))
+                                    .size(14)
+                                    .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                            ]
+                            .spacing(5)
+                            .width(Length::Fill),
+                            text("Öppna →")
+                                .size(14)
+                                .color(Color::from_rgb(0.3, 0.6, 0.8)),
+                        ]
+                        .align_y(Alignment::Center)
+                        .padding(10),
                     )
                     .on_press(Message::OpenEditor(id.clone(), headline.clone()))
                     .width(Length::Fill)
@@ -1051,7 +1574,7 @@ impl Jobseeker {
                                 ..Default::default()
                             }
                         }
-                    })
+                    }),
                 );
             }
         }
@@ -1069,17 +1592,19 @@ impl Jobseeker {
 
     fn ad_row<'a>(&self, i: usize, ad: &'a JobAd) -> Element<'a, Message> {
         let is_selected = self.selected_ad == Some(i);
-        
+
         let (status_svg, icon_color) = match ad.status {
             Some(AdStatus::Rejected) => (SVG_REJECTED, Color::from_rgb(0.8, 0.3, 0.3)),
             Some(AdStatus::Bookmarked) => (SVG_BOOKMARK, Color::from_rgb(0.3, 0.6, 0.8)),
             Some(AdStatus::ThumbsUp) => (SVG_THUMBS_UP, Color::from_rgb(0.3, 0.8, 0.3)),
             Some(AdStatus::Applied) => (SVG_APPLIED, Color::from_rgb(0.5, 0.5, 0.5)),
-            _ => if !ad.is_read { 
-                (SVG_UNREAD, Color::from_rgb(0.0, 0.5, 1.0)) 
-            } else { 
-                (SVG_UNREAD, Color::from_rgb(0.2, 0.2, 0.3)) 
-            },
+            _ => {
+                if !ad.is_read {
+                    (SVG_UNREAD, Color::from_rgb(0.0, 0.5, 1.0))
+                } else {
+                    (SVG_UNREAD, Color::from_rgb(0.2, 0.2, 0.3))
+                }
+            }
         };
 
         let rating_text = match ad.rating {
@@ -1087,12 +1612,28 @@ impl Jobseeker {
             None => "[---]".to_string(),
         };
 
-        let date_str = ad.publication_date.split('T').next().unwrap_or(&ad.publication_date);
-        let short_date = if date_str.len() > 5 { &date_str[5..] } else { date_str };
+        let date_str = ad
+            .publication_date
+            .split('T')
+            .next()
+            .unwrap_or(&ad.publication_date);
+        let short_date = if date_str.len() > 5 {
+            &date_str[5..]
+        } else {
+            date_str
+        };
         let keyword_text = ad.search_keyword.as_deref().unwrap_or("---");
-        let municipality_text = ad.workplace_address.as_ref().and_then(|a| a.municipality.as_deref()).unwrap_or("Okänd");
+        let municipality_text = ad
+            .workplace_address
+            .as_ref()
+            .and_then(|a| a.municipality.as_deref())
+            .unwrap_or("Okänd");
 
-        let title_color = if !ad.is_read { Color::WHITE } else { Color::from_rgb(0.6, 0.6, 0.7) };
+        let title_color = if !ad.is_read {
+            Color::WHITE
+        } else {
+            Color::from_rgb(0.6, 0.6, 0.7)
+        };
         let bg_color = if is_selected {
             Color::from_rgb(0.2, 0.2, 0.3)
         } else if ad.is_read {
@@ -1107,20 +1648,40 @@ impl Jobseeker {
                     svg(svg::Handle::from_memory(status_svg))
                         .width(20)
                         .height(20)
-                        .style(move |_, _| svg::Style { color: Some(icon_color) }),
+                        .style(move |_, _| svg::Style {
+                            color: Some(icon_color)
+                        }),
                     column![
-                        text(&ad.headline).size(18).width(Length::Fill).color(title_color),
+                        text(&ad.headline)
+                            .size(18)
+                            .width(Length::Fill)
+                            .color(title_color),
                         row![
-                            text(rating_text).size(14).color(Color::from_rgb(1.0, 1.0, 0.0)),
-                            text(ad.employer.as_ref().and_then(|e| e.name.clone()).unwrap_or_default())
+                            text(rating_text)
                                 .size(14)
-                                .color(Color::from_rgb(0.8, 0.8, 0.8))
-                                .width(Length::Fill),
-                            text(short_date).size(14).color(Color::from_rgb(0.7, 0.7, 0.7)),
-                        ].spacing(5),
-                        text(format!("{} • {}", keyword_text, municipality_text)).size(14).color(Color::from_rgb(0.0, 0.8, 0.8))
-                    ].spacing(2)
-                ].spacing(10).align_y(Alignment::Center)
+                                .color(Color::from_rgb(1.0, 1.0, 0.0)),
+                            text(
+                                ad.employer
+                                    .as_ref()
+                                    .and_then(|e| e.name.clone())
+                                    .unwrap_or_default()
+                            )
+                            .size(14)
+                            .color(Color::from_rgb(0.8, 0.8, 0.8))
+                            .width(Length::Fill),
+                            text(short_date)
+                                .size(14)
+                                .color(Color::from_rgb(0.7, 0.7, 0.7)),
+                        ]
+                        .spacing(5),
+                        text(format!("{} • {}", keyword_text, municipality_text))
+                            .size(14)
+                            .color(Color::from_rgb(0.0, 0.8, 0.8))
+                    ]
+                    .spacing(2)
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center),
             )
             .on_press(Message::SelectAd(i))
             .width(Length::Fill)
@@ -1137,29 +1698,114 @@ impl Jobseeker {
                         ..Default::default()
                     }
                 }
-            })
+            }),
         )
         .style(move |_theme| container::Style {
             background: Some(bg_color.into()),
             ..Default::default()
         })
-        .padding(Padding { top: 0.0, right: 5.0, bottom: 0.0, left: 0.0 })
+        .padding(Padding {
+            top: 0.0,
+            right: 5.0,
+            bottom: 0.0,
+            left: 0.0,
+        })
         .into()
     }
 
     fn view_settings(&self) -> Element<'_, Message> {
-        container(
-            scrollable(
+        container(scrollable(
+            column![
+                text("Inställningar").size(30).color(Color::WHITE),
                 column![
-                    text("Inställningar").size(30).color(Color::WHITE),
-                    
+                    text("Sökord")
+                        .size(18)
+                        .color(Color::from_rgb(0.0, 0.8, 0.8)),
+                    text("Ange sökord separerade med kommatecken (t.ex. rust, python, support)")
+                        .size(14)
+                        .color(Color::from_rgb(0.6, 0.6, 0.6)),
+                    container(
+                        text_editor(&self.keywords_content)
+                            .on_action(Message::EditorKeywordsChanged)
+                    )
+                    .height(80)
+                    .padding(5)
+                    .style(|_theme: &Theme| container::Style {
+                        border: iced::Border {
+                            color: Color::from_rgb(0.3, 0.3, 0.3),
+                            width: 1.0,
+                            radius: 5.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+                ]
+                .spacing(10),
+                column![
+                    text("Svartlista")
+                        .size(18)
+                        .color(Color::from_rgb(0.8, 0.3, 0.3)),
+                    text("Annonser med dessa ord i rubrik eller beskrivning döljs")
+                        .size(14)
+                        .color(Color::from_rgb(0.6, 0.6, 0.6)),
+                    container(
+                        text_editor(&self.blacklist_content)
+                            .on_action(Message::EditorBlacklistChanged)
+                    )
+                    .height(80)
+                    .padding(5)
+                    .style(|_theme: &Theme| container::Style {
+                        border: iced::Border {
+                            color: Color::from_rgb(0.3, 0.3, 0.3),
+                            width: 1.0,
+                            radius: 5.0.into(),
+                        },
+                        ..Default::default()
+                    }),
+                ]
+                .spacing(10),
+                column![
+                    text("Geografiska områden")
+                        .size(18)
+                        .color(Color::from_rgb(0.3, 0.6, 0.8)),
+                    text("Du kan nu skriva kommunnamn (t.ex. Helsingborg, Malmö) eller koder")
+                        .size(14)
+                        .color(Color::from_rgb(0.6, 0.6, 0.6)),
                     column![
-                        text("Sökord").size(18).color(Color::from_rgb(0.0, 0.8, 0.8)),
-                        text("Ange sökord separerade med kommatecken (t.ex. rust, python, support)").size(14).color(Color::from_rgb(0.6, 0.6, 0.6)),
+                        text("Område 1 (Högsta prioritet)").size(14),
+                        text_input("Kommuner eller koder", &self.settings.locations_p1)
+                            .on_input(Message::SettingsLocP1Changed)
+                            .padding(10),
+                    ]
+                    .spacing(5),
+                    column![
+                        text("Område 2").size(14),
+                        text_input("Kommuner eller koder", &self.settings.locations_p2)
+                            .on_input(Message::SettingsLocP2Changed)
+                            .padding(10),
+                    ]
+                    .spacing(5),
+                    column![
+                        text("Område 3").size(14),
+                        text_input("Kommuner eller koder", &self.settings.locations_p3)
+                            .on_input(Message::SettingsLocP3Changed)
+                            .padding(10),
+                    ]
+                    .spacing(5),
+                ]
+                .spacing(15),
+                column![
+                    text("AI & Profil")
+                        .size(18)
+                        .color(Color::from_rgb(1.0, 1.0, 0.0)),
+                    column![
+                        text("Min bakgrund (används för AI-matchning)").size(14),
                         container(
-                            text_editor(&self.keywords_content)
-                                .on_action(Message::EditorKeywordsChanged)
-                        ).height(80).padding(5).style(|_theme: &Theme| container::Style {
+                            text_editor(&self.profile_content)
+                                .on_action(Message::EditorProfileChanged)
+                        )
+                        .height(120)
+                        .padding(5)
+                        .style(|_theme: &Theme| container::Style {
                             border: iced::Border {
                                 color: Color::from_rgb(0.3, 0.3, 0.3),
                                 width: 1.0,
@@ -1167,308 +1813,131 @@ impl Jobseeker {
                             },
                             ..Default::default()
                         }),
-                    ].spacing(10),
-
+                    ]
+                    .spacing(5),
                     column![
-                        text("Svartlista").size(18).color(Color::from_rgb(0.8, 0.3, 0.3)),
-                        text("Annonser med dessa ord i rubrik eller beskrivning döljs").size(14).color(Color::from_rgb(0.6, 0.6, 0.6)),
-                        container(
-                            text_editor(&self.blacklist_content)
-                                .on_action(Message::EditorBlacklistChanged)
-                        ).height(80).padding(5).style(|_theme: &Theme| container::Style {
-                            border: iced::Border {
-                                color: Color::from_rgb(0.3, 0.3, 0.3),
-                                width: 1.0,
-                                radius: 5.0.into(),
-                            },
-                            ..Default::default()
-                        }),
-                    ].spacing(10),
-
-                    column![
-                        text("Geografiska områden").size(18).color(Color::from_rgb(0.3, 0.6, 0.8)),
-                        text("Du kan nu skriva kommunnamn (t.ex. Helsingborg, Malmö) eller koder").size(14).color(Color::from_rgb(0.6, 0.6, 0.6)),
-                        
-                        column![
-                            text("Område 1 (Högsta prioritet)").size(14),
-                            text_input("Kommuner eller koder", &self.settings.locations_p1)
-                                .on_input(Message::SettingsLocP1Changed)
-                                .padding(10),
-                        ].spacing(5),
-
-                        column![
-                            text("Område 2").size(14),
-                            text_input("Kommuner eller koder", &self.settings.locations_p2)
-                                .on_input(Message::SettingsLocP2Changed)
-                                .padding(10),
-                        ].spacing(5),
-
-                        column![
-                            text("Område 3").size(14),
-                            text_input("Kommuner eller koder", &self.settings.locations_p3)
-                                .on_input(Message::SettingsLocP3Changed)
-                                .padding(10),
-                        ].spacing(5),
-                    ].spacing(15),
-
-                    column![
-                        text("AI & Profil").size(18).color(Color::from_rgb(1.0, 1.0, 0.0)),
-                        column![
-                            text("Min bakgrund (används för AI-matchning)").size(14),
-                            container(
-                                text_editor(&self.profile_content)
-                                    .on_action(Message::EditorProfileChanged)
-                            ).height(120).padding(5).style(|_theme: &Theme| container::Style {
-                                border: iced::Border {
-                                    color: Color::from_rgb(0.3, 0.3, 0.3),
-                                    width: 1.0,
-                                    radius: 5.0.into(),
-                                },
-                                ..Default::default()
-                            }),
-                        ].spacing(5),
-                        column![
-                            text("Ollama API URL").size(14),
-                            text_input("http://localhost:11434/v1", &self.settings.ollama_url)
-                                .on_input(Message::SettingsOllamaUrlChanged)
-                                .padding(10),
-                        ].spacing(5),
-                    ].spacing(15),
-                ].spacing(30).padding(Padding { top: 20.0, right: 40.0, bottom: 20.0, left: 20.0 })
-            )
-        ).width(Length::Fill).height(Length::Fill).into()
+                        text("Ollama API URL").size(14),
+                        text_input("http://localhost:11434/v1", &self.settings.ollama_url)
+                            .on_input(Message::SettingsOllamaUrlChanged)
+                            .padding(10),
+                    ]
+                    .spacing(5),
+                ]
+                .spacing(15),
+            ]
+            .spacing(30)
+            .padding(Padding {
+                top: 20.0,
+                right: 40.0,
+                bottom: 20.0,
+                left: 20.0,
+            }),
+        ))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     }
 
-    fn view_application_editor<'a>(&'a self, tab_index: usize, _headline: &str, content: &'a text_editor::Content, is_editing: bool) -> Element<'a, Message> {
+    fn view_application_editor<'a>(
+        &'a self,
+        tab_index: usize,
+        headline: &str,
+        content: &'a RichEditor,
+        is_editing: bool,
+    ) -> Element<'a, Message> {
         let editor_side: Element<'a, Message> = if is_editing {
-            let edit_field = container(
-                text_editor(content)
-                    .placeholder("Skriv ditt personliga brev här...")
-                    .on_action(move |action| Message::EditorContentChanged(tab_index, action))
-            )
-            .padding(Padding { top: 40.0, right: 60.0, bottom: 40.0, left: 60.0 })
-            .width(Length::Fixed(800.0))
-            .height(Length::Fill)
-            .style(|_theme: &Theme| container::Style {
-                background: Some(Color::WHITE.into()),
-                border: iced::Border {
-                    color: Color::from_rgb(0.7, 0.7, 0.7),
-                    width: 1.0,
-                    radius: 2.0.into(),
-                },
-                shadow: iced::Shadow {
-                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.1),
-                    offset: iced::Vector::new(2.0, 2.0),
-                    blur_radius: 10.0,
-                },
-                ..Default::default()
-            });
+            let editor_widget =
+                content
+                    .view(self.show_editor_tools)
+                    .map(move |re_msg| match re_msg {
+                        RichEditorMessage::ActionPerformed(_) => {
+                            Message::EditorContentChanged(tab_index)
+                        }
+                        RichEditorMessage::Bold => Message::EditorBold(tab_index),
+                        RichEditorMessage::Italic => Message::EditorItalic(tab_index),
+                        RichEditorMessage::Heading1 => Message::EditorHeading1(tab_index),
+                        RichEditorMessage::Heading2 => Message::EditorHeading2(tab_index),
+                        RichEditorMessage::Heading3 => Message::EditorHeading3(tab_index),
+                        RichEditorMessage::BulletList => Message::EditorBulletList(tab_index),
+                        RichEditorMessage::NumberedList => Message::EditorNumberedList(tab_index),
+                        RichEditorMessage::Link => Message::EditorInsertLink(tab_index),
+                        RichEditorMessage::InsertText(_) => Message::SaveSettings,
+                    });
 
-            if self.show_editor_tools {
-                let job_id = if let Tab::ApplicationEditor { job_id, .. } = &self.tabs[tab_index] { job_id } else { "" };
-                let ad_ref = self.ads.iter().find(|a| &a.id == job_id);
-
-                let floating_tools = container(
-                    column![
-                        row![
-                            text("Text:").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
-                            tooltip(
-                                button(svg(svg::Handle::from_memory(SVG_BOLD)).width(16).height(16))
-                                    .padding(5)
-                                    .style(|_theme: &Theme, status| {
-                                        if status == button::Status::Hovered {
-                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
-                                        } else {
-                                            button::Style { background: None, ..Default::default() }
-                                        }
-                                    }),
-                                "Fetstil (Ctrl+B)",
-                                tooltip::Position::Top
-                            ).style(|_theme: &Theme| container::Style {
-                                background: Some(Color::BLACK.into()),
-                                text_color: Some(Color::WHITE),
-                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                ..Default::default()
-                            }),
-                            tooltip(
-                                button(svg(svg::Handle::from_memory(SVG_ITALIC)).width(16).height(16))
-                                    .padding(5)
-                                    .style(|_theme: &Theme, status| {
-                                        if status == button::Status::Hovered {
-                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
-                                        } else {
-                                            button::Style { background: None, ..Default::default() }
-                                        }
-                                    }),
-                                "Kursiv (Ctrl+I)",
-                                tooltip::Position::Top
-                            ).style(|_theme: &Theme| container::Style {
-                                background: Some(Color::BLACK.into()),
-                                text_color: Some(Color::WHITE),
-                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                ..Default::default()
-                            }),
-                            tooltip(
-                                button(svg(svg::Handle::from_memory(SVG_UNDERLINE)).width(16).height(16))
-                                    .padding(5)
-                                    .style(|_theme: &Theme, status| {
-                                        if status == button::Status::Hovered {
-                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
-                                        } else {
-                                            button::Style { background: None, ..Default::default() }
-                                        }
-                                    }),
-                                "Understruken (Ctrl+U)",
-                                tooltip::Position::Top
-                            ).style(|_theme: &Theme| container::Style {
-                                background: Some(Color::BLACK.into()),
-                                text_color: Some(Color::WHITE),
-                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                ..Default::default()
-                            }),
-                            space::horizontal(),
-                            button(text("Klistra in profil").size(12))
-                                .on_press(Message::EditorPasteProfile(tab_index))
-                                .style(|_theme: &Theme, _status| button::Style {
-                                    background: Some(Color::from_rgb(0.2, 0.3, 0.5).into()),
-                                    ..Default::default()
-                                }),
-                        ].spacing(8).align_y(Alignment::Center),
-                        rule::horizontal(1),
-                        row![
-                            text("Justera:").size(12).color(Color::from_rgb(0.6, 0.6, 0.6)),
-                            tooltip(
-                                button(svg(svg::Handle::from_memory(SVG_ALIGN_LEFT)).width(16).height(16))
-                                    .padding(5)
-                                    .style(|_theme: &Theme, status| {
-                                        if status == button::Status::Hovered {
-                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
-                                        } else {
-                                            button::Style { background: None, ..Default::default() }
-                                        }
-                                    }),
-                                "Vänsterställd",
-                                tooltip::Position::Top
-                            ).style(|_theme: &Theme| container::Style {
-                                background: Some(Color::BLACK.into()),
-                                text_color: Some(Color::WHITE),
-                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                ..Default::default()
-                            }),
-                            tooltip(
-                                button(svg(svg::Handle::from_memory(SVG_ALIGN_CENTER)).width(16).height(16))
-                                    .padding(5)
-                                    .style(|_theme: &Theme, status| {
-                                        if status == button::Status::Hovered {
-                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
-                                        } else {
-                                            button::Style { background: None, ..Default::default() }
-                                        }
-                                    }),
-                                "Centrerad",
-                                tooltip::Position::Top
-                            ).style(|_theme: &Theme| container::Style {
-                                background: Some(Color::BLACK.into()),
-                                text_color: Some(Color::WHITE),
-                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                ..Default::default()
-                            }),
-                            tooltip(
-                                button(svg(svg::Handle::from_memory(SVG_ALIGN_RIGHT)).width(16).height(16))
-                                    .padding(5)
-                                    .style(|_theme: &Theme, status| {
-                                        if status == button::Status::Hovered {
-                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
-                                        } else {
-                                            button::Style { background: None, ..Default::default() }
-                                        }
-                                    }),
-                                "Högerställd",
-                                tooltip::Position::Top
-                            ).style(|_theme: &Theme| container::Style {
-                                background: Some(Color::BLACK.into()),
-                                text_color: Some(Color::WHITE),
-                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                ..Default::default()
-                            }),
-                            tooltip(
-                                button(svg(svg::Handle::from_memory(SVG_ALIGN_JUSTIFY)).width(16).height(16))
-                                    .padding(5)
-                                    .style(|_theme: &Theme, status| {
-                                        if status == button::Status::Hovered {
-                                            button::Style { background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()), ..Default::default() }
-                                        } else {
-                                            button::Style { background: None, ..Default::default() }
-                                        }
-                                    }),
-                                "Marginaljusterad",
-                                tooltip::Position::Top
-                            ).style(|_theme: &Theme| container::Style {
-                                background: Some(Color::BLACK.into()),
-                                text_color: Some(Color::WHITE),
-                                border: iced::Border { radius: 4.0.into(), ..Default::default() },
-                                ..Default::default()
-                            }),
-                            space::horizontal(),
-                            button(text("Infoga [Företag]").size(12))
-                                .on_press(Message::CopyText(ad_ref.and_then(|a| a.employer.as_ref()).and_then(|e| e.name.clone()).unwrap_or_default())),
-                        ].spacing(8).align_y(Alignment::Center),
-                    ].spacing(10).padding(10)
-                )
+            let edit_field = container(editor_widget)
+                .padding(Padding {
+                    top: 40.0,
+                    right: 60.0,
+                    bottom: 40.0,
+                    left: 60.0,
+                })
+                .width(Length::Fixed(800.0))
+                .height(Length::Fill)
                 .style(|_theme: &Theme| container::Style {
-                    background: Some(Color::from_rgba(0.1, 0.1, 0.15, 0.95).into()),
+                    background: Some(Color::WHITE.into()),
                     border: iced::Border {
-                        color: Color::from_rgb(0.3, 0.6, 0.8),
+                        color: Color::from_rgb(0.7, 0.7, 0.7),
                         width: 1.0,
-                        radius: 8.0.into(),
+                        radius: 2.0.into(),
                     },
                     shadow: iced::Shadow {
-                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.3),
-                        offset: iced::Vector::new(0.0, 4.0),
-                        blur_radius: 15.0,
+                        color: Color::from_rgba(0.0, 0.0, 0.0, 0.1),
+                        offset: iced::Vector::new(2.0, 2.0),
+                        blur_radius: 10.0,
                     },
                     ..Default::default()
                 });
 
-                stack![
-                    edit_field,
-                    container(floating_tools)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .padding(30)
-                        .align_x(Alignment::Center)
-                        .align_y(Alignment::End)
-                ].into()
-            } else {
-                edit_field.into()
-            }
+            // Snabbverktyg för att klistra in profil / infoga företag
+            let extra_tools = container(
+                row![
+                    button(text("Klistra in profil").size(12))
+                        .on_press(Message::EditorPasteProfile(tab_index))
+                        .style(|_theme: &Theme, _status| button::Style {
+                            background: Some(Color::from_rgb(0.2, 0.3, 0.5).into()),
+                            ..Default::default()
+                        }),
+                    button(text("Infoga företag").size(11).color(Color::WHITE))
+                        .on_press(Message::EditorInsertCompany(tab_index))
+                        .padding(5)
+                        .style(|_theme: &Theme, _status| button::Style {
+                            background: Some(Color::from_rgb(0.2, 0.3, 0.5).into()),
+                            ..Default::default()
+                        }),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .padding(10);
+
+            column![edit_field, extra_tools].spacing(10).into()
         } else {
             let body = content.text();
-            let display_text = if body.is_empty() { 
-                "Inget skrivet ännu. Tryck på Redigera för att börja.".to_string() 
-            } else { 
-                body 
+            let display_text = if body.is_empty() {
+                "Inget skrivet ännu. Tryck på Redigera för att börja.".to_string()
+            } else {
+                body
             };
 
-            container(
-                scrollable(
-                    text(display_text)
-                        .color(Color::BLACK)
-                        .size(16)
-                )
-            )
-            .padding(Padding { top: 60.0, right: 80.0, bottom: 60.0, left: 80.0 })
-            .width(Length::Fixed(800.0))
-            .height(Length::Fill)
-            .style(|_theme: &Theme| container::Style {
-                background: Some(Color::WHITE.into()),
-                border: iced::Border {
-                    color: Color::from_rgb(0.8, 0.8, 0.8),
-                    width: 1.0,
-                    radius: 2.0.into(),
-                },
-                ..Default::default()
-            }).into()
+            container(scrollable(text(display_text).color(Color::BLACK).size(16)))
+                .padding(Padding {
+                    top: 60.0,
+                    right: 80.0,
+                    bottom: 60.0,
+                    left: 80.0,
+                })
+                .width(Length::Fixed(800.0))
+                .height(Length::Fill)
+                .style(|_theme: &Theme| container::Style {
+                    background: Some(Color::WHITE.into()),
+                    border: iced::Border {
+                        color: Color::from_rgb(0.8, 0.8, 0.8),
+                        width: 1.0,
+                        radius: 2.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .into()
         };
 
         let job_id = if let Tab::ApplicationEditor { job_id, .. } = &self.tabs[tab_index] {
@@ -1476,25 +1945,83 @@ impl Jobseeker {
         } else {
             ""
         };
-        
+
         let ad_ref = self.ads.iter().find(|a| &a.id == job_id);
 
-        let ad_side = if let Some(ad) = ad_ref {
-            container(
-                scrollable(
+        // Preview side (if enabled)
+        let preview_side: Option<Element<'a, Message>> = if self.show_markdown_preview {
+            let markdown_text = content.text();
+
+            // Use styled Markdown rendering for better preview
+            let markdown_preview = if markdown_text.is_empty() {
+                text("Skriv något i editorn för att se förhandsvisning här...")
+                    .size(14)
+                    .into()
+            } else {
+                crate::rich_editor::markdown::to_iced(&markdown_text)
+            };
+
+            Some(
+                container(
                     column![
-                        text(&ad.headline).size(24).color(Color::WHITE),
-                        text(ad.employer.as_ref().and_then(|e| e.name.clone()).unwrap_or_default()).size(18),
-                        rule::horizontal(1),
-                        text(ad.description.as_ref().and_then(|d| d.text.clone()).unwrap_or_default())
-                    ].spacing(15)
+                        container(text("📄 Förhandsvisning").size(18).color(Color::WHITE))
+                            .padding(10)
+                            .width(Length::Fill)
+                            .style(|_theme: &Theme| container::Style {
+                                background: Some(Color::from_rgb(0.3, 0.6, 0.8).into()),
+                                ..Default::default()
+                            }),
+                        scrollable(container(markdown_preview).padding(20).width(Length::Fill))
+                    ]
+                    .spacing(0),
                 )
-            ).padding(20).width(Length::FillPortion(1))
+                .width(Length::FillPortion(1))
+                .height(Length::Fill)
+                .style(|_theme: &Theme| container::Style {
+                    background: Some(Color::WHITE.into()),
+                    border: iced::Border {
+                        color: Color::from_rgb(0.3, 0.6, 0.8),
+                        width: 2.0,
+                        radius: 4.0.into(),
+                    },
+                    ..Default::default()
+                })
+                .into(),
+            )
         } else {
-            container(text("Annonstext finns tillgänglig i Inbox-fliken.")).padding(20).width(Length::FillPortion(1))
+            None
         };
 
-        row![
+        let ad_side = if let Some(ad) = ad_ref {
+            container(scrollable(
+                column![
+                    text(&ad.headline).size(24).color(Color::WHITE),
+                    text(
+                        ad.employer
+                            .as_ref()
+                            .and_then(|e| e.name.clone())
+                            .unwrap_or_default()
+                    )
+                    .size(18),
+                    rule::horizontal(1),
+                    text(
+                        ad.description
+                            .as_ref()
+                            .and_then(|d| d.text.clone())
+                            .unwrap_or_default()
+                    )
+                ]
+                .spacing(15),
+            ))
+            .padding(20)
+            .width(Length::FillPortion(1))
+        } else {
+            container(text("Annonstext finns tillgänglig i Inbox-fliken."))
+                .padding(20)
+                .width(Length::FillPortion(1))
+        };
+
+        let mut main_row = row![
             ad_side,
             container(editor_side)
                 .width(Length::FillPortion(2))
@@ -1504,6 +2031,12 @@ impl Jobseeker {
                     background: Some(Color::from_rgb(0.85, 0.85, 0.85).into()),
                     ..Default::default()
                 })
-        ].into()
+        ];
+
+        if let Some(preview) = preview_side {
+            main_row = main_row.push(preview);
+        }
+
+        main_row.into()
     }
 }

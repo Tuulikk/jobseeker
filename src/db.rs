@@ -1,7 +1,10 @@
-use sqlx::{sqlite::SqlitePool, Row};
-use crate::models::{JobAd, Description, Employer, ApplicationDetails, Occupation, WorkplaceAddress, AdStatus, WorkingHours};
+use crate::models::{
+    AdStatus, ApplicationDetails, Description, Employer, JobAd, Occupation, WorkingHours,
+    WorkplaceAddress,
+};
 use anyhow::Result;
-use chrono::{DateTime, Utc, Datelike};
+use chrono::{DateTime, Datelike, Utc};
+use sqlx::{Row, sqlite::SqlitePool};
 use std::str::FromStr;
 
 #[derive(Debug, Clone)]
@@ -35,8 +38,10 @@ impl Db {
                 search_keyword TEXT,
                 status INTEGER DEFAULT 0,
                 applied_at TEXT
-            )"
-        ).execute(&pool).await?;
+            )",
+        )
+        .execute(&pool)
+        .await?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS job_applications (
@@ -44,16 +49,30 @@ impl Db {
                 content TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY(job_id) REFERENCES job_ads(id)
-            )"
-        ).execute(&pool).await?;
+            )",
+        )
+        .execute(&pool)
+        .await?;
 
         // Säkerställ att kolumner finns för äldre databaser
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN search_keyword TEXT").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN status INTEGER DEFAULT 0").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN applied_at TEXT").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN municipality TEXT").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN working_hours_label TEXT").execute(&pool).await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN webpage_url TEXT").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN search_keyword TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN status INTEGER DEFAULT 0")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN applied_at TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN municipality TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN working_hours_label TEXT")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN webpage_url TEXT")
+            .execute(&pool)
+            .await;
 
         Ok(Self { pool })
     }
@@ -61,11 +80,11 @@ impl Db {
     pub async fn save_application_draft(&self, job_id: &str, content: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
-            "INSERT INTO job_applications (job_id, content, updated_at) 
-             VALUES (?, ?, ?) 
-             ON CONFLICT(job_id) DO UPDATE SET 
-                content = excluded.content, 
-                updated_at = excluded.updated_at"
+            "INSERT INTO job_applications (job_id, content, updated_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(job_id) DO UPDATE SET
+                content = excluded.content,
+                updated_at = excluded.updated_at",
         )
         .bind(job_id)
         .bind(content)
@@ -80,25 +99,24 @@ impl Db {
             .bind(job_id)
             .fetch_optional(&self.pool)
             .await?;
-        
+
         Ok(row.map(|r| r.get("content")))
     }
 
     pub async fn get_all_drafts(&self) -> Result<Vec<(String, String, String)>> {
         let rows = sqlx::query(
-            "SELECT ja.job_id, ja.updated_at, ads.headline 
+            "SELECT ja.job_id, ja.updated_at, ads.headline
              FROM job_applications ja
              JOIN job_ads ads ON ja.job_id = ads.id
-             ORDER BY ja.updated_at DESC"
+             ORDER BY ja.updated_at DESC",
         )
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows.into_iter().map(|r| (
-            r.get("job_id"),
-            r.get("headline"),
-            r.get("updated_at")
-        )).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get("job_id"), r.get("headline"), r.get("updated_at")))
+            .collect())
     }
 
     pub async fn save_job_ad(&self, ad: &JobAd) -> Result<()> {
@@ -121,7 +139,7 @@ impl Db {
                 occupation_label = excluded.occupation_label,
                 city = excluded.city,
                 municipality = excluded.municipality,
-                search_keyword = COALESCE(job_ads.search_keyword, excluded.search_keyword)"
+                search_keyword = COALESCE(job_ads.search_keyword, excluded.search_keyword)",
         )
         .bind(&ad.id)
         .bind(&ad.headline)
@@ -134,7 +152,11 @@ impl Db {
         .bind(&ad.last_application_date)
         .bind(ad.occupation.as_ref().and_then(|o| o.label.as_ref()))
         .bind(ad.workplace_address.as_ref().and_then(|w| w.city.as_ref()))
-        .bind(ad.workplace_address.as_ref().and_then(|w| w.municipality.as_ref()))
+        .bind(
+            ad.workplace_address
+                .as_ref()
+                .and_then(|w| w.municipality.as_ref()),
+        )
         .bind(ad.is_read)
         .bind(ad.rating.map(|r| r as i32))
         .bind(ad.bookmarked_at.map(|d| d.to_rfc3339()))
@@ -148,13 +170,52 @@ impl Db {
         Ok(())
     }
 
-    pub async fn get_filtered_jobs(&self, status_filter: &[AdStatus], year: Option<i32>, month: Option<u32>) -> Result<Vec<JobAd>> {
-        let query_str = if status_filter.is_empty() {
-            "SELECT * FROM job_ads WHERE status != 1 ORDER BY publication_date DESC".to_string()
+    pub async fn get_filtered_jobs(
+        &self,
+        status_filter: &[AdStatus],
+        year: Option<i32>,
+        month: Option<u32>,
+    ) -> Result<Vec<JobAd>> {
+        // För month-filter och när en enskild status efterfrågas vill vi ta med historiska rader
+        // (t.ex. visa alla jobb som har `applied_at` satt för en månad även om status senare ändrats).
+        let query_str = if year.is_some() && month.is_some() && status_filter.len() == 1 {
+            match status_filter[0] {
+                AdStatus::Applied => {
+                    "SELECT * FROM job_ads WHERE applied_at IS NOT NULL ORDER BY publication_date DESC"
+                        .to_string()
+                }
+                AdStatus::Bookmarked | AdStatus::ThumbsUp => {
+                    "SELECT * FROM job_ads WHERE bookmarked_at IS NOT NULL ORDER BY publication_date DESC"
+                        .to_string()
+                }
+                _ => {
+                    let status_ints: Vec<i32> = status_filter.iter().map(|s| *s as i32).collect();
+                    let placeholders = status_ints
+                        .iter()
+                        .map(|_| "?")
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    format!(
+                        "SELECT * FROM job_ads WHERE status IN ({}) ORDER BY publication_date DESC",
+                        placeholders
+                    )
+                }
+            }
         } else {
-            let status_ints: Vec<i32> = status_filter.iter().map(|s| *s as i32).collect();
-            let placeholders = status_ints.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            format!("SELECT * FROM job_ads WHERE status IN ({}) ORDER BY publication_date DESC", placeholders)
+            if status_filter.is_empty() {
+                "SELECT * FROM job_ads WHERE status != 1 ORDER BY publication_date DESC".to_string()
+            } else {
+                let status_ints: Vec<i32> = status_filter.iter().map(|s| *s as i32).collect();
+                let placeholders = status_ints
+                    .iter()
+                    .map(|_| "?")
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    "SELECT * FROM job_ads WHERE status IN ({}) ORDER BY publication_date DESC",
+                    placeholders
+                )
+            }
         };
 
         let mut query = sqlx::query(&query_str);
@@ -166,17 +227,26 @@ impl Db {
 
         let rows = query.fetch_all(&self.pool).await?;
         let mut ads = Vec::new();
-        
+
         for row in rows {
             let ad = self.map_row_to_ad(row)?;
-            
+
             if let (Some(y), Some(m)) = (year, month) {
-                let date_to_check = if ad.status == Some(AdStatus::Applied) {
-                    ad.applied_at
-                } else if ad.status == Some(AdStatus::Bookmarked) || ad.status == Some(AdStatus::ThumbsUp) {
-                    ad.bookmarked_at
+                // Bestäm vilken tidsstämpel vi ska jämföra mot:
+                // - Om användaren specifikt efterfrågar t.ex. `Applied` så vill vi matcha `applied_at`,
+                //   även om `status` senare ändrats (så historiska objekt visas korrekt).
+                // - Om flera/ingen status specificerats så använder vi en prioritering:
+                //   applied_at -> bookmarked_at -> internal_created_at.
+                let date_to_check = if status_filter.len() == 1 {
+                    match status_filter[0] {
+                        AdStatus::Applied => ad.applied_at,
+                        AdStatus::Bookmarked | AdStatus::ThumbsUp => ad.bookmarked_at,
+                        _ => Some(ad.internal_created_at),
+                    }
                 } else {
-                    Some(ad.internal_created_at)
+                    ad.applied_at
+                        .or(ad.bookmarked_at)
+                        .or(Some(ad.internal_created_at))
                 };
 
                 if let Some(dt) = date_to_check {
@@ -200,20 +270,23 @@ impl Db {
                     .bind(status as i32)
                     .bind(now)
                     .bind(id)
-                    .execute(&self.pool).await?;
-            },
+                    .execute(&self.pool)
+                    .await?;
+            }
             AdStatus::Bookmarked | AdStatus::ThumbsUp => {
                 sqlx::query("UPDATE job_ads SET status = ?, bookmarked_at = ? WHERE id = ?")
                     .bind(status as i32)
                     .bind(now)
                     .bind(id)
-                    .execute(&self.pool).await?;
-            },
+                    .execute(&self.pool)
+                    .await?;
+            }
             _ => {
                 sqlx::query("UPDATE job_ads SET status = ? WHERE id = ?")
                     .bind(status as i32)
                     .bind(id)
-                    .execute(&self.pool).await?;
+                    .execute(&self.pool)
+                    .await?;
             }
         }
         Ok(())
@@ -244,7 +317,9 @@ impl Db {
     }
 
     fn map_row_to_ad(&self, row: sqlx::sqlite::SqliteRow) -> Result<JobAd> {
-        let created_at_str: String = row.try_get("internal_created_at").unwrap_or_else(|_| Utc::now().to_rfc3339());
+        let created_at_str: String = row
+            .try_get("internal_created_at")
+            .unwrap_or_else(|_| Utc::now().to_rfc3339());
         let internal_created_at = DateTime::parse_from_rfc3339(&created_at_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now());
@@ -261,10 +336,12 @@ impl Db {
         Ok(JobAd {
             id: row.try_get("id").unwrap_or_default(),
             headline: row.try_get("headline").unwrap_or_default(),
-            description: Some(Description { text: row.try_get("description").ok() }),
-            employer: Some(Employer { 
-                name: row.try_get("employer_name").ok(), 
-                workplace: row.try_get("employer_workplace").ok() 
+            description: Some(Description {
+                text: row.try_get("description").ok(),
+            }),
+            employer: Some(Employer {
+                name: row.try_get("employer_name").ok(),
+                workplace: row.try_get("employer_workplace").ok(),
             }),
             application_details: Some(ApplicationDetails {
                 url: row.try_get("application_url").ok(),
@@ -272,8 +349,10 @@ impl Db {
             webpage_url: row.try_get("webpage_url").ok(),
             publication_date: row.try_get("publication_date").unwrap_or_default(),
             last_application_date: row.try_get("last_application_date").ok(),
-            occupation: Some(Occupation { label: row.try_get("occupation_label").ok() }),
-            workplace_address: Some(WorkplaceAddress { 
+            occupation: Some(Occupation {
+                label: row.try_get("occupation_label").ok(),
+            }),
+            workplace_address: Some(WorkplaceAddress {
                 city: row.try_get("city").ok(),
                 municipality: row.try_get("municipality").ok(),
             }),
@@ -281,16 +360,74 @@ impl Db {
                 label: row.try_get("working_hours_label").ok(),
             }),
             is_read: row.try_get("is_read").unwrap_or(false),
-            rating: row.try_get::<Option<i32>, _>("rating").ok().flatten().map(|r| r as u8),
-            bookmarked_at: row.try_get::<Option<String>, _>("bookmarked_at").ok().flatten()
+            rating: row
+                .try_get::<Option<i32>, _>("rating")
+                .ok()
+                .flatten()
+                .map(|r| r as u8),
+            bookmarked_at: row
+                .try_get::<Option<String>, _>("bookmarked_at")
+                .ok()
+                .flatten()
                 .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                 .map(|dt| dt.with_timezone(&Utc)),
             internal_created_at,
             search_keyword: row.try_get("search_keyword").ok(),
             status: Some(status),
-            applied_at: row.try_get::<Option<String>, _>("applied_at").ok().flatten()
+            applied_at: row
+                .try_get::<Option<String>, _>("applied_at")
+                .ok()
+                .flatten()
                 .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
                 .map(|dt| dt.with_timezone(&Utc)),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use chrono::Utc;
+
+    // Async test that exercises saving and loading an application draft via the DB API using an in-memory DB.
+    #[tokio::test]
+    async fn test_save_and_get_application_draft() -> Result<()> {
+        // Use in-memory SQLite to avoid filesystem dependencies in tests.
+        let db = Db::new("sqlite::memory:").await?;
+
+        // Create and save a minimal job ad (so the draft join logic in get_all_drafts works)
+        let job_id = "test-draft-1";
+        let ad = JobAd {
+            id: job_id.to_string(),
+            headline: "Test Draft".to_string(),
+            description: None,
+            employer: None,
+            application_details: None,
+            webpage_url: None,
+            publication_date: Utc::now().to_rfc3339(),
+            last_application_date: None,
+            occupation: None,
+            workplace_address: None,
+            working_hours_type: None,
+            is_read: false,
+            rating: None,
+            bookmarked_at: None,
+            internal_created_at: Utc::now(),
+            search_keyword: None,
+            status: None,
+            applied_at: None,
+        };
+        db.save_job_ad(&ad).await?;
+
+        // Save draft content
+        let content = "Detta är ett testutkast";
+        db.save_application_draft(job_id, content).await?;
+
+        // Retrieve draft and assert it matches
+        let loaded = db.get_application_draft(job_id).await?;
+        assert_eq!(loaded, Some(content.to_string()));
+
+        Ok(())
     }
 }
