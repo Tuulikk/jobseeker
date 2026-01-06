@@ -309,6 +309,15 @@ impl Db {
         Ok(())
     }
 
+    pub async fn update_draft_headline(&self, job_id: &str, new_headline: &str) -> Result<()> {
+        sqlx::query("UPDATE job_ads SET headline = ? WHERE id = ?")
+            .bind(new_headline)
+            .bind(job_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn clear_non_bookmarked(&self) -> Result<()> {
         sqlx::query("DELETE FROM job_ads WHERE status IN (0, 1)")
             .execute(&self.pool)
@@ -427,6 +436,46 @@ mod tests {
         // Retrieve draft and assert it matches
         let loaded = db.get_application_draft(job_id).await?;
         assert_eq!(loaded, Some(content.to_string()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_historical_applied_shows_by_month() -> Result<()> {
+        let db = Db::new("sqlite::memory:").await?;
+
+        let job_id = "history1";
+        let applied_dt =
+            chrono::DateTime::parse_from_rfc3339("2025-12-15T12:00:00+00:00")?.with_timezone(&Utc);
+
+        let ad = JobAd {
+            id: job_id.to_string(),
+            headline: "Historisk ansökan".to_string(),
+            description: None,
+            employer: None,
+            application_details: None,
+            webpage_url: None,
+            publication_date: Utc::now().to_rfc3339(),
+            last_application_date: None,
+            occupation: None,
+            workplace_address: None,
+            working_hours_type: None,
+            is_read: false,
+            rating: None,
+            bookmarked_at: None,
+            internal_created_at: Utc::now(),
+            search_keyword: None,
+            status: None,
+            applied_at: Some(applied_dt),
+        };
+
+        db.save_job_ad(&ad).await?;
+
+        // När vi frågar efter Applied i Dec 2025 bör det historiska objektet hittas
+        let res = db
+            .get_filtered_jobs(&[AdStatus::Applied], Some(2025), Some(12))
+            .await?;
+        assert!(res.into_iter().any(|r| r.id == job_id.to_string()));
 
         Ok(())
     }

@@ -121,6 +121,13 @@ struct Jobseeker {
     keywords_content: text_editor::Content,
     blacklist_content: text_editor::Content,
     profile_content: text_editor::Content,
+
+    // Draft renaming state
+    renaming_draft_id: Option<String>,
+    renaming_draft_new_name: String,
+
+    // Misc
+    is_init: bool,
 }
 
 impl Jobseeker {
@@ -155,6 +162,9 @@ impl Jobseeker {
             keywords_content,
             blacklist_content,
             profile_content,
+            renaming_draft_id: None,
+            renaming_draft_new_name: String::new(),
+            is_init: false,
         }
     }
 
@@ -238,6 +248,10 @@ enum Message {
     CopyText(String),
     NextAd,
     PrevAd,
+    StartRenameDraft(String),      // draft_id
+    UpdateRenameDraftName(String), // new_name
+    SaveRenameDraft,
+    CancelRenameDraft,
 }
 
 impl Jobseeker {
@@ -991,6 +1005,55 @@ impl Jobseeker {
                 }
                 Task::none()
             }
+            Message::StartRenameDraft(id) => {
+                // Find the current headline for this draft
+                let headline = self
+                    .drafts_list
+                    .iter()
+                    .find(|(d_id, _, _)| d_id == &id)
+                    .map(|(_, h, _)| h.clone())
+                    .unwrap_or_default();
+
+                self.renaming_draft_id = Some(id);
+                self.renaming_draft_new_name = headline;
+                Task::none()
+            }
+            Message::UpdateRenameDraftName(new_name) => {
+                self.renaming_draft_new_name = new_name;
+                Task::none()
+            }
+            Message::SaveRenameDraft => {
+                if let Some(draft_id) = &self.renaming_draft_id {
+                    if !self.renaming_draft_new_name.trim().is_empty() {
+                        // Save to DB
+                        let db_clone = Arc::clone(&self.db);
+                        let id_clone = draft_id.clone();
+                        let new_headline = self.renaming_draft_new_name.clone();
+
+                        return Task::perform(
+                            async move {
+                                if let Some(db) = &*db_clone {
+                                    let _ =
+                                        db.update_draft_headline(&id_clone, &new_headline).await;
+                                }
+                            },
+                            |_| {
+                                // Clear rename state and reload drafts
+                                let mut state = Self::new();
+                                state.renaming_draft_id = None;
+                                state.renaming_draft_new_name = String::new();
+                                Message::LoadDrafts
+                            },
+                        );
+                    }
+                }
+                Task::none()
+            }
+            Message::CancelRenameDraft => {
+                self.renaming_draft_id = None;
+                self.renaming_draft_new_name = String::new();
+                Task::none()
+            }
         }
     }
 
@@ -1541,41 +1604,108 @@ impl Jobseeker {
         } else {
             for (id, headline, updated_at) in &self.drafts_list {
                 let date_part = updated_at.split('T').next().unwrap_or(updated_at);
+                let is_renaming = self.renaming_draft_id.as_ref() == Some(id);
 
-                list_content = list_content.push(
-                    button(
-                        row![
-                            column![
-                                text(headline).size(18).color(Color::WHITE),
-                                text(format!("Senast sparad: {}", date_part))
-                                    .size(14)
-                                    .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                if is_renaming {
+                    // Show rename input
+                    list_content = list_content.push(
+                        container(
+                            row![
+                                column![
+                                    text_input("Nytt namn...", &self.renaming_draft_new_name)
+                                        .on_input(Message::UpdateRenameDraftName)
+                                        .padding(10)
+                                        .size(18),
+                                    text("Klicka på ✓ för att spara, ✗ för att avbryta")
+                                        .size(12)
+                                        .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                                ]
+                                .spacing(5)
+                                .width(Length::Fill),
+                                row![
+                                    button(text("✓").size(20))
+                                        .on_press(Message::SaveRenameDraft)
+                                        .padding(8),
+                                    button(text("✗").size(20))
+                                        .on_press(Message::CancelRenameDraft)
+                                        .padding(8),
+                                ]
+                                .spacing(5),
                             ]
-                            .spacing(5)
-                            .width(Length::Fill),
-                            text("Öppna →")
-                                .size(14)
-                                .color(Color::from_rgb(0.3, 0.6, 0.8)),
-                        ]
-                        .align_y(Alignment::Center)
-                        .padding(10),
-                    )
-                    .on_press(Message::OpenEditor(id.clone(), headline.clone()))
-                    .width(Length::Fill)
-                    .style(|_theme, status| {
-                        if status == button::Status::Hovered {
-                            button::Style {
-                                background: Some(Color::from_rgb(0.15, 0.15, 0.2).into()),
-                                ..Default::default()
+                            .spacing(10)
+                            .align_y(Alignment::Center)
+                            .padding(10),
+                        )
+                        .width(Length::Fill)
+                        .style(|_theme: &Theme| container::Style {
+                            background: Some(Color::from_rgb(0.25, 0.25, 0.35).into()),
+                            border: iced::Border {
+                                color: Color::from_rgb(0.3, 0.6, 0.8),
+                                width: 2.0,
+                                radius: 4.0.into(),
+                            },
+                            ..Default::default()
+                        }),
+                    );
+                } else {
+                    // Show normal draft row
+                    list_content = list_content.push(
+                        button(
+                            row![
+                                column![
+                                    text(headline).size(18).color(Color::WHITE),
+                                    text(format!("Senast sparad: {}", date_part))
+                                        .size(14)
+                                        .color(Color::from_rgb(0.5, 0.5, 0.5)),
+                                ]
+                                .spacing(5)
+                                .width(Length::Fill),
+                                row![
+                                    button(text("✎").size(14))
+                                        .on_press(Message::StartRenameDraft(id.clone()))
+                                        .padding(5)
+                                        .style(|_theme: &Theme, status| {
+                                            if status == button::Status::Hovered {
+                                                button::Style {
+                                                    background: Some(
+                                                        Color::from_rgb(0.4, 0.6, 0.8).into(),
+                                                    ),
+                                                    ..Default::default()
+                                                }
+                                            } else {
+                                                button::Style {
+                                                    background: None,
+                                                    ..Default::default()
+                                                }
+                                            }
+                                        }),
+                                    text("Öppna →")
+                                        .size(14)
+                                        .color(Color::from_rgb(0.3, 0.6, 0.8)),
+                                ]
+                                .spacing(5)
+                                .align_y(Alignment::Center),
+                            ]
+                            .align_y(Alignment::Center)
+                            .padding(10),
+                        )
+                        .on_press(Message::OpenEditor(id.clone(), headline.clone()))
+                        .width(Length::Fill)
+                        .style(|_theme, status| {
+                            if status == button::Status::Hovered {
+                                button::Style {
+                                    background: Some(Color::from_rgb(0.15, 0.15, 0.2).into()),
+                                    ..Default::default()
+                                }
+                            } else {
+                                button::Style {
+                                    background: Some(Color::from_rgb(0.1, 0.1, 0.12).into()),
+                                    ..Default::default()
+                                }
                             }
-                        } else {
-                            button::Style {
-                                background: Some(Color::from_rgb(0.1, 0.1, 0.12).into()),
-                                ..Default::default()
-                            }
-                        }
-                    }),
-                );
+                        }),
+                    );
+                }
             }
         }
 
