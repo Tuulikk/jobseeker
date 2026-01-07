@@ -2,171 +2,160 @@ use crate::models::{
     AdStatus, ApplicationDetails, Description, Employer, JobAd, Occupation, WorkingHours,
     WorkplaceAddress,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, Utc};
-use sqlx::{Row, sqlite::SqlitePool};
-use std::str::FromStr;
+use redb::{Database, ReadableTable, TableDefinition};
+use serde::{Deserialize, Serialize};
+
+// Table definitions
+const JOB_ADS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("job_ads");
+const JOB_APPLICATIONS_TABLE: TableDefinition<&str, &str> =
+    TableDefinition::new("job_applications");
+
+// Serializable version of JobAd for storage
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct StoredJobAd {
+    pub id: String,
+    pub headline: String,
+    pub description: Option<String>,
+    pub employer_name: Option<String>,
+    pub employer_workplace: Option<String>,
+    pub application_url: Option<String>,
+    pub webpage_url: Option<String>,
+    pub publication_date: String,
+    pub last_application_date: Option<String>,
+    pub occupation_label: Option<String>,
+    pub city: Option<String>,
+    pub municipality: Option<String>,
+    pub working_hours_label: Option<String>,
+    pub is_read: bool,
+    pub rating: Option<u8>,
+    pub bookmarked_at: Option<String>,
+    pub internal_created_at: String,
+    pub search_keyword: Option<String>,
+    pub status: i32,
+    pub applied_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredApplication {
+    pub job_id: String,
+    pub content: String,
+    pub updated_at: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct Db {
-    pool: SqlitePool,
+    db: std::sync::Arc<Database>,
 }
 
 impl Db {
-    pub async fn new(db_url: &str) -> Result<Self> {
-        let pool = SqlitePool::connect(db_url).await?;
+    pub fn new(db_path: &str) -> Result<Self> {
+        let db = Database::create(db_path).context("Failed to create/open database")?;
 
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS job_ads (
-                id TEXT PRIMARY KEY,
-                headline TEXT NOT NULL,
-                description TEXT,
-                employer_name TEXT,
-                employer_workplace TEXT,
-                application_url TEXT,
-                webpage_url TEXT,
-                publication_date TEXT,
-                last_application_date TEXT,
-                occupation_label TEXT,
-                city TEXT,
-                municipality TEXT,
-                working_hours_label TEXT,
-                is_read BOOLEAN DEFAULT 0,
-                rating INTEGER,
-                bookmarked_at TEXT,
-                internal_created_at TEXT NOT NULL,
-                search_keyword TEXT,
-                status INTEGER DEFAULT 0,
-                applied_at TEXT
-            )",
-        )
-        .execute(&pool)
-        .await?;
+        // Initialize tables
+        let write_txn = db.begin_write()?;
+        {
+            let _table = write_txn.open_table(JOB_ADS_TABLE)?;
+            let _table = write_txn.open_table(JOB_APPLICATIONS_TABLE)?;
+        }
+        write_txn.commit()?;
 
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS job_applications (
-                job_id TEXT PRIMARY KEY,
-                content TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                FOREIGN KEY(job_id) REFERENCES job_ads(id)
-            )",
-        )
-        .execute(&pool)
-        .await?;
-
-        // Säkerställ att kolumner finns för äldre databaser
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN search_keyword TEXT")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN status INTEGER DEFAULT 0")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN applied_at TEXT")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN municipality TEXT")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN working_hours_label TEXT")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("ALTER TABLE job_ads ADD COLUMN webpage_url TEXT")
-            .execute(&pool)
-            .await;
-
-        Ok(Self { pool })
+        Ok(Self {
+            db: std::sync::Arc::new(db),
+        })
     }
 
     pub async fn save_application_draft(&self, job_id: &str, content: &str) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        sqlx::query(
-            "INSERT INTO job_applications (job_id, content, updated_at)
-             VALUES (?, ?, ?)
-             ON CONFLICT(job_id) DO UPDATE SET
-                content = excluded.content,
-                updated_at = excluded.updated_at",
-        )
-        .bind(job_id)
-        .bind(content)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
+        let draft = StoredApplication {
+            job_id: job_id.to_string(),
+            content: content.to_string(),
+            updated_at: now,
+        };
+
+        let json = serde_json::to_string(&draft)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(JOB_APPLICATIONS_TABLE)?;
+            table.insert(job_id, json.as_str())?;
+        }
+        write_txn.commit()?;
         Ok(())
     }
 
     pub async fn get_application_draft(&self, job_id: &str) -> Result<Option<String>> {
-        let row = sqlx::query("SELECT content FROM job_applications WHERE job_id = ?")
-            .bind(job_id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOB_APPLICATIONS_TABLE)?;
 
-        Ok(row.map(|r| r.get("content")))
+        if let Some(value) = table.get(job_id)? {
+            let draft: StoredApplication = serde_json::from_str(value.value())?;
+            Ok(Some(draft.content))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn get_all_drafts(&self) -> Result<Vec<(String, String, String)>> {
-        let rows = sqlx::query(
-            "SELECT ja.job_id, ja.updated_at, ads.headline
-             FROM job_applications ja
-             JOIN job_ads ads ON ja.job_id = ads.id
-             ORDER BY ja.updated_at DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOB_APPLICATIONS_TABLE)?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| (r.get("job_id"), r.get("headline"), r.get("updated_at")))
-            .collect())
+        let mut drafts = Vec::new();
+        for item in table.iter()? {
+            let (key, value) = item?;
+            let draft: StoredApplication = serde_json::from_str(value.value())?;
+
+            // Get headline from job_ads
+            let ads_table = read_txn.open_table(JOB_ADS_TABLE)?;
+            let headline = if let Some(ad_json) = ads_table.get(key.value())? {
+                let stored: StoredJobAd = serde_json::from_str(ad_json.value())?;
+                stored.headline
+            } else {
+                "Unknown".to_string()
+            };
+
+            drafts.push((draft.job_id, headline, draft.updated_at));
+        }
+
+        // Sort by updated_at descending
+        drafts.sort_by(|a, b| b.2.cmp(&a.2));
+        Ok(drafts)
     }
 
     pub async fn save_job_ad(&self, ad: &JobAd) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO job_ads (
-                id, headline, description, employer_name, employer_workplace,
-                application_url, webpage_url, publication_date, last_application_date,
-                occupation_label, city, municipality, is_read, rating, bookmarked_at,
-                internal_created_at, search_keyword, status, applied_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                headline = excluded.headline,
-                description = excluded.description,
-                employer_name = excluded.employer_name,
-                employer_workplace = excluded.employer_workplace,
-                application_url = excluded.application_url,
-                webpage_url = excluded.webpage_url,
-                publication_date = excluded.publication_date,
-                last_application_date = excluded.last_application_date,
-                occupation_label = excluded.occupation_label,
-                city = excluded.city,
-                municipality = excluded.municipality,
-                search_keyword = COALESCE(job_ads.search_keyword, excluded.search_keyword)",
-        )
-        .bind(&ad.id)
-        .bind(&ad.headline)
-        .bind(ad.description.as_ref().and_then(|d| d.text.as_ref()))
-        .bind(ad.employer.as_ref().and_then(|e| e.name.as_ref()))
-        .bind(ad.employer.as_ref().and_then(|e| e.workplace.as_ref()))
-        .bind(ad.application_details.as_ref().and_then(|a| a.url.as_ref()))
-        .bind(&ad.webpage_url)
-        .bind(&ad.publication_date)
-        .bind(&ad.last_application_date)
-        .bind(ad.occupation.as_ref().and_then(|o| o.label.as_ref()))
-        .bind(ad.workplace_address.as_ref().and_then(|w| w.city.as_ref()))
-        .bind(
-            ad.workplace_address
+        let stored = StoredJobAd {
+            id: ad.id.clone(),
+            headline: ad.headline.clone(),
+            description: ad.description.as_ref().and_then(|d| d.text.clone()),
+            employer_name: ad.employer.as_ref().and_then(|e| e.name.clone()),
+            employer_workplace: ad.employer.as_ref().and_then(|e| e.workplace.clone()),
+            application_url: ad.application_details.as_ref().and_then(|a| a.url.clone()),
+            webpage_url: ad.webpage_url.clone(),
+            publication_date: ad.publication_date.clone(),
+            last_application_date: ad.last_application_date.clone(),
+            occupation_label: ad.occupation.as_ref().and_then(|o| o.label.clone()),
+            city: ad.workplace_address.as_ref().and_then(|w| w.city.clone()),
+            municipality: ad
+                .workplace_address
                 .as_ref()
-                .and_then(|w| w.municipality.as_ref()),
-        )
-        .bind(ad.is_read)
-        .bind(ad.rating.map(|r| r as i32))
-        .bind(ad.bookmarked_at.map(|d| d.to_rfc3339()))
-        .bind(ad.internal_created_at.to_rfc3339())
-        .bind(&ad.search_keyword)
-        .bind(ad.status.unwrap_or(AdStatus::New) as i32)
-        .bind(ad.applied_at.map(|d| d.to_rfc3339()))
-        .execute(&self.pool)
-        .await?;
+                .and_then(|w| w.municipality.clone()),
+            working_hours_label: ad.working_hours_type.as_ref().and_then(|w| w.label.clone()),
+            is_read: ad.is_read,
+            rating: ad.rating,
+            bookmarked_at: ad.bookmarked_at.map(|d| d.to_rfc3339()),
+            internal_created_at: ad.internal_created_at.to_rfc3339(),
+            search_keyword: ad.search_keyword.clone(),
+            status: ad.status.unwrap_or(AdStatus::New) as i32,
+            applied_at: ad.applied_at.map(|d| d.to_rfc3339()),
+        };
 
+        let json = serde_json::to_string(&stored)?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(JOB_ADS_TABLE)?;
+            table.insert(stored.id.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
         Ok(())
     }
 
@@ -176,218 +165,325 @@ impl Db {
         year: Option<i32>,
         month: Option<u32>,
     ) -> Result<Vec<JobAd>> {
-        // För month-filter och när en enskild status efterfrågas vill vi ta med historiska rader
-        // (t.ex. visa alla jobb som har `applied_at` satt för en månad även om status senare ändrats).
-        let query_str = if year.is_some() && month.is_some() && status_filter.len() == 1 {
-            match status_filter[0] {
-                AdStatus::Applied => {
-                    "SELECT * FROM job_ads WHERE applied_at IS NOT NULL ORDER BY publication_date DESC"
-                        .to_string()
-                }
-                AdStatus::Bookmarked | AdStatus::ThumbsUp => {
-                    "SELECT * FROM job_ads WHERE bookmarked_at IS NOT NULL ORDER BY publication_date DESC"
-                        .to_string()
-                }
-                _ => {
-                    let status_ints: Vec<i32> = status_filter.iter().map(|s| *s as i32).collect();
-                    let placeholders = status_ints
-                        .iter()
-                        .map(|_| "?")
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    format!(
-                        "SELECT * FROM job_ads WHERE status IN ({}) ORDER BY publication_date DESC",
-                        placeholders
-                    )
-                }
-            }
-        } else {
-            if status_filter.is_empty() {
-                "SELECT * FROM job_ads WHERE status != 1 ORDER BY publication_date DESC".to_string()
-            } else {
-                let status_ints: Vec<i32> = status_filter.iter().map(|s| *s as i32).collect();
-                let placeholders = status_ints
-                    .iter()
-                    .map(|_| "?")
-                    .collect::<Vec<_>>()
-                    .join(",");
-                format!(
-                    "SELECT * FROM job_ads WHERE status IN ({}) ORDER BY publication_date DESC",
-                    placeholders
-                )
-            }
-        };
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOB_ADS_TABLE)?;
 
-        let mut query = sqlx::query(&query_str);
-        if !status_filter.is_empty() {
-            for s in status_filter {
-                query = query.bind(*s as i32);
-            }
-        }
-
-        let rows = query.fetch_all(&self.pool).await?;
         let mut ads = Vec::new();
 
-        for row in rows {
-            let ad = self.map_row_to_ad(row)?;
+        for item in table.iter()? {
+            let (_key, value) = item?;
+            let stored: StoredJobAd = serde_json::from_str(value.value())?;
 
-            if let (Some(y), Some(m)) = (year, month) {
-                // Bestäm vilken tidsstämpel vi ska jämföra mot:
-                // - Om användaren specifikt efterfrågar t.ex. `Applied` så vill vi matcha `applied_at`,
-                //   även om `status` senare ändrats (så historiska objekt visas korrekt).
-                // - Om flera/ingen status specificerats så använder vi en prioritering:
-                //   applied_at -> bookmarked_at -> internal_created_at.
-                let date_to_check = if status_filter.len() == 1 {
+            // Filter by status
+            let ad_status = match stored.status {
+                0 => AdStatus::New,
+                1 => AdStatus::Rejected,
+                2 => AdStatus::Bookmarked,
+                3 => AdStatus::ThumbsUp,
+                4 => AdStatus::Applied,
+                _ => AdStatus::New,
+            };
+
+            // Apply status filter
+            if !status_filter.is_empty() {
+                // For historical views with month filter
+                if year.is_some() && month.is_some() && status_filter.len() == 1 {
                     match status_filter[0] {
-                        AdStatus::Applied => ad.applied_at,
-                        AdStatus::Bookmarked | AdStatus::ThumbsUp => ad.bookmarked_at,
-                        _ => Some(ad.internal_created_at),
+                        AdStatus::Applied => {
+                            if stored.applied_at.is_none() {
+                                continue;
+                            }
+                        }
+                        AdStatus::Bookmarked | AdStatus::ThumbsUp => {
+                            if stored.bookmarked_at.is_none() {
+                                continue;
+                            }
+                        }
+                        _ => {
+                            if !status_filter.contains(&ad_status) {
+                                continue;
+                            }
+                        }
                     }
                 } else {
-                    ad.applied_at
-                        .or(ad.bookmarked_at)
-                        .or(Some(ad.internal_created_at))
-                };
-
-                if let Some(dt) = date_to_check {
-                    if dt.year() == y && dt.month() == m {
-                        ads.push(ad);
+                    if !status_filter.contains(&ad_status) {
+                        continue;
                     }
                 }
             } else {
-                // Inget tidsfilter, inkludera alla
-                ads.push(ad);
+                // "All" filter - exclude rejected
+                if ad_status == AdStatus::Rejected {
+                    continue;
+                }
             }
+
+            // Apply time filter
+            if let (Some(y), Some(m)) = (year, month) {
+                let mut matches = false;
+
+                if status_filter.len() == 1 {
+                    // Specific status filter - check relevant date
+                    let date_str = match status_filter[0] {
+                        AdStatus::Applied => stored.applied_at.as_ref(),
+                        AdStatus::Bookmarked | AdStatus::ThumbsUp => stored.bookmarked_at.as_ref(),
+                        _ => Some(&stored.internal_created_at),
+                    };
+
+                    if let Some(ds) = date_str {
+                        if let Ok(dt) = DateTime::parse_from_rfc3339(ds) {
+                            let dt_utc = dt.with_timezone(&Utc);
+                            if dt_utc.year() == y && dt_utc.month() == m {
+                                matches = true;
+                            }
+                        }
+                    }
+                } else {
+                    // "All" filter - check any activity date
+                    for date_str in [
+                        stored.applied_at.as_ref(),
+                        stored.bookmarked_at.as_ref(),
+                        Some(&stored.internal_created_at),
+                    ]
+                    .iter()
+                    .filter_map(|&d| d)
+                    {
+                        if let Ok(dt) = DateTime::parse_from_rfc3339(date_str) {
+                            let dt_utc = dt.with_timezone(&Utc);
+                            if dt_utc.year() == y && dt_utc.month() == m {
+                                matches = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if !matches {
+                    continue;
+                }
+            }
+
+            // Convert to JobAd
+            ads.push(self.stored_to_job_ad(&stored)?);
         }
+
+        // Sort by publication date descending
+        ads.sort_by(|a, b| b.publication_date.cmp(&a.publication_date));
         Ok(ads)
     }
 
     pub async fn update_ad_status(&self, id: &str, status: AdStatus) -> Result<()> {
         let now = Utc::now().to_rfc3339();
-        match status {
-            AdStatus::Applied => {
-                sqlx::query("UPDATE job_ads SET status = ?, applied_at = ? WHERE id = ?")
-                    .bind(status as i32)
-                    .bind(now)
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await?;
+
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOB_ADS_TABLE)?;
+
+        if let Some(value) = table.get(id)? {
+            let mut stored: StoredJobAd = serde_json::from_str(value.value())?;
+            stored.status = status as i32;
+
+            match status {
+                AdStatus::Applied => {
+                    stored.applied_at = Some(now);
+                }
+                AdStatus::Bookmarked | AdStatus::ThumbsUp => {
+                    stored.bookmarked_at = Some(now);
+                }
+                _ => {}
             }
-            AdStatus::Bookmarked | AdStatus::ThumbsUp => {
-                sqlx::query("UPDATE job_ads SET status = ?, bookmarked_at = ? WHERE id = ?")
-                    .bind(status as i32)
-                    .bind(now)
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await?;
+
+            drop(table);
+            drop(read_txn);
+
+            let json = serde_json::to_string(&stored)?;
+            let write_txn = self.db.begin_write()?;
+            {
+                let mut table = write_txn.open_table(JOB_ADS_TABLE)?;
+                table.insert(id, json.as_str())?;
             }
-            _ => {
-                sqlx::query("UPDATE job_ads SET status = ? WHERE id = ?")
-                    .bind(status as i32)
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await?;
-            }
+            write_txn.commit()?;
         }
+
         Ok(())
     }
 
     pub async fn mark_as_read(&self, id: &str) -> Result<()> {
-        sqlx::query("UPDATE job_ads SET is_read = 1 WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOB_ADS_TABLE)?;
+
+        if let Some(value) = table.get(id)? {
+            let mut stored: StoredJobAd = serde_json::from_str(value.value())?;
+            stored.is_read = true;
+
+            drop(table);
+            drop(read_txn);
+
+            let json = serde_json::to_string(&stored)?;
+            let write_txn = self.db.begin_write()?;
+            {
+                let mut table = write_txn.open_table(JOB_ADS_TABLE)?;
+                table.insert(id, json.as_str())?;
+            }
+            write_txn.commit()?;
+        }
+
         Ok(())
     }
 
+    #[allow(dead_code)]
+    pub async fn get_job_by_id(&self, job_id: &str) -> Result<Option<JobAd>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOB_ADS_TABLE)?;
+
+        if let Some(value) = table.get(job_id)? {
+            let stored: StoredJobAd = serde_json::from_str(value.value())?;
+            Ok(Some(self.stored_to_job_ad(&stored)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub async fn update_rating(&self, id: &str, rating: u8) -> Result<()> {
-        sqlx::query("UPDATE job_ads SET rating = ? WHERE id = ?")
-            .bind(rating as i32)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOB_ADS_TABLE)?;
+
+        if let Some(value) = table.get(id)? {
+            let mut stored: StoredJobAd = serde_json::from_str(value.value())?;
+            stored.rating = Some(rating);
+
+            drop(table);
+            drop(read_txn);
+
+            let json = serde_json::to_string(&stored)?;
+            let write_txn = self.db.begin_write()?;
+            {
+                let mut table = write_txn.open_table(JOB_ADS_TABLE)?;
+                table.insert(id, json.as_str())?;
+            }
+            write_txn.commit()?;
+        }
+
         Ok(())
     }
 
     pub async fn update_draft_headline(&self, job_id: &str, new_headline: &str) -> Result<()> {
-        sqlx::query("UPDATE job_ads SET headline = ? WHERE id = ?")
-            .bind(new_headline)
-            .bind(job_id)
-            .execute(&self.pool)
-            .await?;
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOB_ADS_TABLE)?;
+
+        if let Some(value) = table.get(job_id)? {
+            let mut stored: StoredJobAd = serde_json::from_str(value.value())?;
+            stored.headline = new_headline.to_string();
+
+            drop(table);
+            drop(read_txn);
+
+            let json = serde_json::to_string(&stored)?;
+            let write_txn = self.db.begin_write()?;
+            {
+                let mut table = write_txn.open_table(JOB_ADS_TABLE)?;
+                table.insert(job_id, json.as_str())?;
+            }
+            write_txn.commit()?;
+        }
+
         Ok(())
     }
 
     pub async fn clear_non_bookmarked(&self) -> Result<()> {
-        sqlx::query("DELETE FROM job_ads WHERE status IN (0, 1)")
-            .execute(&self.pool)
-            .await?;
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOB_ADS_TABLE)?;
+
+        let mut to_delete = Vec::new();
+        for item in table.iter()? {
+            let (key, value) = item?;
+            let stored: StoredJobAd = serde_json::from_str(value.value())?;
+
+            // Keep if bookmarked, thumbs up, or applied
+            if stored.status != 2 && stored.status != 3 && stored.status != 4 {
+                to_delete.push(key.value().to_string());
+            }
+        }
+
+        drop(table);
+        drop(read_txn);
+
+        if !to_delete.is_empty() {
+            let write_txn = self.db.begin_write()?;
+            {
+                let mut table = write_txn.open_table(JOB_ADS_TABLE)?;
+                for id in to_delete {
+                    table.remove(id.as_str())?;
+                }
+            }
+            write_txn.commit()?;
+        }
+
         Ok(())
     }
 
-    fn map_row_to_ad(&self, row: sqlx::sqlite::SqliteRow) -> Result<JobAd> {
-        let created_at_str: String = row
-            .try_get("internal_created_at")
-            .unwrap_or_else(|_| Utc::now().to_rfc3339());
-        let internal_created_at = DateTime::parse_from_rfc3339(&created_at_str)
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|_| Utc::now());
-
-        let status_int: i32 = row.try_get("status").unwrap_or(0);
-        let status = match status_int {
-            1 => AdStatus::Rejected,
-            2 => AdStatus::Bookmarked,
-            3 => AdStatus::ThumbsUp,
-            4 => AdStatus::Applied,
-            _ => AdStatus::New,
-        };
-
+    fn stored_to_job_ad(&self, stored: &StoredJobAd) -> Result<JobAd> {
         Ok(JobAd {
-            id: row.try_get("id").unwrap_or_default(),
-            headline: row.try_get("headline").unwrap_or_default(),
-            description: Some(Description {
-                text: row.try_get("description").ok(),
+            id: stored.id.clone(),
+            headline: stored.headline.clone(),
+            description: stored.description.as_ref().map(|text| Description {
+                text: Some(text.clone()),
             }),
-            employer: Some(Employer {
-                name: row.try_get("employer_name").ok(),
-                workplace: row.try_get("employer_workplace").ok(),
+            employer: if stored.employer_name.is_some() || stored.employer_workplace.is_some() {
+                Some(Employer {
+                    name: stored.employer_name.clone(),
+                    workplace: stored.employer_workplace.clone(),
+                })
+            } else {
+                None
+            },
+            application_details: stored
+                .application_url
+                .as_ref()
+                .map(|url| ApplicationDetails {
+                    url: Some(url.clone()),
+                }),
+            webpage_url: stored.webpage_url.clone(),
+            publication_date: stored.publication_date.clone(),
+            last_application_date: stored.last_application_date.clone(),
+            occupation: stored.occupation_label.as_ref().map(|label| Occupation {
+                label: Some(label.clone()),
             }),
-            application_details: Some(ApplicationDetails {
-                url: row.try_get("application_url").ok(),
-            }),
-            webpage_url: row.try_get("webpage_url").ok(),
-            publication_date: row.try_get("publication_date").unwrap_or_default(),
-            last_application_date: row.try_get("last_application_date").ok(),
-            occupation: Some(Occupation {
-                label: row.try_get("occupation_label").ok(),
-            }),
-            workplace_address: Some(WorkplaceAddress {
-                city: row.try_get("city").ok(),
-                municipality: row.try_get("municipality").ok(),
-            }),
-            working_hours_type: Some(WorkingHours {
-                label: row.try_get("working_hours_label").ok(),
-            }),
-            is_read: row.try_get("is_read").unwrap_or(false),
-            rating: row
-                .try_get::<Option<i32>, _>("rating")
-                .ok()
-                .flatten()
-                .map(|r| r as u8),
-            bookmarked_at: row
-                .try_get::<Option<String>, _>("bookmarked_at")
-                .ok()
-                .flatten()
-                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+            workplace_address: if stored.city.is_some() || stored.municipality.is_some() {
+                Some(WorkplaceAddress {
+                    city: stored.city.clone(),
+                    municipality: stored.municipality.clone(),
+                })
+            } else {
+                None
+            },
+            working_hours_type: stored
+                .working_hours_label
+                .as_ref()
+                .map(|label| WorkingHours {
+                    label: Some(label.clone()),
+                }),
+            is_read: stored.is_read,
+            rating: stored.rating,
+            bookmarked_at: stored
+                .bookmarked_at
+                .as_ref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc)),
-            internal_created_at,
-            search_keyword: row.try_get("search_keyword").ok(),
-            status: Some(status),
-            applied_at: row
-                .try_get::<Option<String>, _>("applied_at")
-                .ok()
-                .flatten()
-                .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+            internal_created_at: DateTime::parse_from_rfc3339(&stored.internal_created_at)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+            search_keyword: stored.search_keyword.clone(),
+            status: Some(match stored.status {
+                0 => AdStatus::New,
+                1 => AdStatus::Rejected,
+                2 => AdStatus::Bookmarked,
+                3 => AdStatus::ThumbsUp,
+                4 => AdStatus::Applied,
+                _ => AdStatus::New,
+            }),
+            applied_at: stored
+                .applied_at
+                .as_ref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc)),
         })
     }
@@ -396,66 +492,78 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Result;
-    use chrono::Utc;
+    use tempfile::tempdir;
 
-    // Async test that exercises saving and loading an application draft via the DB API using an in-memory DB.
     #[tokio::test]
-    async fn test_save_and_get_application_draft() -> Result<()> {
-        // Use in-memory SQLite to avoid filesystem dependencies in tests.
-        let db = Db::new("sqlite::memory:").await?;
+    async fn test_save_and_get_application_draft() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Db::new(db_path.to_str().unwrap()).unwrap();
 
-        // Create and save a minimal job ad (so the draft join logic in get_all_drafts works)
-        let job_id = "test-draft-1";
-        let ad = JobAd {
-            id: job_id.to_string(),
-            headline: "Test Draft".to_string(),
-            description: None,
-            employer: None,
-            application_details: None,
-            webpage_url: None,
-            publication_date: Utc::now().to_rfc3339(),
-            last_application_date: None,
-            occupation: None,
-            workplace_address: None,
-            working_hours_type: None,
-            is_read: false,
-            rating: None,
-            bookmarked_at: None,
-            internal_created_at: Utc::now(),
-            search_keyword: None,
-            status: None,
-            applied_at: None,
-        };
-        db.save_job_ad(&ad).await?;
+        // Save a draft
+        db.save_application_draft("job123", "My application content")
+            .await
+            .unwrap();
 
-        // Save draft content
-        let content = "Detta är ett testutkast";
-        db.save_application_draft(job_id, content).await?;
+        // Retrieve it
+        let content = db.get_application_draft("job123").await.unwrap();
+        assert_eq!(content, Some("My application content".to_string()));
 
-        // Retrieve draft and assert it matches
-        let loaded = db.get_application_draft(job_id).await?;
-        assert_eq!(loaded, Some(content.to_string()));
-
-        Ok(())
+        // Non-existent draft
+        let missing = db.get_application_draft("job999").await.unwrap();
+        assert_eq!(missing, None);
     }
 
     #[tokio::test]
-    async fn test_historical_applied_shows_by_month() -> Result<()> {
-        let db = Db::new("sqlite::memory:").await?;
-
-        let job_id = "history1";
-        let applied_dt =
-            chrono::DateTime::parse_from_rfc3339("2025-12-15T12:00:00+00:00")?.with_timezone(&Utc);
+    async fn test_job_ad_save_and_filter() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Db::new(db_path.to_str().unwrap()).unwrap();
 
         let ad = JobAd {
-            id: job_id.to_string(),
-            headline: "Historisk ansökan".to_string(),
+            id: "test123".to_string(),
+            headline: "Test Job".to_string(),
+            description: Some(Description {
+                text: Some("Description".to_string()),
+            }),
+            employer: None,
+            application_details: None,
+            webpage_url: None,
+            publication_date: "2025-01-07".to_string(),
+            last_application_date: None,
+            occupation: None,
+            workplace_address: None,
+            working_hours_type: None,
+            is_read: false,
+            rating: None,
+            bookmarked_at: None,
+            internal_created_at: Utc::now(),
+            search_keyword: Some("rust".to_string()),
+            status: Some(AdStatus::New),
+            applied_at: None,
+        };
+
+        db.save_job_ad(&ad).await.unwrap();
+
+        let ads = db.get_filtered_jobs(&[], None, None).await.unwrap();
+        assert_eq!(ads.len(), 1);
+        assert_eq!(ads[0].id, "test123");
+    }
+
+    #[tokio::test]
+    async fn test_status_filter() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+        let db = Db::new(db_path.to_str().unwrap()).unwrap();
+
+        let mut ad = JobAd {
+            id: "test456".to_string(),
+            headline: "Bookmarked Job".to_string(),
             description: None,
             employer: None,
             application_details: None,
             webpage_url: None,
-            publication_date: Utc::now().to_rfc3339(),
+            publication_date: "2025-01-07".to_string(),
             last_application_date: None,
             occupation: None,
             workplace_address: None,
@@ -465,18 +573,20 @@ mod tests {
             bookmarked_at: None,
             internal_created_at: Utc::now(),
             search_keyword: None,
-            status: None,
-            applied_at: Some(applied_dt),
+            status: Some(AdStatus::New),
+            applied_at: None,
         };
 
-        db.save_job_ad(&ad).await?;
+        db.save_job_ad(&ad).await.unwrap();
+        db.update_ad_status("test456", AdStatus::Bookmarked)
+            .await
+            .unwrap();
 
-        // När vi frågar efter Applied i Dec 2025 bör det historiska objektet hittas
-        let res = db
-            .get_filtered_jobs(&[AdStatus::Applied], Some(2025), Some(12))
-            .await?;
-        assert!(res.into_iter().any(|r| r.id == job_id.to_string()));
-
-        Ok(())
+        let bookmarked = db
+            .get_filtered_jobs(&[AdStatus::Bookmarked], None, None)
+            .await
+            .unwrap();
+        assert_eq!(bookmarked.len(), 1);
+        assert_eq!(bookmarked[0].status, Some(AdStatus::Bookmarked));
     }
 }

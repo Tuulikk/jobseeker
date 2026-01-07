@@ -1,6 +1,6 @@
 use iced::widget::{button, container, row, text, text_editor};
 use iced::{Alignment, Color, Element, Length, Padding, Theme};
-use pulldown_cmark::{Event, Options, Parser, html};
+use pulldown_cmark::{Options, Parser, html};
 
 #[derive(Debug, Clone)]
 pub enum RichEditorMessage {
@@ -34,6 +34,7 @@ impl RichEditor {
         }
     }
 
+    #[allow(dead_code)]
     pub fn content(&self) -> &text_editor::Content {
         &self.content
     }
@@ -227,7 +228,7 @@ impl Default for RichEditor {
 // Markdown utilities
 pub mod markdown {
     use super::*;
-    use pulldown_cmark::{Event, HeadingLevel, Tag, TagEnd};
+    use pulldown_cmark::{Event, TagEnd};
 
     /// Convert Markdown to HTML with proper styling
     pub fn to_html(markdown: &str) -> String {
@@ -342,6 +343,7 @@ pub mod markdown {
     }
 
     /// Extract plain text from Markdown (removing all formatting)
+    #[allow(dead_code)]
     pub fn to_plain_text(markdown: &str) -> String {
         let parser = Parser::new(markdown);
         let mut plain_text = String::new();
@@ -478,6 +480,7 @@ pub mod export {
     use std::path::Path;
 
     /// Export Markdown to PDF via HTML
+    #[allow(dead_code)]
     pub async fn markdown_to_pdf(markdown: &str, output_path: &Path) -> Result<()> {
         let html = markdown::to_html(markdown);
 
@@ -499,8 +502,6 @@ pub mod export {
 
     /// Export Markdown to DOCX with formatting
     pub async fn markdown_to_docx(markdown: &str, output_path: &Path) -> Result<()> {
-        use pulldown_cmark::{Event, HeadingLevel, Parser, Tag};
-
         let mut doc = Docx::new();
 
         // Configure document with professional styling
@@ -508,7 +509,7 @@ pub mod export {
 
         let parser = Parser::new(markdown);
         let mut current_paragraph = Paragraph::new();
-        let in_list = false;
+        let _in_list = false;
 
         for event in parser {
             match event {

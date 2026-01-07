@@ -12,8 +12,7 @@ use crate::db::Db;
 use crate::models::{AdStatus, AppSettings, JobAd};
 use chrono::{Datelike, Utc};
 use iced::widget::{
-    button, column, container, row, rule, scrollable, space, stack, svg, text, text_editor,
-    text_input, tooltip,
+    button, column, container, row, rule, scrollable, space, svg, text, text_editor, text_input,
 };
 use iced::{Alignment, Color, Element, Length, Padding, Task, Theme};
 use std::sync::Arc;
@@ -33,12 +32,19 @@ const SVG_SETTINGS: &[u8] = include_bytes!("../assets/icons/gear-fill.svg");
 const SVG_INBOX: &[u8] = include_bytes!("../assets/icons/inbox-fill.svg");
 const SVG_PREV: &[u8] = include_bytes!("../assets/icons/chevron-left.svg");
 const SVG_NEXT: &[u8] = include_bytes!("../assets/icons/chevron-right.svg");
+#[allow(dead_code)]
 const SVG_BOLD: &[u8] = include_bytes!("../assets/icons/type-bold.svg");
+#[allow(dead_code)]
 const SVG_ITALIC: &[u8] = include_bytes!("../assets/icons/type-italic.svg");
+#[allow(dead_code)]
 const SVG_UNDERLINE: &[u8] = include_bytes!("../assets/icons/type-underline.svg");
+#[allow(dead_code)]
 const SVG_ALIGN_LEFT: &[u8] = include_bytes!("../assets/icons/text-left.svg");
+#[allow(dead_code)]
 const SVG_ALIGN_CENTER: &[u8] = include_bytes!("../assets/icons/text-center.svg");
+#[allow(dead_code)]
 const SVG_ALIGN_RIGHT: &[u8] = include_bytes!("../assets/icons/text-right.svg");
+#[allow(dead_code)]
 const SVG_ALIGN_JUSTIFY: &[u8] = include_bytes!("../assets/icons/justify.svg");
 
 pub fn main() -> iced::Result {
@@ -127,6 +133,7 @@ struct Jobseeker {
     renaming_draft_new_name: String,
 
     // Misc
+    #[allow(dead_code)]
     is_init: bool,
 }
 
@@ -212,6 +219,7 @@ enum Message {
     ToggleEditorTools,
     ToggleMarkdownPreview(usize),
     EditorPasteProfile(usize),
+    #[allow(dead_code)]
     EditorAiImprove(usize),
     EventOccurred(iced::Event),
     EditorContentChanged(usize),
@@ -259,15 +267,28 @@ impl Jobseeker {
         match message {
             Message::Init => {
                 info!("Initializing DB...");
-                Task::perform(async { Db::new("jobseeker.db").await }, |res| {
-                    Message::InitDb(Arc::new(res.map_err(|e| e.to_string())))
-                })
+                Task::perform(
+                    async {
+                        tokio::task::spawn_blocking(|| Db::new("jobseeker.db"))
+                            .await
+                            .unwrap()
+                    },
+                    |res| Message::InitDb(Arc::new(res.map_err(|e| e.to_string()))),
+                )
             }
             Message::InitDb(res) => match &*res {
                 Ok(db) => {
                     info!("DB initialized successfully.");
                     self.db = Arc::new(Some(db.clone()));
-                    return self.refresh_list();
+                    // Auto-search on startup if we have keywords configured
+                    if !self.settings.keywords.trim().is_empty()
+                        && !self.settings.locations_p1.trim().is_empty()
+                    {
+                        info!("Auto-searching priority 1 area on startup...");
+                        return Task::done(Message::Search(1));
+                    } else {
+                        return self.refresh_list();
+                    }
                 }
                 Err(err_str) => {
                     error!("DB Init Failed: {}", err_str);
@@ -276,6 +297,11 @@ impl Jobseeker {
                 }
             },
             Message::SwitchTab(index) => {
+                // Save settings when leaving Settings tab
+                if matches!(self.tabs.get(self.active_tab), Some(Tab::Settings)) {
+                    self.settings.save();
+                }
+
                 if index < self.tabs.len() {
                     self.active_tab = index;
                     // Ladda utkast om vi går till Drafts-fliken
@@ -539,23 +565,7 @@ impl Jobseeker {
                 }
                 Task::none()
             }
-            Message::EditorInsertCompany(index) => {
-                if let Some(Tab::ApplicationEditor {
-                    job_id, content, ..
-                }) = self.tabs.get_mut(index)
-                {
-                    let company = self
-                        .ads
-                        .iter()
-                        .find(|a| &a.id == job_id)
-                        .and_then(|a| a.employer.as_ref().and_then(|e| e.name.clone()))
-                        .unwrap_or_default();
-                    if !company.is_empty() {
-                        content.update(RichEditorMessage::InsertText(company));
-                    }
-                }
-                Task::none()
-            }
+
             Message::EditorInsertLink(index) => {
                 if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
                     content.update(RichEditorMessage::Link);
@@ -792,7 +802,25 @@ impl Jobseeker {
             Message::SearchResult(Ok(ads)) => {
                 self.is_searching = false;
                 self.ads = ads;
-                self.selected_ad = None;
+                // Auto-select first ad to make the UI more inviting
+                self.selected_ad = if !self.ads.is_empty() { Some(0) } else { None };
+
+                // Mark first ad as read if it exists
+                if let Some(ad) = self.ads.get_mut(0) {
+                    if !ad.is_read {
+                        ad.is_read = true;
+                        let id = ad.id.clone();
+                        let db_clone = Arc::clone(&self.db);
+                        return Task::perform(
+                            async move {
+                                if let Some(db) = &*db_clone {
+                                    let _ = db.mark_as_read(&id).await;
+                                }
+                            },
+                            |_| Message::SaveSettings,
+                        );
+                    }
+                }
                 Task::none()
             }
             Message::SearchResult(Err(e)) => {
@@ -829,17 +857,21 @@ impl Jobseeker {
                     }
                     let id = ad.id.clone();
                     let db_clone = Arc::clone(&self.db);
-                    let current_filter = self.filter;
-                    return Task::perform(
+                    // Update DB in background without refreshing the list
+                    // (local changes already applied above)
+                    Task::perform(
                         async move {
                             if let Some(db) = &*db_clone {
-                                let _ = db.update_ad_status(&id, status).await;
+                                if let Err(e) = db.update_ad_status(&id, status).await {
+                                    eprintln!("Failed to update ad status in DB: {}", e);
+                                }
                             }
                         },
-                        move |_| Message::SetFilter(current_filter),
-                    );
+                        |_| Message::SaveSettings, // No-op message
+                    )
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             Message::SettingsLocP1Changed(val) => {
                 self.settings.locations_p1 = val;
@@ -859,20 +891,29 @@ impl Jobseeker {
             }
             Message::EditorKeywordsChanged(action) => {
                 self.keywords_content.perform(action);
-                self.settings.keywords = self.keywords_content.text();
-                Task::done(Message::SaveSettings)
+                let text = self.keywords_content.text();
+                info!("Keywords changed - new length: {}", text.len());
+                self.settings.keywords = text;
+                Task::none() // Don't auto-save on every keystroke
             }
             Message::EditorBlacklistChanged(action) => {
                 self.blacklist_content.perform(action);
-                self.settings.blacklist_keywords = self.blacklist_content.text();
-                Task::done(Message::SaveSettings)
+                let text = self.blacklist_content.text();
+                info!("Blacklist changed - new length: {}", text.len());
+                self.settings.blacklist_keywords = text;
+                Task::none() // Don't auto-save on every keystroke
             }
             Message::EditorProfileChanged(action) => {
                 self.profile_content.perform(action);
                 self.settings.my_profile = self.profile_content.text();
-                Task::done(Message::SaveSettings)
+                Task::none() // Don't auto-save on every keystroke
             }
             Message::SaveSettings => {
+                info!(
+                    "Saving settings - keywords length: {}, blacklist length: {}",
+                    self.settings.keywords.len(),
+                    self.settings.blacklist_keywords.len()
+                );
                 self.settings.save();
                 Task::none()
             }
@@ -1221,8 +1262,13 @@ impl Jobseeker {
 
             let mut content = row![].align_y(Alignment::Center).spacing(5);
             if let Some(svg_data) = svg_icon {
-                content =
-                    content.push(svg(svg::Handle::from_memory(svg_data)).width(16).height(16));
+                let icon = svg(svg::Handle::from_memory(svg_data))
+                    .width(16)
+                    .height(16)
+                    .style(|_theme: &Theme, _status| svg::Style {
+                        color: Some(Color::BLACK),
+                    });
+                content = content.push(icon);
             }
             content = content.push(text(label).size(14));
 
@@ -1246,10 +1292,11 @@ impl Jobseeker {
 
             if is_active {
                 tab_btn = tab_btn.style(|_theme: &Theme, _status| button::Style {
-                    background: Some(Color::from_rgb(0.2, 0.2, 0.25).into()),
+                    background: Some(Color::from_rgb(0.4, 0.5, 0.6).into()),
+                    text_color: Color::WHITE,
                     border: iced::Border {
                         color: Color::from_rgb(0.3, 0.6, 0.8),
-                        width: 1.0,
+                        width: 2.5,
                         radius: iced::border::Radius {
                             top_left: 5.0,
                             top_right: 5.0,
@@ -1261,7 +1308,8 @@ impl Jobseeker {
                 });
             } else {
                 tab_btn = tab_btn.style(|_theme: &Theme, _status| button::Style {
-                    background: Some(Color::from_rgb(0.1, 0.1, 0.1).into()),
+                    background: Some(Color::from_rgb(0.3, 0.4, 0.5).into()),
+                    text_color: Color::from_rgb(0.9, 0.9, 0.9),
                     ..Default::default()
                 });
             }
@@ -1858,7 +1906,7 @@ impl Jobseeker {
                         text_editor(&self.keywords_content)
                             .on_action(Message::EditorKeywordsChanged)
                     )
-                    .height(80)
+                    .height(150)
                     .padding(5)
                     .style(|_theme: &Theme| container::Style {
                         border: iced::Border {
@@ -1881,7 +1929,7 @@ impl Jobseeker {
                         text_editor(&self.blacklist_content)
                             .on_action(Message::EditorBlacklistChanged)
                     )
-                    .height(80)
+                    .height(150)
                     .padding(5)
                     .style(|_theme: &Theme| container::Style {
                         border: iced::Border {
@@ -1954,6 +2002,27 @@ impl Jobseeker {
                     .spacing(5),
                 ]
                 .spacing(15),
+                // Save button
+                button(
+                    row![text("💾 Spara inställningar").size(16)]
+                        .align_y(Alignment::Center)
+                        .spacing(8)
+                        .padding(10)
+                )
+                .on_press(Message::SaveSettings)
+                .style(|_theme: &Theme, status| button::Style {
+                    background: Some(if status == iced::widget::button::Status::Hovered {
+                        Color::from_rgb(0.3, 0.7, 0.3).into()
+                    } else {
+                        Color::from_rgb(0.2, 0.6, 0.2).into()
+                    }),
+                    text_color: Color::WHITE,
+                    border: iced::Border {
+                        radius: 5.0.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
             ]
             .spacing(30)
             .padding(Padding {
@@ -1971,7 +2040,7 @@ impl Jobseeker {
     fn view_application_editor<'a>(
         &'a self,
         tab_index: usize,
-        headline: &str,
+        _headline: &str,
         content: &'a RichEditor,
         is_editing: bool,
     ) -> Element<'a, Message> {
