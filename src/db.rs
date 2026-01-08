@@ -28,6 +28,10 @@ struct StoredJobAd {
     pub city: Option<String>,
     pub municipality: Option<String>,
     pub working_hours_label: Option<String>,
+    #[serde(default)]
+    pub qualifications: Option<String>,
+    #[serde(default)]
+    pub additional_information: Option<String>,
     pub is_read: bool,
     pub rating: Option<u8>,
     pub bookmarked_at: Option<String>,
@@ -140,6 +144,8 @@ impl Db {
                 .as_ref()
                 .and_then(|w| w.municipality.clone()),
             working_hours_label: ad.working_hours_type.as_ref().and_then(|w| w.label.clone()),
+            qualifications: ad.qualifications.clone(),
+            additional_information: ad.additional_information.clone(),
             is_read: ad.is_read,
             rating: ad.rating,
             bookmarked_at: ad.bookmarked_at.map(|d| d.to_rfc3339()),
@@ -459,6 +465,8 @@ impl Db {
                 .map(|label| WorkingHours {
                     label: Some(label.clone()),
                 }),
+            qualifications: stored.qualifications.clone(),
+            additional_information: stored.additional_information.clone(),
             is_read: stored.is_read,
             rating: stored.rating,
             bookmarked_at: stored
@@ -532,6 +540,8 @@ mod tests {
             occupation: None,
             workplace_address: None,
             working_hours_type: None,
+            qualifications: None,
+            additional_information: None,
             is_read: false,
             rating: None,
             bookmarked_at: None,
@@ -566,6 +576,8 @@ mod tests {
             occupation: None,
             workplace_address: None,
             working_hours_type: None,
+            qualifications: None,
+            additional_information: None,
             is_read: false,
             rating: None,
             bookmarked_at: None,

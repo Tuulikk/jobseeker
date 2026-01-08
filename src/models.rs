@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum AdStatus {
@@ -23,7 +23,9 @@ pub struct JobAd {
     pub occupation: Option<Occupation>,
     pub workplace_address: Option<WorkplaceAddress>,
     pub working_hours_type: Option<WorkingHours>,
-    
+    pub qualifications: Option<String>,
+    pub additional_information: Option<String>,
+
     #[serde(default)]
     pub is_read: bool,
     #[serde(default)]

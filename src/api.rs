@@ -190,6 +190,57 @@ impl JobSearchClient {
                         });
                     }
 
+                    let find_section =
+                        |keys: &[&str]| -> Option<String> { find_section_in_hit(&hit, keys) };
+
+                    // Kvalifikationer (om serde inte redan fyllt detta)
+                    if ad.qualifications.is_none() {
+                        let q_keys = [
+                            "qualifications",
+                            "qualification",
+                            "requirements",
+                            "skills",
+                            "kvalifikationer",
+                            "kvalifikation",
+                            "kompetenskrav",
+                            "krav",
+                        ];
+                        if let Some(q) = find_section(&q_keys) {
+                            ad.qualifications = Some(q);
+                        }
+                    }
+
+                    // Övrig information
+                    if ad.additional_information.is_none() {
+                        let o_keys = [
+                            "other_information",
+                            "additional_information",
+                            "otherinfo",
+                            "övrig_information",
+                            "övrig",
+                            "övrig information",
+                            "övrigt",
+                            "additional",
+                        ];
+                        if let Some(o) = find_section(&o_keys) {
+                            ad.additional_information = Some(o);
+                        }
+                    }
+
+                    // Försök även hitta omfattning om den saknas (kan förekomma som en sektion)
+                    if ad.working_hours_type.is_none() {
+                        if let Some(omf) =
+                            find_section(&["working_hours", "omfattning", "employment_type"])
+                        {
+                            let first_line = omf.lines().next().unwrap_or("").trim().to_string();
+                            if !first_line.is_empty() {
+                                ad.working_hours_type = Some(crate::models::WorkingHours {
+                                    label: Some(first_line),
+                                });
+                            }
+                        }
+                    }
+
                     ads.push(ad);
                 }
                 Err(e) => {
@@ -202,8 +253,144 @@ impl JobSearchClient {
     }
 }
 
+fn find_section_in_hit(hit: &Value, keys: &[&str]) -> Option<String> {
+    // Direkta nycklar (toppnivå eller nested i description)
+    for k in keys {
+        if let Some(s) = hit[k].as_str() {
+            if !s.trim().is_empty() {
+                return Some(s.to_string());
+            }
+        }
+        if let Some(s) = hit["description"][k].as_str() {
+            if !s.trim().is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+
+    // description.sections (vanligt format för uppdelade sektioner)
+    if let Some(secs) = hit["description"]["sections"].as_array() {
+        for sec in secs {
+            let sec_label = sec["heading"]
+                .as_str()
+                .or_else(|| sec["label"].as_str())
+                .or_else(|| sec["title"].as_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            for k in keys {
+                if sec_label.contains(&k.to_lowercase()) {
+                    if let Some(text) = sec["text"].as_str().or_else(|| sec["content"].as_str()) {
+                        if !text.trim().is_empty() {
+                            return Some(text.to_string());
+                        }
+                    }
+                    if let Some(pars) = sec["paragraphs"].as_array() {
+                        let parts: Vec<_> = pars.iter().filter_map(|p| p.as_str()).collect();
+                        if !parts.is_empty() {
+                            return Some(parts.join("\n\n"));
+                        }
+                    }
+                    if let Some(s) = sec.as_str() {
+                        if !s.trim().is_empty() {
+                            return Some(s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // sections på toppnivå (annan variant)
+    if let Some(secs) = hit["sections"].as_array() {
+        for sec in secs {
+            let sec_label = sec["heading"]
+                .as_str()
+                .or_else(|| sec["label"].as_str())
+                .or_else(|| sec["title"].as_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            for k in keys {
+                if sec_label.contains(&k.to_lowercase()) {
+                    if let Some(text) = sec["text"].as_str().or_else(|| sec["content"].as_str()) {
+                        if !text.trim().is_empty() {
+                            return Some(text.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 impl Default for JobSearchClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_find_section_direct_key() {
+        let hit = json!({
+            "qualifications": "Erfarenhet inom support"
+        });
+        let keys = ["qualifications", "kvalifikationer"];
+        assert_eq!(
+            find_section_in_hit(&hit, &keys),
+            Some("Erfarenhet inom support".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_section_description_sections() {
+        let hit = json!({
+            "description": {
+                "sections": [
+                    { "heading": "Kvalifikationer", "text": "Kvalifikationer text" },
+                    { "heading": "Övrig information", "content": "Övrigt info" }
+                ]
+            }
+        });
+        let q_keys = ["kvalifikationer"];
+        let o_keys = ["övrig", "other"];
+        assert_eq!(
+            find_section_in_hit(&hit, &q_keys),
+            Some("Kvalifikationer text".to_string())
+        );
+        assert_eq!(
+            find_section_in_hit(&hit, &o_keys),
+            Some("Övrigt info".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_section_paragraphs() {
+        let hit = json!({
+            "description": {
+                "sections": [
+                    { "heading": "Kvalifikationer", "paragraphs": ["en rad", "andra raden"] }
+                ]
+            }
+        });
+        let q_keys = ["kvalifikationer"];
+        assert_eq!(
+            find_section_in_hit(&hit, &q_keys),
+            Some("en rad\n\nandra raden".to_string())
+        );
+    }
+
+    #[test]
+    fn test_find_section_none() {
+        let hit = json!({});
+        let keys = ["nosuchthing"];
+        assert_eq!(find_section_in_hit(&hit, &keys), None);
     }
 }

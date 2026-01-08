@@ -46,6 +46,7 @@ const SVG_ALIGN_CENTER: &[u8] = include_bytes!("../assets/icons/text-center.svg"
 const SVG_ALIGN_RIGHT: &[u8] = include_bytes!("../assets/icons/text-right.svg");
 #[allow(dead_code)]
 const SVG_ALIGN_JUSTIFY: &[u8] = include_bytes!("../assets/icons/justify.svg");
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn main() -> iced::Result {
     tracing_subscriber::fmt::init();
@@ -107,6 +108,78 @@ enum InboxFilter {
     Applied,
 }
 
+#[derive(Debug, Clone)]
+struct UpdateInfo {
+    version: String,
+    html_url: String,
+}
+
+impl UpdateInfo {
+    fn is_newer_than(&self, current: &str) -> bool {
+        // Simple numeric comparison for dot-separated versions (e.g., 1.2.3)
+        let parse = |s: &str| {
+            s.split('.')
+                .map(|p| p.parse::<u64>().unwrap_or(0))
+                .collect::<Vec<_>>()
+        };
+        let cur = parse(current);
+        let remote = parse(&self.version);
+        let n = cur.len().max(remote.len());
+        for i in 0..n {
+            let c = *cur.get(i).unwrap_or(&0);
+            let r = *remote.get(i).unwrap_or(&0);
+            if r > c {
+                return true;
+            }
+            if r < c {
+                return false;
+            }
+        }
+        false
+    }
+}
+
+async fn check_github_updates() -> Result<UpdateInfo, String> {
+    // Query GitHub Releases API for latest release
+    let url = "https://api.github.com/repos/Gnaw-Software/Jobseeker/releases/latest";
+    let client = reqwest::Client::builder()
+        .user_agent("Jobseeker-update-check")
+        .build()
+        .map_err(|e| format!("Kunde inte skapa HTTP-klient: {}", e))?;
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Kunde inte kontakta GitHub API: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("GitHub API returned {}", resp.status()));
+    }
+
+    let j: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Kunde inte tolka JSON: {}", e))?;
+    let tag = j["tag_name"].as_str().ok_or("Ingen tag_name i response")?;
+    let version = tag.trim_start_matches('v').to_string();
+    let html_url = j["html_url"]
+        .as_str()
+        .ok_or("Ingen html_url i response")?
+        .to_string();
+
+    Ok(UpdateInfo { version, html_url })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum UpdateCheckStatus {
+    None,
+    Checking,
+    UpToDate,
+    NewVersion { version: String, html_url: String },
+    Error(String),
+}
+
 struct Jobseeker {
     active_tab: usize,
     tabs: Vec<Tab>,
@@ -131,6 +204,10 @@ struct Jobseeker {
     // Draft renaming state
     renaming_draft_id: Option<String>,
     renaming_draft_new_name: String,
+
+    // Update check state
+    update_check_status: UpdateCheckStatus,
+    is_checking_update: bool,
 
     // Misc
     #[allow(dead_code)]
@@ -171,6 +248,8 @@ impl Jobseeker {
             profile_content,
             renaming_draft_id: None,
             renaming_draft_new_name: String::new(),
+            update_check_status: UpdateCheckStatus::None,
+            is_checking_update: false,
             is_init: false,
         }
     }
@@ -260,6 +339,9 @@ enum Message {
     UpdateRenameDraftName(String), // new_name
     SaveRenameDraft,
     CancelRenameDraft,
+    CheckUpdates,
+    CheckUpdatesResult(Result<UpdateInfo, String>),
+    OpenReleaseUrl(String),
 }
 
 impl Jobseeker {
@@ -419,6 +501,8 @@ impl Jobseeker {
                     occupation: None,
                     workplace_address: None,
                     working_hours_type: None,
+                    qualifications: None,
+                    additional_information: None,
                     is_read: false,
                     rating: None,
                     bookmarked_at: None,
@@ -1096,6 +1180,36 @@ impl Jobseeker {
             Message::CancelRenameDraft => {
                 self.renaming_draft_id = None;
                 self.renaming_draft_new_name = String::new();
+                Task::none()
+            }
+            Message::CheckUpdates => {
+                self.is_checking_update = true;
+                self.update_check_status = UpdateCheckStatus::Checking;
+                Task::perform(async move { check_github_updates().await }, |res| {
+                    Message::CheckUpdatesResult(res.map_err(|e| e.to_string()))
+                })
+            }
+            Message::CheckUpdatesResult(Ok(update_info)) => {
+                self.is_checking_update = false;
+                if update_info.is_newer_than(CURRENT_VERSION) {
+                    self.update_check_status = UpdateCheckStatus::NewVersion {
+                        version: update_info.version.clone(),
+                        html_url: update_info.html_url.clone(),
+                    };
+                } else {
+                    self.update_check_status = UpdateCheckStatus::UpToDate;
+                }
+                Task::none()
+            }
+            Message::CheckUpdatesResult(Err(e)) => {
+                self.is_checking_update = false;
+                self.update_check_status = UpdateCheckStatus::Error(e);
+                Task::none()
+            }
+            Message::OpenReleaseUrl(url) => {
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    let _ = webbrowser::open(&url);
+                }
                 Task::none()
             }
         }
@@ -1895,6 +2009,40 @@ impl Jobseeker {
     }
 
     fn view_settings(&self) -> Element<'_, Message> {
+        let update_status_el: Element<'_, Message> = match &self.update_check_status {
+            UpdateCheckStatus::None => container(text("")).into(),
+            UpdateCheckStatus::Checking => container(
+                text("Hämtar versionsinformation...")
+                    .size(14)
+                    .color(Color::from_rgb(0.8, 0.8, 0.8)),
+            )
+            .into(),
+            UpdateCheckStatus::UpToDate => container(
+                text("Du har senaste version!")
+                    .size(14)
+                    .color(Color::from_rgb(0.0, 0.8, 0.0)),
+            )
+            .into(),
+            UpdateCheckStatus::NewVersion { version, html_url } => {
+                let url = html_url.clone();
+                container(
+                    column![
+                        text(format!("Ny version tillgänglig: v{}", version))
+                            .size(14)
+                            .color(Color::from_rgb(0.0, 0.8, 1.0)),
+                        button("Öppna release-sida").on_press(Message::OpenReleaseUrl(url))
+                    ]
+                    .spacing(5),
+                )
+                .into()
+            }
+            UpdateCheckStatus::Error(err) => container(
+                text(format!("Kunde inte kolla uppdateringar: {}", err))
+                    .size(14)
+                    .color(Color::from_rgb(1.0, 0.3, 0.3)),
+            )
+            .into(),
+        };
         container(scrollable(
             column![
                 text("Inställningar").size(30).color(Color::WHITE),
@@ -2005,26 +2153,52 @@ impl Jobseeker {
                     .spacing(5),
                 ]
                 .spacing(15),
-                // Save button
-                button(
-                    row![text("💾 Spara inställningar").size(16)]
-                        .align_y(Alignment::Center)
-                        .spacing(8)
-                        .padding(10)
-                )
-                .on_press(Message::SaveSettings)
-                .style(|_theme: &Theme, status| button::Style {
-                    background: Some(if status == iced::widget::button::Status::Hovered {
-                        Color::from_rgb(0.3, 0.7, 0.3).into()
-                    } else {
-                        Color::from_rgb(0.2, 0.6, 0.2).into()
-                    }),
-                    text_color: Color::WHITE,
-                    border: iced::Border {
-                        radius: 5.0.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
+                // Update check & Save
+                column![
+                    row![
+                        text(format!("Nuvarande version: v{}", CURRENT_VERSION))
+                            .size(14)
+                            .color(Color::from_rgb(0.7, 0.7, 0.7)),
+                        space::horizontal(),
+                        if self.is_checking_update {
+                            button(text("Kontrollerar..."))
+                        } else {
+                            button(text("Kontrollera uppdateringar"))
+                                .on_press(Message::CheckUpdates)
+                        }
+                    ]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+                    // Status (computed earlier)
+                    container(update_status_el).padding(5),
+                    // Save action (kept simple and consistent)
+                    row![
+                        button("💾 Spara inställningar")
+                            .on_press(Message::SaveSettings)
+                            .style(|_theme: &Theme, status| button::Style {
+                                background: Some(
+                                    if status == iced::widget::button::Status::Hovered {
+                                        Color::from_rgb(0.3, 0.7, 0.3).into()
+                                    } else {
+                                        Color::from_rgb(0.2, 0.6, 0.2).into()
+                                    }
+                                ),
+                                text_color: Color::WHITE,
+                                border: iced::Border {
+                                    radius: 5.0.into(),
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            })
+                    ]
+                    .spacing(10)
+                ]
+                .spacing(30)
+                .padding(Padding {
+                    top: 20.0,
+                    right: 40.0,
+                    bottom: 20.0,
+                    left: 20.0,
                 }),
             ]
             .spacing(30)
