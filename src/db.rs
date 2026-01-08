@@ -186,7 +186,7 @@ impl Db {
 
             // Apply status filter
             if !status_filter.is_empty() {
-                // For historical views with month filter
+                // For historical views with month filter and a single status
                 if year.is_some() && month.is_some() && status_filter.len() == 1 {
                     match status_filter[0] {
                         AdStatus::Applied => {
@@ -205,10 +205,8 @@ impl Db {
                             }
                         }
                     }
-                } else {
-                    if !status_filter.contains(&ad_status) {
-                        continue;
-                    }
+                } else if !status_filter.contains(&ad_status) {
+                    continue;
                 }
             } else {
                 // "All" filter - exclude rejected
@@ -229,12 +227,12 @@ impl Db {
                         _ => Some(&stored.internal_created_at),
                     };
 
-                    if let Some(ds) = date_str {
-                        if let Ok(dt) = DateTime::parse_from_rfc3339(ds) {
-                            let dt_utc = dt.with_timezone(&Utc);
-                            if dt_utc.year() == y && dt_utc.month() == m {
-                                matches = true;
-                            }
+                    if let Some(ds) = date_str
+                        && let Ok(dt) = DateTime::parse_from_rfc3339(ds)
+                    {
+                        let dt_utc = dt.with_timezone(&Utc);
+                        if dt_utc.year() == y && dt_utc.month() == m {
+                            matches = true;
                         }
                     }
                 } else {
@@ -556,7 +554,7 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let db = Db::new(db_path.to_str().unwrap()).unwrap();
 
-        let mut ad = JobAd {
+        let ad = JobAd {
             id: "test456".to_string(),
             headline: "Bookmarked Job".to_string(),
             description: None,

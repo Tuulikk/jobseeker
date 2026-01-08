@@ -285,9 +285,9 @@ impl Jobseeker {
                         && !self.settings.locations_p1.trim().is_empty()
                     {
                         info!("Auto-searching priority 1 area on startup...");
-                        return Task::done(Message::Search(1));
+                        Task::done(Message::Search(1))
                     } else {
-                        return self.refresh_list();
+                        self.refresh_list()
                     }
                 }
                 Err(err_str) => {
@@ -390,10 +390,9 @@ impl Jobseeker {
                     if let Tab::ApplicationEditor {
                         job_id, content, ..
                     } = tab
+                        && job_id == &id
                     {
-                        if job_id == &id {
-                            content.set_text(&content_str);
-                        }
+                        content.set_text(&content_str);
                     }
                 }
                 Task::none()
@@ -444,15 +443,19 @@ impl Jobseeker {
                 let id_clone = id.clone();
                 let initial_clone = initial_content.clone();
                 let ad_clone = ad.clone();
-                return Task::perform(
-                    async move {
-                        if let Some(db) = &*db_clone {
-                            let _ = db.save_job_ad(&ad_clone).await;
-                            let _ = db.save_application_draft(&id_clone, &initial_clone).await;
-                        }
-                    },
-                    |_| Message::LoadDrafts,
-                );
+                if (*db_clone).is_some() {
+                    Task::perform(
+                        async move {
+                            if let Some(db) = &*db_clone {
+                                let _ = db.save_job_ad(&ad_clone).await;
+                                let _ = db.save_application_draft(&id_clone, &initial_clone).await;
+                            }
+                        },
+                        |_| Message::LoadDrafts,
+                    )
+                } else {
+                    Task::none()
+                }
             }
             Message::ImportFile(index) => {
                 if let Some(Tab::ApplicationEditor { job_id, .. }) = self.tabs.get(index) {
@@ -487,7 +490,7 @@ impl Jobseeker {
                     Task::perform(
                         async move {
                             if let Some(path) = rfd::AsyncFileDialog::new()
-                                .set_file_name(&format!("Ansokan_{}.html", headline))
+                                .set_file_name(format!("Ansokan_{}.html", headline))
                                 .save_file()
                                 .await
                             {
@@ -520,7 +523,7 @@ impl Jobseeker {
                     Task::perform(
                         async move {
                             if let Some(path) = rfd::AsyncFileDialog::new()
-                                .set_file_name(&format!("Ansokan_{}.docx", headline))
+                                .set_file_name(format!("Ansokan_{}.docx", headline))
                                 .save_file()
                                 .await
                             {
@@ -619,16 +622,17 @@ impl Jobseeker {
                     let db_clone = Arc::clone(&self.db);
                     let id_clone = job_id.clone();
                     let text_clone = content.text();
-                    return Task::perform(
+                    Task::perform(
                         async move {
                             if let Some(db) = &*db_clone {
                                 let _ = db.save_application_draft(&id_clone, &text_clone).await;
                             }
                         },
                         |_| Message::SaveSettings,
-                    );
+                    )
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             Message::EditorBold(index) => {
                 if let Some(Tab::ApplicationEditor { content, .. }) = self.tabs.get_mut(index) {
@@ -692,7 +696,7 @@ impl Jobseeker {
                 self.refresh_list()
             }
             Message::ChangeMonth(delta) => {
-                let mut m = self.current_month as i32 + delta as i32;
+                let mut m = self.current_month as i32 + delta;
                 let mut y = self.current_year;
                 if m < 1 {
                     m = 12;
@@ -806,20 +810,20 @@ impl Jobseeker {
                 self.selected_ad = if !self.ads.is_empty() { Some(0) } else { None };
 
                 // Mark first ad as read if it exists
-                if let Some(ad) = self.ads.get_mut(0) {
-                    if !ad.is_read {
-                        ad.is_read = true;
-                        let id = ad.id.clone();
-                        let db_clone = Arc::clone(&self.db);
-                        return Task::perform(
-                            async move {
-                                if let Some(db) = &*db_clone {
-                                    let _ = db.mark_as_read(&id).await;
-                                }
-                            },
-                            |_| Message::SaveSettings,
-                        );
-                    }
+                if let Some(ad) = self.ads.get_mut(0)
+                    && !ad.is_read
+                {
+                    ad.is_read = true;
+                    let id = ad.id.clone();
+                    let db_clone = Arc::clone(&self.db);
+                    return Task::perform(
+                        async move {
+                            if let Some(db) = &*db_clone {
+                                let _ = db.mark_as_read(&id).await;
+                            }
+                        },
+                        |_| Message::SaveSettings,
+                    );
                 }
                 Task::none()
             }
@@ -830,20 +834,20 @@ impl Jobseeker {
             }
             Message::SelectAd(index) => {
                 self.selected_ad = Some(index);
-                if let Some(ad) = self.ads.get_mut(index) {
-                    if !ad.is_read {
-                        ad.is_read = true;
-                        let id = ad.id.clone();
-                        let db_clone = Arc::clone(&self.db);
-                        return Task::perform(
-                            async move {
-                                if let Some(db) = &*db_clone {
-                                    let _ = db.mark_as_read(&id).await;
-                                }
-                            },
-                            |_| Message::SaveSettings,
-                        );
-                    }
+                if let Some(ad) = self.ads.get_mut(index)
+                    && !ad.is_read
+                {
+                    ad.is_read = true;
+                    let id = ad.id.clone();
+                    let db_clone = Arc::clone(&self.db);
+                    return Task::perform(
+                        async move {
+                            if let Some(db) = &*db_clone {
+                                let _ = db.mark_as_read(&id).await;
+                            }
+                        },
+                        |_| Message::SaveSettings,
+                    );
                 }
                 Task::none()
             }
@@ -861,10 +865,10 @@ impl Jobseeker {
                     // (local changes already applied above)
                     Task::perform(
                         async move {
-                            if let Some(db) = &*db_clone {
-                                if let Err(e) = db.update_ad_status(&id, status).await {
-                                    eprintln!("Failed to update ad status in DB: {}", e);
-                                }
+                            if let Some(db) = &*db_clone
+                                && let Err(e) = db.update_ad_status(&id, status).await
+                            {
+                                eprintln!("Failed to update ad status in DB: {}", e);
                             }
                         },
                         |_| Message::SaveSettings, // No-op message
@@ -938,16 +942,17 @@ impl Jobseeker {
                     ad.rating = Some(rating);
                     let id = ad.id.clone();
                     let db_clone = Arc::clone(&self.db);
-                    return Task::perform(
+                    Task::perform(
                         async move {
                             if let Some(db) = &*db_clone {
                                 let _ = db.update_rating(&id, rating).await;
                             }
                         },
                         |_| Message::SaveSettings,
-                    );
+                    )
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             Message::ClearAds => {
                 let db_clone = Arc::clone(&self.db);
@@ -969,10 +974,10 @@ impl Jobseeker {
                 )
             }
             Message::OpenBrowser(index) => {
-                if let Some(ad) = self.ads.get(index) {
-                    if let Some(url) = &ad.webpage_url {
-                        let _ = webbrowser::open(url);
-                    }
+                if let Some(ad) = self.ads.get(index)
+                    && let Some(url) = &ad.webpage_url
+                {
+                    let _ = webbrowser::open(url);
                 }
                 Task::none()
             }
@@ -1025,9 +1030,7 @@ impl Jobseeker {
                 }
                 Task::none()
             }
-            Message::CopyText(val) => {
-                return iced::clipboard::write(val);
-            }
+            Message::CopyText(val) => iced::clipboard::write(val),
             Message::NextAd => {
                 if let Some(current) = self.selected_ad {
                     if current + 1 < self.ads.len() {
@@ -1039,10 +1042,10 @@ impl Jobseeker {
                 Task::none()
             }
             Message::PrevAd => {
-                if let Some(current) = self.selected_ad {
-                    if current > 0 {
-                        return Task::done(Message::SelectAd(current - 1));
-                    }
+                if let Some(current) = self.selected_ad
+                    && current > 0
+                {
+                    return Task::done(Message::SelectAd(current - 1));
                 }
                 Task::none()
             }
@@ -1064,31 +1067,31 @@ impl Jobseeker {
                 Task::none()
             }
             Message::SaveRenameDraft => {
-                if let Some(draft_id) = &self.renaming_draft_id {
-                    if !self.renaming_draft_new_name.trim().is_empty() {
-                        // Save to DB
-                        let db_clone = Arc::clone(&self.db);
-                        let id_clone = draft_id.clone();
-                        let new_headline = self.renaming_draft_new_name.clone();
+                if let Some(draft_id) = &self.renaming_draft_id
+                    && !self.renaming_draft_new_name.trim().is_empty()
+                {
+                    // Save to DB
+                    let db_clone = Arc::clone(&self.db);
+                    let id_clone = draft_id.clone();
+                    let new_headline = self.renaming_draft_new_name.clone();
 
-                        return Task::perform(
-                            async move {
-                                if let Some(db) = &*db_clone {
-                                    let _ =
-                                        db.update_draft_headline(&id_clone, &new_headline).await;
-                                }
-                            },
-                            |_| {
-                                // Clear rename state and reload drafts
-                                let mut state = Self::new();
-                                state.renaming_draft_id = None;
-                                state.renaming_draft_new_name = String::new();
-                                Message::LoadDrafts
-                            },
-                        );
-                    }
+                    Task::perform(
+                        async move {
+                            if let Some(db) = &*db_clone {
+                                let _ = db.update_draft_headline(&id_clone, &new_headline).await;
+                            }
+                        },
+                        |_| {
+                            // Clear rename state and reload drafts
+                            let mut state = Self::new();
+                            state.renaming_draft_id = None;
+                            state.renaming_draft_new_name = String::new();
+                            Message::LoadDrafts
+                        },
+                    )
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             Message::CancelRenameDraft => {
                 self.renaming_draft_id = None;
@@ -2145,7 +2148,7 @@ impl Jobseeker {
             ""
         };
 
-        let ad_ref = self.ads.iter().find(|a| &a.id == job_id);
+        let ad_ref = self.ads.iter().find(|a| a.id == job_id);
 
         // Preview side (if enabled)
         let preview_side: Option<Element<'a, Message>> = if self.show_markdown_preview {
