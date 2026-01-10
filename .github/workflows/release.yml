@@ -55,6 +55,8 @@ jobs:
 
       - name: Install macOS ARM cross-compiler
         if: matrix.needs_macos_cross == true
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
           brew install llvm@15
           echo "CC=/opt/homebrew/opt/llvm@15/bin/clang" >> $GITHUB_ENV
@@ -82,11 +84,9 @@ jobs:
             ${{ runner.os }}-${{ matrix.arch }}-cargo-target-
 
       - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          override: true
-          target: ${{ matrix.target }}
+          targets: ${{ matrix.target }}
 
       - name: Install target for ARM macOS
         if: matrix.target == 'aarch64-apple-darwin'

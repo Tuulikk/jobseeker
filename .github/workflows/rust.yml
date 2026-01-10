@@ -45,10 +45,7 @@ jobs:
             ${{ runner.os }}-cargo-target-
 
       - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Build
         run: cargo build --verbose
