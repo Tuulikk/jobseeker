@@ -1,0 +1,260 @@
+name: Build Release
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.2.0)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }} (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-latest
+            arch: x86_64
+            target: x86_64-unknown-linux-gnu
+            artifact_name: jobseeker-linux-x86_64
+            strip_command: strip
+          # macOS Intel builds
+          - os: macos-latest
+            arch: x86_64
+            target: x86_64-apple-darwin
+            artifact_name: jobseeker-macos-x86_64
+            strip_command: strip
+          # macOS ARM builds
+          - os: macos-latest
+            arch: aarch64
+            target: aarch64-apple-darwin
+            artifact_name: jobseeker-macos-aarch64
+            strip_command: strip
+            # ARM builds need special handling on x86 runners
+            needs_macos_cross: true
+          # Windows builds
+          - os: windows-latest
+            arch: x86_64
+            target: x86_64-pc-windows-msvc
+            artifact_name: jobseeker-windows-x86_64
+            strip_command: echo "Windows release builds are already stripped"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt update
+          sudo apt install -y libfontconfig1-dev libgtk-3-dev
+
+      - name: Install macOS ARM cross-compiler
+        if: matrix.needs_macos_cross == true
+        run: |
+          brew install llvm@15
+          echo "CC=/opt/homebrew/opt/llvm@15/bin/clang" >> $GITHUB_ENV
+          echo "CXX=/opt/homebrew/opt/llvm@15/bin/clang++" >> $GITHUB_ENV
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-cargo-registry-
+
+      - name: Cache target directory
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.arch }}-cargo-target-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.arch }}-cargo-target-
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          target: ${{ matrix.target }}
+
+      - name: Install target for ARM macOS
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: rustup target add aarch64-apple-darwin
+
+      - name: Build release
+        run: |
+          if [ "${{ matrix.target }}" == "aarch64-apple-darwin" ]; then
+            cargo build --release --target aarch64-apple-darwin
+          else
+            cargo build --release
+          fi
+
+      - name: Strip binary
+        run: |
+          if [ "${{ runner.os }}" == "Windows" ]; then
+            echo "Windows binaries are already stripped in release mode"
+          else
+            ${{ matrix.strip_command }} target/${{ matrix.target }}/release/jobseeker || true
+            ${{ matrix.strip_command }} target/${{ matrix.target }}/release/jobseeker.exe || true
+          fi
+
+      - name: Create Linux archive
+        if: runner.os == 'Linux'
+        run: |
+          cd target/x86_64-unknown-linux-gnu/release
+          tar -czf jobseeker-linux-x86_64.tar.gz jobseeker
+          mv jobseeker-linux-x86_64.tar.gz ${{ github.workspace }}
+
+      - name: Create macOS archive
+        if: runner.os == 'macOS'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czf ${{ matrix.artifact_name }}.tar.gz jobseeker
+          mv ${{ matrix.artifact_name }}.tar.gz ${{ github.workspace }}
+
+      - name: Create Windows archive
+        if: runner.os == 'Windows'
+        run: |
+          cd target/x86_64-pc-windows-msvc/release
+          Compress-Archive -Path jobseeker.exe -DestinationPath jobseeker-windows-x86_64.zip
+          mv jobseeker-windows-x86_64.zip ${{ github.workspace }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            ${{ github.workspace }}/${{ matrix.artifact_name }}.tar.gz
+            ${{ github.workspace }}/jobseeker-windows-x86_64.zip
+
+  create-release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Upload artifacts to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  create-rpm:
+    name: Build Fedora RPM
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up RPM build environment
+        run: |
+          sudo apt update
+          sudo apt install -y rpm
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: jobseeker-linux-x86_64
+          path: ./binary
+
+      - name: Extract binary
+        run: |
+          cd binary
+          tar -xzf *.tar.gz
+
+      - name: Create RPM spec file
+        run: |
+          cat > jobseeker.spec << 'EOF'
+          Name:           jobseeker
+          Version:        ${GITHUB_REF#refs/tags/v}
+          Release:        1%{?dist}
+          Summary:        Jobseeker - AI-powered job search and management
+          License:        MIT
+          URL:            https://github.com/Gnaw-Software/Jobseeker
+          Source0:        %{name}-%{version}.tar.gz
+
+          BuildRequires:  gcc, pkgconfig, fontconfig-devel, gtk3-devel
+          Requires:       fontconfig, gtk3
+
+          %description
+          Jobseeker is an AI-powered job search and management application
+          that helps you find, track, and apply to jobs from Arbetsförmedlingen
+          and other sources.
+
+          %prep
+          %setup -q
+
+          %build
+          # Binary is already built, just verify it exists
+          ls -la jobseeker
+
+          %install
+          mkdir -p %{buildroot}%{_bindir}
+          mkdir -p %{buildroot}%{_datadir}/applications
+          mkdir -p %{buildroot}%{_datadir}/icons
+
+          install -m 755 jobseeker %{buildroot}%{_bindir}/jobseeker
+
+          cat > %{buildroot}%{_datadir}/applications/jobseeker.desktop << 'DESKTOP'
+          [Desktop Entry]
+          Name=Jobseeker
+          Comment=AI-powered job search and management
+          Exec=%{_bindir}/jobseeker
+          Terminal=false
+          Type=Application
+          Categories=Office;Development;Utility;
+          Icon=jobseeker
+          DESKSKTOP
+
+          # Create a simple icon placeholder (would normally include real icon file)
+          touch %{buildroot}%{_datadir}/icons/jobseeker.png
+
+          %files
+          %{_bindir}/jobseeker
+          %{_datadir}/applications/jobseeker.desktop
+          %{_datadir}/icons/jobseeker.png
+
+          %changelog
+          EOF
+
+      - name: Build RPM
+        run: |
+          rpmbuild -bb --define "_topdir $PWD/rpmbuild" --define "_sourcedir $PWD/binary" --define "_specdir $PWD" jobseeker.spec
+
+      - name: Upload RPM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jobseeker-fedora-rpm
+          path: rpmbuild/RPMS/x86_64/*.rpm
+
+      - name: Attach RPM to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: rpmbuild/RPMS/x86_64/*.rpm
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
