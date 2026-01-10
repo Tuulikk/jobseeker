@@ -55,12 +55,12 @@ Audit & logging
 
 Migration & merge-policy
 ------------------------
-- För konvertering från SQLite → Redb använd alltid migrationsverktyget (det finns i repot `migrate_sqlite` eller som ett bibliotek) som:
-  1. Kör inspektion (räkna poster, rapportera December-IDs).
-  2. Kör migrering till ny fil (t.ex. `jobseeker.db.new`).
-  3. Verifiera (râkna, jämför ID-set för kritiska månader t.ex. December).
-  4. Skapa backup av original och byt fil (eller be användaren bekräfta swap).
-- Aldrig automatisk swap utan användarkonfirmering (dessutom krävs backup).
+- Migration från SQLite till Redb är slutförd och de automatiska migreringsverktygen för detta har tagits bort från repot. Om du fortfarande har en äldre SQLite-databas och behöver migrera den, kontakta projektets underhållare eller använd ett bevarat migreringsskript från projektets historik efter manuell granskning.
+- Merge-policy (fortsatt):
+  1. Kör inspektion (räkna poster, verifiera kritiska ID-set).
+  2. Skapa backup av original innan någon swap.
+  3. Verifiera och jämför resultatet noggrant innan produktionen uppdateras.
+- Aldrig automatisk swap utan explicit användarkonfirmering (backup och verifiering krävs alltid).
 
 Daglig export (policy och teknisk lösning)
 ------------------------------------------

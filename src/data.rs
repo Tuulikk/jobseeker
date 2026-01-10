@@ -18,9 +18,9 @@
 //! This keeps personal data out of the repository and gives a single canonical
 //! per-user store.
 
-use crate::db_migration::{DbFormat, detect_db_format, migrate_sqlite_to_redb};
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
+use redb::Database;
 use std::env;
 use std::fs;
 
@@ -91,72 +91,48 @@ pub fn prepare_user_db() -> Result<PathBuf> {
         return Ok(dest);
     }
 
-    // 3) Local DB exists - detect format
-    match detect_db_format(local).context("failed to detect local database format")? {
-        DbFormat::Sqlite => {
-            info!(
-                "Found SQLite DB at {} — performing migration to {}",
-                local.display(),
-                dest.display()
-            );
+    // 3) Local DB exists - do NOT perform automatic SQLite -> Redb migration.
+    // If the local file is a Redb DB, move it into place. If it is a SQLite DB,
+    // back the file up and continue without migrating (user-requested policy).
+    // Detect Redb by attempting to open it with `Database::create`.
+    if Database::create(local).is_ok() {
+        info!(
+            "Found Redb DB at {} — moving to {}",
+            local.display(),
+            dest.display()
+        );
 
-            // Migrate SQLite -> Redb into dest
-            migrate_sqlite_to_redb(local, &dest).with_context(|| {
-                format!(
-                    "migration from {} to {} failed",
-                    local.display(),
-                    dest.display()
-                )
-            })?;
-
-            // Backup original sqlite
-            let backup = backup_path(local)?;
-            fs::rename(local, &backup).with_context(|| {
-                format!(
-                    "failed to move original sqlite to backup {}",
-                    backup.display()
-                )
-            })?;
-            info!(
-                "Migration successful; original sqlite backed up to {}",
-                backup.display()
-            );
-
-            Ok(dest)
-        }
-        DbFormat::Redb => {
-            info!(
-                "Found Redb DB at {} — moving to {}",
-                local.display(),
-                dest.display()
-            );
-
-            // Move (rename) local redb file into per-user destination. If rename
-            // fails (cross-device), fall back to copy+remove.
-            match fs::rename(local, &dest) {
-                Ok(()) => {
-                    info!("Moved DB into place: {}", dest.display());
-                    Ok(dest)
-                }
-                Err(e) => {
-                    warn!("Rename failed ({}); attempting copy + remove fallback", e);
-                    fs::copy(local, &dest).with_context(|| {
-                        format!("failed to copy local DB to {}", dest.display())
-                    })?;
-                    fs::remove_file(local).with_context(|| {
-                        format!("failed to remove original local DB {}", local.display())
-                    })?;
-                    info!("Copied DB into place: {}", dest.display());
-                    Ok(dest)
-                }
+        // Move (rename) local redb file into per-user destination. If rename
+        // fails (cross-device), fall back to copy+remove.
+        match fs::rename(local, &dest) {
+            Ok(()) => {
+                info!("Moved DB into place: {}", dest.display());
+                return Ok(dest);
+            }
+            Err(e) => {
+                warn!("Rename failed ({}); attempting copy + remove fallback", e);
+                fs::copy(local, &dest)
+                    .with_context(|| format!("failed to copy local DB to {}", dest.display()))?;
+                fs::remove_file(local).with_context(|| {
+                    format!("failed to remove original local DB {}", local.display())
+                })?;
+                info!("Copied DB into place: {}", dest.display());
+                return Ok(dest);
             }
         }
-        DbFormat::Unknown => {
-            anyhow::bail!(
-                "Local database exists at {} but format could not be identified",
-                local.display()
+    } else {
+        // Likely an old SQLite DB — do not attempt automatic migration.
+        // Move it to a timestamped backup to avoid accidental data loss.
+        let backup = backup_path(local)?;
+        fs::rename(local, &backup).with_context(|| {
+            format!(
+                "Found SQLite DB at {}; moved to backup {}. Automatic migration is disabled. Run migration manually if needed.",
+                local.display(),
+                backup.display()
             )
-        }
+        })?;
+        info!("Backed up local SQLite DB to {}", backup.display());
+        return Ok(dest);
     }
 }
 
@@ -169,3 +145,9 @@ fn backup_path(path: &Path) -> Result<PathBuf> {
     let backup = format!("{}.sqlite.bak.{}", path.display(), ts);
     Ok(PathBuf::from(backup))
 }
+
+// Migration helpers removed.
+// Automatic SQLite -> Redb migration has been intentionally removed from the codebase.
+// If you need to migrate an old SQLite file to the Redb format, run a migration tool
+// from a previous commit or use an external script. The application will not perform
+// automatic migration anymore to avoid accidental data loss.
