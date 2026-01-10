@@ -50,7 +50,7 @@ const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn main() -> iced::Result {
     tracing_subscriber::fmt::init();
-    info!("Starting Jobseeker Gnag v0.2...");
+    info!("Starting Jobseeker v0.2...");
 
     iced::application(
         || (Jobseeker::new(), Task::done(Message::Init)),
@@ -68,7 +68,7 @@ pub fn main() -> iced::Result {
 }
 
 fn get_title(_: &Jobseeker) -> String {
-    "Jobseeker Gnag v0.2 - NY".to_string()
+    "Jobseeker v0.2".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -348,12 +348,19 @@ impl Jobseeker {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Init => {
-                info!("Initializing DB...");
+                info!("Preparing per-user DB and initializing...");
                 Task::perform(
                     async {
-                        tokio::task::spawn_blocking(|| Db::new("jobseeker.db"))
-                            .await
-                            .unwrap()
+                        tokio::task::spawn_blocking(|| match jobseeker::prepare_user_db() {
+                            Ok(path) => {
+                                let db_path_str =
+                                    path.to_str().unwrap_or("jobseeker.db").to_string();
+                                Db::new(db_path_str.as_str())
+                            }
+                            Err(e) => Err(anyhow::anyhow!(e.to_string())),
+                        })
+                        .await
+                        .unwrap()
                     },
                     |res| Message::InitDb(Arc::new(res.map_err(|e| e.to_string()))),
                 )
@@ -362,19 +369,20 @@ impl Jobseeker {
                 Ok(db) => {
                     info!("DB initialized successfully.");
                     self.db = Arc::new(Some(db.clone()));
-                    // Auto-search on startup if we have keywords configured
-                    if !self.settings.keywords.trim().is_empty()
-                        && !self.settings.locations_p1.trim().is_empty()
-                    {
-                        info!("Auto-searching priority 1 area on startup...");
-                        Task::done(Message::Search(1))
-                    } else {
-                        self.refresh_list()
-                    }
+                    // Auto-search on startup disabled - show all jobs from database
+                    // if !self.settings.keywords.trim().is_empty()
+                    //     && !self.settings.locations_p1.trim().is_empty()
+                    // {
+                    //     info!("Auto-searching priority 1 area on startup...");
+                    //     Task::done(Message::Search(1))
+                    // } else {
+                    //     self.refresh_list()
+                    // }
+                    self.refresh_list()
                 }
-                Err(err_str) => {
-                    error!("DB Init Failed: {}", err_str);
-                    self.error_msg = Some(format!("Database Error: {}", err_str));
+                Err(e) => {
+                    error!("DB Init Failed: {}", e);
+                    self.error_msg = Some(format!("Database error: {}", e));
                     Task::none()
                 }
             },

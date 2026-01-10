@@ -32,6 +32,7 @@ struct StoredJobAd {
     pub qualifications: Option<String>,
     #[serde(default)]
     pub additional_information: Option<String>,
+    #[serde(default)]
     pub is_read: bool,
     pub rating: Option<u8>,
     pub bookmarked_at: Option<String>,
