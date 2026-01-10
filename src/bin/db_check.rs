@@ -17,7 +17,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process;
 
-fn print_error_chain(mut e: &(dyn Error)) {
+fn print_error_chain(mut e: &dyn Error) {
     eprintln!("Error: {}", e);
     while let Some(source) = e.source() {
         eprintln!("Caused by: {}", source);

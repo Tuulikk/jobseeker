@@ -107,7 +107,7 @@ pub fn prepare_user_db() -> Result<PathBuf> {
         match fs::rename(local, &dest) {
             Ok(()) => {
                 info!("Moved DB into place: {}", dest.display());
-                return Ok(dest);
+                Ok(dest)
             }
             Err(e) => {
                 warn!("Rename failed ({}); attempting copy + remove fallback", e);
@@ -117,7 +117,7 @@ pub fn prepare_user_db() -> Result<PathBuf> {
                     format!("failed to remove original local DB {}", local.display())
                 })?;
                 info!("Copied DB into place: {}", dest.display());
-                return Ok(dest);
+                Ok(dest)
             }
         }
     } else {
@@ -132,7 +132,7 @@ pub fn prepare_user_db() -> Result<PathBuf> {
             )
         })?;
         info!("Backed up local SQLite DB to {}", backup.display());
-        return Ok(dest);
+        Ok(dest)
     }
 }
 

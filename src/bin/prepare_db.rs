@@ -1,5 +1,4 @@
-use anyhow::{Context, Result};
-use std::path::PathBuf;
+use anyhow::Result;
 use std::{env, fs};
 
 /// Small helper binary to run the `prepare_user_db()` routine without launching the UI.
@@ -21,16 +20,13 @@ fn main() -> Result<()> {
             // Look for backups in the current working directory (saved by migration)
             let mut backups = Vec::new();
             if let Ok(entries) = fs::read_dir(".") {
-                for e in entries {
-                    if let Ok(entry) = e {
-                        if let Ok(name) = entry.file_name().into_string() {
-                            if name.starts_with("jobseeker.db.sqlite.bak")
-                                || name.starts_with("jobseeker.db.bak.")
-                                || name.starts_with("jobseeker.db.backup")
-                            {
-                                backups.push(name);
-                            }
-                        }
+                for entry in entries.flatten() {
+                    if let Ok(name) = entry.file_name().into_string()
+                        && (name.starts_with("jobseeker.db.sqlite.bak")
+                            || name.starts_with("jobseeker.db.bak.")
+                            || name.starts_with("jobseeker.db.backup"))
+                    {
+                        backups.push(name);
                     }
                 }
             }

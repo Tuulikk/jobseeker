@@ -170,10 +170,10 @@ fn main() -> Result<()> {
         seen += 1;
 
         // Apply id filter
-        if let Some(ref wanted) = id_filter {
-            if id != wanted.as_str() {
-                continue;
-            }
+        if let Some(ref wanted) = id_filter
+            && id != wanted.as_str()
+        {
+            continue;
         }
 
         // December filter
@@ -196,10 +196,10 @@ fn main() -> Result<()> {
         }
 
         printed += 1;
-        if let Some(lim) = limit {
-            if printed >= lim {
-                break;
-            }
+        if let Some(lim) = limit
+            && printed >= lim
+        {
+            break;
         }
     }
 

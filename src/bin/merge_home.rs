@@ -32,6 +32,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const JOB_ADS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("job_ads");
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct Record {
     id: String,
@@ -93,6 +94,7 @@ fn quote_csv_field(s: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn export_rows_to_csv(
     path: &Path,
     rows: &[(String, String, String, String, String, String)],
@@ -390,7 +392,7 @@ fn find_latest_export(export_dir: &Path) -> Option<PathBuf> {
 }
 
 fn read_file_to_string(path: &Path) -> Result<String> {
-    Ok(fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?)
+    fs::read_to_string(path).with_context(|| format!("read {}", path.display()))
 }
 
 fn main() -> Result<()> {

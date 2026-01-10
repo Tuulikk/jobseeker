@@ -136,10 +136,10 @@ fn build_csv_rows_from_db(db_path: &Path, limit: Option<usize>) -> Result<String
                 ));
             }
         }
-        if let Some(n) = limit {
-            if rows.len() >= n {
-                break;
-            }
+        if let Some(n) = limit
+            && rows.len() >= n
+        {
+            break;
         }
     }
 
@@ -168,13 +168,12 @@ fn write_if_changed(
     fs::create_dir_all(export_dir)
         .with_context(|| format!("Failed to create export dir {}", export_dir.display()))?;
 
-    if let Some(latest) = latest_export_in_dir(export_dir) {
-        if let Ok(existing) = fs::read_to_string(&latest) {
-            if existing == csv_content {
-                // No change
-                return Ok(None);
-            }
-        }
+    if let Some(latest) = latest_export_in_dir(export_dir)
+        && let Ok(existing) = fs::read_to_string(&latest)
+        && existing == csv_content
+    {
+        // No change
+        return Ok(None);
     }
 
     let ts = Utc::now().format("%Y%m%d-%H%M%S").to_string();

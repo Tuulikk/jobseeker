@@ -24,11 +24,11 @@ Behavior:
 
 use anyhow::{Context, Result};
 use redb::{Database, TableDefinition};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const JOB_ADS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("job_ads");
@@ -49,7 +49,7 @@ fn default_db_path_or_local() -> PathBuf {
     jobseeker::default_db_path().unwrap_or_else(|| PathBuf::from("jobseeker.db"))
 }
 
-fn timestamped_backup_name(path: &PathBuf) -> PathBuf {
+fn timestamped_backup_name(path: &Path) -> PathBuf {
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -134,7 +134,9 @@ fn main() -> Result<()> {
         )
     })?;
 
-    let read_txn = db.begin_read().context("Failed to begin read transaction.")?;
+    let read_txn = db
+        .begin_read()
+        .context("Failed to begin read transaction.")?;
     let read_table = read_txn
         .open_table(JOB_ADS_TABLE)
         .context("Failed to open job_ads table")?;
@@ -156,10 +158,7 @@ fn main() -> Result<()> {
                 let mut val: Value = serde_json::from_str(raw)
                     .with_context(|| format!("Failed to parse JSON for id {}", id))?;
 
-                let old_status = val
-                    .get("status")
-                    .and_then(|x| x.as_i64())
-                    .unwrap_or(0i64);
+                let old_status = val.get("status").and_then(|x| x.as_i64()).unwrap_or(0i64);
                 let old_applied = val
                     .get("applied_at")
                     .and_then(|x| x.as_str())
@@ -225,15 +224,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if !yes {
-        if !prompt_confirm() {
-            println!("Aborted by user. No changes made.");
-            return Ok(());
-        }
+    if !yes && !prompt_confirm() {
+        println!("Aborted by user. No changes made.");
+        return Ok(());
     }
 
     // Apply all changes in a single write transaction
-    let mut write_txn = db.begin_write().context("Failed to begin write transaction.")?;
+    let write_txn = db
+        .begin_write()
+        .context("Failed to begin write transaction.")?;
     {
         let mut write_table = write_txn
             .open_table(JOB_ADS_TABLE)
@@ -248,9 +247,14 @@ fn main() -> Result<()> {
             println!("Applied change to ID {}.", p.id);
         }
     }
-    write_txn.commit().context("Failed to commit write transaction.")?;
+    write_txn
+        .commit()
+        .context("Failed to commit write transaction.")?;
 
-    println!("All changes applied. Backup retained at: {}", backup.display());
+    println!(
+        "All changes applied. Backup retained at: {}",
+        backup.display()
+    );
     println!("You can verify with the app now (open app or run the dump tool).");
 
     Ok(())

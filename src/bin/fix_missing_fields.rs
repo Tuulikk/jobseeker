@@ -79,11 +79,7 @@ Options:
     );
 }
 
-fn fix_missing_fields(
-    db_path: &Path,
-    dry_run: bool,
-    verbose: bool,
-) -> Result<(usize, usize)> {
+fn fix_missing_fields(db_path: &Path, dry_run: bool, verbose: bool) -> Result<(usize, usize)> {
     let db = Database::create(db_path).context("Failed to open database")?;
 
     let read_txn = db.begin_read()?;
@@ -113,35 +109,35 @@ fn fix_missing_fields(
                     // Parse with a more lenient structure to get the data
                     if let Ok(mut partial) = serde_json::from_str::<serde_json::Value>(raw_json) {
                         // Add missing fields with defaults
-                        if !partial.get("is_read").is_some() {
+                        if partial.get("is_read").is_none() {
                             partial["is_read"] = serde_json::Value::Bool(false);
                             missing_fields.push(format!("{}: is_read", id));
                         }
-                        if !partial.get("status").is_some() {
+                        if partial.get("status").is_none() {
                             partial["status"] = serde_json::Value::Number(0.into());
                             missing_fields.push(format!("{}: status", id));
                         }
-                        if !partial.get("rating").is_some() {
+                        if partial.get("rating").is_none() {
                             partial["rating"] = serde_json::Value::Null;
                             missing_fields.push(format!("{}: rating", id));
                         }
-                        if !partial.get("search_keyword").is_some() {
+                        if partial.get("search_keyword").is_none() {
                             partial["search_keyword"] = serde_json::Value::Null;
                             missing_fields.push(format!("{}: search_keyword", id));
                         }
-                        if !partial.get("applied_at").is_some() {
+                        if partial.get("applied_at").is_none() {
                             partial["applied_at"] = serde_json::Value::Null;
                             missing_fields.push(format!("{}: applied_at", id));
                         }
-                        if !partial.get("bookmarked_at").is_some() {
+                        if partial.get("bookmarked_at").is_none() {
                             partial["bookmarked_at"] = serde_json::Value::Null;
                             missing_fields.push(format!("{}: bookmarked_at", id));
                         }
-                        if !partial.get("qualifications").is_some() {
+                        if partial.get("qualifications").is_none() {
                             partial["qualifications"] = serde_json::Value::Null;
                             missing_fields.push(format!("{}: qualifications", id));
                         }
-                        if !partial.get("additional_information").is_some() {
+                        if partial.get("additional_information").is_none() {
                             partial["additional_information"] = serde_json::Value::Null;
                             missing_fields.push(format!("{}: additional_information", id));
                         }
@@ -184,7 +180,8 @@ fn fix_missing_fields(
 
         for (id, ad) in &ads_to_update {
             let json = serde_json::to_string(ad).context("Failed to serialize job")?;
-            table.insert(id.as_str(), json.as_str())
+            table
+                .insert(id.as_str(), json.as_str())
                 .context("Failed to update job")?;
         }
     }

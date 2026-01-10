@@ -191,7 +191,7 @@ impl JobSearchClient {
                     }
 
                     let find_section =
-                        |keys: &[&str]| -> Option<String> { find_section_in_hit(&hit, keys) };
+                        |keys: &[&str]| -> Option<String> { find_section_in_hit(hit, keys) };
 
                     // Kvalifikationer (om serde inte redan fyllt detta)
                     if ad.qualifications.is_none() {
@@ -228,16 +228,15 @@ impl JobSearchClient {
                     }
 
                     // Försök även hitta omfattning om den saknas (kan förekomma som en sektion)
-                    if ad.working_hours_type.is_none() {
-                        if let Some(omf) =
+                    if ad.working_hours_type.is_none()
+                        && let Some(omf) =
                             find_section(&["working_hours", "omfattning", "employment_type"])
-                        {
-                            let first_line = omf.lines().next().unwrap_or("").trim().to_string();
-                            if !first_line.is_empty() {
-                                ad.working_hours_type = Some(crate::models::WorkingHours {
-                                    label: Some(first_line),
-                                });
-                            }
+                    {
+                        let first_line = omf.lines().next().unwrap_or("").trim().to_string();
+                        if !first_line.is_empty() {
+                            ad.working_hours_type = Some(crate::models::WorkingHours {
+                                label: Some(first_line),
+                            });
                         }
                     }
 
@@ -256,15 +255,15 @@ impl JobSearchClient {
 fn find_section_in_hit(hit: &Value, keys: &[&str]) -> Option<String> {
     // Direkta nycklar (toppnivå eller nested i description)
     for k in keys {
-        if let Some(s) = hit[k].as_str() {
-            if !s.trim().is_empty() {
-                return Some(s.to_string());
-            }
+        if let Some(s) = hit[k].as_str()
+            && !s.trim().is_empty()
+        {
+            return Some(s.to_string());
         }
-        if let Some(s) = hit["description"][k].as_str() {
-            if !s.trim().is_empty() {
-                return Some(s.to_string());
-            }
+        if let Some(s) = hit["description"][k].as_str()
+            && !s.trim().is_empty()
+        {
+            return Some(s.to_string());
         }
     }
 
@@ -280,10 +279,10 @@ fn find_section_in_hit(hit: &Value, keys: &[&str]) -> Option<String> {
 
             for k in keys {
                 if sec_label.contains(&k.to_lowercase()) {
-                    if let Some(text) = sec["text"].as_str().or_else(|| sec["content"].as_str()) {
-                        if !text.trim().is_empty() {
-                            return Some(text.to_string());
-                        }
+                    if let Some(text) = sec["text"].as_str().or_else(|| sec["content"].as_str())
+                        && !text.trim().is_empty()
+                    {
+                        return Some(text.to_string());
                     }
                     if let Some(pars) = sec["paragraphs"].as_array() {
                         let parts: Vec<_> = pars.iter().filter_map(|p| p.as_str()).collect();
@@ -291,10 +290,10 @@ fn find_section_in_hit(hit: &Value, keys: &[&str]) -> Option<String> {
                             return Some(parts.join("\n\n"));
                         }
                     }
-                    if let Some(s) = sec.as_str() {
-                        if !s.trim().is_empty() {
-                            return Some(s.to_string());
-                        }
+                    if let Some(s) = sec.as_str()
+                        && !s.trim().is_empty()
+                    {
+                        return Some(s.to_string());
                     }
                 }
             }
@@ -312,12 +311,11 @@ fn find_section_in_hit(hit: &Value, keys: &[&str]) -> Option<String> {
                 .to_lowercase();
 
             for k in keys {
-                if sec_label.contains(&k.to_lowercase()) {
-                    if let Some(text) = sec["text"].as_str().or_else(|| sec["content"].as_str()) {
-                        if !text.trim().is_empty() {
-                            return Some(text.to_string());
-                        }
-                    }
+                if sec_label.contains(&k.to_lowercase())
+                    && let Some(text) = sec["text"].as_str().or_else(|| sec["content"].as_str())
+                    && !text.trim().is_empty()
+                {
+                    return Some(text.to_string());
                 }
             }
         }
