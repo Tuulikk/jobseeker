@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v0.2.0)'
+        description: "Version tag (e.g., v0.2.0)"
         required: false
-        default: ''
+        default: ""
 
 jobs:
   build:
@@ -115,6 +115,35 @@ jobs:
           cd target/x86_64-unknown-linux-gnu/release
           tar -czf jobseeker-linux-x86_64.tar.gz jobseeker
           mv jobseeker-linux-x86_64.tar.gz ${{ github.workspace }}
+
+      - name: Create Debian package (.deb)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev fakeroot
+          cd target/x86_64-unknown-linux-gnu/release
+          PKG=jobseeker-${{ github.ref_name }}-amd64
+          rm -rf ${PKG}
+          mkdir -p ${PKG}/DEBIAN ${PKG}/usr/bin
+          cp jobseeker ${PKG}/usr/bin/jobseeker
+          cat > ${PKG}/DEBIAN/control << 'EOF'
+          Package: jobseeker
+          Version: ${{ github.ref_name }}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Gnaw Software <noreply@gnaw-software.example>
+          Description: Jobseeker - AI-powered job search and management
+          EOF
+          dpkg-deb --build ${PKG}
+          mv ${PKG}.deb ${{ github.workspace }}
+
+      - name: Upload Debian artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: jobseeker-deb
+          path: ${{ github.workspace }}/jobseeker-${{ github.ref_name }}-amd64.deb
 
       - name: Create macOS archive
         if: runner.os == 'macOS'
