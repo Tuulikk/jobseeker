@@ -1,13 +1,46 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum AdStatus {
     New = 0,
     Rejected = 1,
     Bookmarked = 2,
     ThumbsUp = 3,
     Applied = 4,
+}
+
+impl<'de> Deserialize<'de> for AdStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        struct AdStatusVisitor;
+        impl<'de> serde::de::Visitor<'de> for AdStatusVisitor {
+            type Value = AdStatus;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an integer or string representing AdStatus")
+            }
+            fn visit_u64<E>(self, v: u64) -> Result<AdStatus, E> where E: serde::de::Error {
+                Ok(match v {
+                    1 => AdStatus::Rejected,
+                    2 => AdStatus::Bookmarked,
+                    3 => AdStatus::ThumbsUp,
+                    4 => AdStatus::Applied,
+                    _ => AdStatus::New,
+                })
+            }
+            fn visit_str<E>(self, v: &str) -> Result<AdStatus, E> where E: serde::de::Error {
+                Ok(match v {
+                    "Rejected" => AdStatus::Rejected,
+                    "Bookmarked" => AdStatus::Bookmarked,
+                    "ThumbsUp" => AdStatus::ThumbsUp,
+                    "Applied" => AdStatus::Applied,
+                    _ => AdStatus::New,
+                })
+            }
+        }
+        deserializer.deserialize_any(AdStatusVisitor)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

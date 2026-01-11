@@ -4,7 +4,7 @@ mod db;
 mod ai;
 
 use iced::widget::{column, row, text, button, scrollable, text_input, container, space, rule, svg, text_editor, stack, tooltip};
-use iced::{Element, Task, Theme, Length, Color, Alignment, Padding, mouse};
+use iced::{Element, Task, Theme, Length, Color, Alignment, Padding};
 use crate::models::{JobAd, AppSettings, AdStatus};
 use crate::api::JobSearchClient;
 use crate::db::Db;
@@ -12,6 +12,7 @@ use crate::ai::AiRanker;
 use std::sync::Arc;
 use chrono::{Utc, Datelike};
 use tracing::{info, error};
+use directories::ProjectDirs;
 
 // SVG Icon bytes embedded in the binary
 const SVG_UNREAD: &[u8] = include_bytes!("../assets/icons/circle-fill.svg");
@@ -59,8 +60,8 @@ enum Tab {
     Inbox,
     Drafts,
     Settings,
-    ApplicationEditor { 
-        job_id: String, 
+    ApplicationEditor {
+        job_id: String,
         job_headline: String,
         content: text_editor::Content,
         is_editing: bool,
@@ -69,6 +70,7 @@ enum Tab {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Tab::Inbox, Tab::Inbox) => true,
+            (Tab::Drafts, Tab::Drafts) => true,
             (Tab::Settings, Tab::Settings) => true,
             (Tab::ApplicationEditor { job_id: id1, .. }, Tab::ApplicationEditor { job_id: id2, .. }) => id1 == id2,
             _ => false,
@@ -111,13 +113,8 @@ struct Jobseeker {
 impl Jobseeker {
     fn new() -> Self {
         let now = Utc::now();
-        let mut settings = AppSettings::load();
+        let settings = AppSettings::default();
         
-        // Beautify existing locations (convert codes to names)
-        settings.locations_p1 = Self::beautify_locations(&settings.locations_p1);
-        settings.locations_p2 = Self::beautify_locations(&settings.locations_p2);
-        settings.locations_p3 = Self::beautify_locations(&settings.locations_p3);
-
         let keywords_content = text_editor::Content::with_text(&settings.keywords);
         let blacklist_content = text_editor::Content::with_text(&settings.blacklist_keywords);
         let profile_content = text_editor::Content::with_text(&settings.my_profile);
@@ -172,6 +169,7 @@ impl Default for Jobseeker {
 enum Message {
     Init,
     InitDb(Arc<Result<Db, String>>),
+    LoadSettingsResult(AppSettings),
     SwitchTab(usize),
     CloseTab(usize),
     OpenEditor(String, String), // job_id, job_headline
@@ -216,17 +214,34 @@ impl Jobseeker {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Init => {
-                info!("Initializing DB...");
+                info!("Initializing RedB Database in user data directory...");
                 Task::perform(async {
-                    Db::new("jobseeker.db").await
-                }, |res| Message::InitDb(Arc::new(res.map_err(|e| e.to_string()))))
+                    if let Some(proj_dirs) = ProjectDirs::from("com", "gnaw-software", "jobseeker") {
+                        let data_dir = proj_dirs.data_dir();
+                        std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
+                        let db_path = data_dir.join("jobseeker.redb");
+                        Db::new(db_path.to_str().ok_or("Invalid path")?).await.map_err(|e| e.to_string())
+                    } else {
+                        Err("Could not find user data directory".to_string())
+                    }
+                }, |res| Message::InitDb(Arc::new(res)))
             }
             Message::InitDb(res) => {
                 match &*res {
                     Ok(db) => {
                         info!("DB initialized successfully.");
                         self.db = Arc::new(Some(db.clone()));
-                        return self.refresh_list();
+                        
+                        let db_for_task = db.clone();
+                        return Task::perform(async move {
+                            db_for_task.load_settings().await.unwrap_or(None)
+                        }, |maybe_settings| {
+                            if let Some(s) = maybe_settings {
+                                Message::LoadSettingsResult(s)
+                            } else {
+                                Message::SaveSettings
+                            }
+                        });
                     }
                     Err(err_str) => {
                         error!("DB Init Failed: {}", err_str);
@@ -235,10 +250,21 @@ impl Jobseeker {
                     }
                 }
             }
+            Message::LoadSettingsResult(mut settings) => {
+                // Snygga till koder -> namn
+                settings.locations_p1 = Self::beautify_locations(&settings.locations_p1);
+                settings.locations_p2 = Self::beautify_locations(&settings.locations_p2);
+                settings.locations_p3 = Self::beautify_locations(&settings.locations_p3);
+                
+                self.settings = settings;
+                self.keywords_content = text_editor::Content::with_text(&self.settings.keywords);
+                self.blacklist_content = text_editor::Content::with_text(&self.settings.blacklist_keywords);
+                self.profile_content = text_editor::Content::with_text(&self.settings.my_profile);
+                self.refresh_list()
+            }
             Message::SwitchTab(index) => {
                 if index < self.tabs.len() {
                     self.active_tab = index;
-                    // Ladda utkast om vi går till Drafts-fliken
                     if matches!(self.tabs[index], Tab::Drafts) {
                         return Task::done(Message::LoadDrafts);
                     }
@@ -265,7 +291,6 @@ impl Jobseeker {
             }
             Message::CloseTab(index) => {
                 if index < self.tabs.len() && self.tabs.len() > 1 {
-                    // Stäng inte Inbox eller Settings om de är de sista
                     if !matches!(self.tabs[index], Tab::Inbox | Tab::Settings) {
                         self.tabs.remove(index);
                         if self.active_tab >= self.tabs.len() {
@@ -276,7 +301,6 @@ impl Jobseeker {
                 Task::none()
             }
             Message::OpenEditor(id, headline) => {
-                // Kolla om den redan är öppen
                 let existing = self.tabs.iter().position(|t| {
                     if let Tab::ApplicationEditor { job_id, .. } = t {
                         job_id == &id
@@ -292,7 +316,6 @@ impl Jobseeker {
                     let db_clone = Arc::clone(&self.db);
                     let id_clone = id.clone();
                     
-                    // Skapa fliken direkt med tomt innehåll först
                     let new_tab = Tab::ApplicationEditor {
                         job_id: id.clone(),
                         job_headline: headline,
@@ -302,7 +325,6 @@ impl Jobseeker {
                     self.tabs.push(new_tab);
                     self.active_tab = self.tabs.len() - 1;
 
-                    // Ladda utkast från DB asynkront
                     let id_for_task = id_clone.clone();
                     Task::perform(async move {
                         if let Some(db) = &*db_clone {
@@ -351,7 +373,6 @@ impl Jobseeker {
                             .save_file()
                             .await 
                         {
-                            // Enkel PDF-generering
                             let font_family = genpdf::fonts::from_files("/usr/share/fonts/truetype/liberation", "LiberationSans", None)
                                 .expect("Failed to load font");
                             let mut doc = genpdf::Document::new(font_family);
@@ -410,35 +431,17 @@ impl Jobseeker {
                 }
                 Task::none()
             }
-            Message::EditorAiImprove(index) => {
-                if let Some(Tab::ApplicationEditor { job_id, content, .. }) = self.tabs.get(index) {
-                    let current_text = content.text();
-                    let ad_ref = self.ads.iter().find(|a| &a.id == job_id);
-                    let ad_desc = ad_ref.and_then(|a| a.description.as_ref()).and_then(|d| d.text.clone()).unwrap_or_default();
-                    let url = self.settings.ollama_url.clone();
-                    let job_id_clone = job_id.clone();
-
-                    Task::perform(async move {
-                        let ranker = AiRanker::new(&url, "not-needed").ok()?;
-                        let prompt = format!("Här är en jobbannons: {}\n\nHär är mitt nuvarande utkast på ansökan: {}\n\nFörbättra texten så den blir mer professionell och matchar annonsen bättre. Svara bara med den förbättrade texten.", ad_desc, current_text);
-                        // Vi återanvänder AiRanker för enkelhetens skull eller lägger till en metod för chat
-                        Some(prompt) // Placeholder för faktiskt AI-anrop
-                    }, move |_res| Message::SaveSettings) // Placeholder
-                } else {
-                    Task::none()
-                }
+            Message::EditorAiImprove(_) => {
+                // Placeholder
+                Task::none()
             }
-            Message::EventOccurred(event) => {
-                if let iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Middle)) = event {
-                    self.show_editor_tools = !self.show_editor_tools;
-                }
+            Message::EventOccurred(_) => {
                 Task::none()
             }
             Message::EditorContentChanged(index, action) => {
                 if let Some(Tab::ApplicationEditor { job_id, content, .. }) = self.tabs.get_mut(index) {
                     content.perform(action);
                     
-                    // Spara till DB automatiskt vid ändring
                     let db_clone = Arc::clone(&self.db);
                     let id_clone = job_id.clone();
                     let text_clone = content.text();
@@ -492,13 +495,12 @@ impl Jobseeker {
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .map(|s| {
-                            // Om det är sifferkod, behåll den. Annars försök mappa namn.
                             if s.chars().all(|c| c.is_numeric()) {
                                 s
                             } else if let Some(code) = JobSearchClient::get_municipality_code(&s) {
                                 code.to_string()
                             } else {
-                                s // Behåll originalet som fallback
+                                s
                             }
                         })
                         .collect();
@@ -613,8 +615,15 @@ impl Jobseeker {
                 Task::done(Message::SaveSettings)
             }
             Message::SaveSettings => {
-                self.settings.save();
-                Task::none()
+                if let Some(db) = &*self.db {
+                    let db_clone = db.clone();
+                    let settings_clone = self.settings.clone();
+                    Task::perform(async move {
+                        let _ = db_clone.save_settings(&settings_clone).await;
+                    }, |_| Message::EventOccurred(iced::Event::Mouse(iced::mouse::Event::CursorLeft)))
+                } else {
+                    Task::none()
+                }
             }
             Message::RateAd(index) => {
                 if let Some(ad) = self.ads.get(index) {
@@ -803,7 +812,7 @@ impl Jobseeker {
         for (i, tab) in self.tabs.iter().enumerate() {
             let (label, svg_icon) = match tab {
                 Tab::Inbox => (" Inbox".to_string(), Some(SVG_INBOX)),
-                Tab::Drafts => (" Utkast".to_string(), Some(SVG_COPY)), // Använd CLIPBOARD_PLUS för utkast
+                Tab::Drafts => (" Utkast".to_string(), Some(SVG_COPY)),
                 Tab::Settings => (" Inställningar".to_string(), Some(SVG_SETTINGS)),
                 Tab::ApplicationEditor { job_headline, .. } => {
                     let mut short = job_headline.clone();
@@ -881,7 +890,7 @@ impl Jobseeker {
 
         column![
             tab_bar,
-            toolbar, // Vi kan ha toolbar kvar eller integrera den i flikarna
+            toolbar,
             rule::horizontal(1),
             container(content).width(Length::Fill).height(Length::Fill)
         ].into()

@@ -1,6 +1,3 @@
 /target
-jobseeker.db*
+*.redb
 settings.json
-.gnawtreewriter_backups/
-.gnawtreewriter_session.json
-.gnawtreewriter_session_id
