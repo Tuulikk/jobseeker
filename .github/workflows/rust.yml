@@ -21,13 +21,10 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         include:
           - os: ubuntu-latest
-            artifact_name: Jobseeker
             asset_name: jobseeker-linux-amd64
           - os: windows-latest
-            artifact_name: Jobseeker.exe
             asset_name: jobseeker-windows-amd64.exe
           - os: macos-latest
-            artifact_name: Jobseeker
             asset_name: jobseeker-macos-arm64
 
     steps:
@@ -50,9 +47,11 @@ jobs:
       run: |
         mkdir -p release_assets
         if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          cp target/release/${{ matrix.artifact_name }} release_assets/${{ matrix.asset_name }}
+          # Kopiera oavsett om den heter Jobseeker.exe eller jobseeker.exe
+          cp target/release/[Jj]obseeker.exe release_assets/${{ matrix.asset_name }} || cp target/release/Jobseeker.exe release_assets/${{ matrix.asset_name }}
         else
-          cp target/release/${{ matrix.artifact_name }} release_assets/${{ matrix.asset_name }}
+          # Kopiera oavsett om den heter Jobseeker eller jobseeker
+          cp target/release/[Jj]obseeker release_assets/${{ matrix.asset_name }} || cp target/release/Jobseeker release_assets/${{ matrix.asset_name }}
           chmod +x release_assets/${{ matrix.asset_name }}
         fi
 
@@ -76,8 +75,8 @@ jobs:
     
     - name: Install Fedora Dependencies
       run: |
-        dnf install -y gcc gcc-c++ make openssl-devel libsoup3-devel gtk4-devel libadwaita-devel alsa-lib-devel vulkan-loader-devel
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | s -s -- -y
+        dnf install -y gcc gcc-c++ make openssl-devel libsoup3-devel gtk4-devel libadwaita-devel alsa-lib-devel vulkan-loader-devel curl
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
         source $HOME/.cargo/env
         
     - name: Build
@@ -88,7 +87,7 @@ jobs:
     - name: Prepare Artifacts
       run: |
         mkdir -p release_assets
-        cp target/release/Jobseeker release_assets/jobseeker-fedora-amd64
+        cp target/release/[Jj]obseeker release_assets/jobseeker-fedora-amd64 || cp target/release/Jobseeker release_assets/jobseeker-fedora-amd64
         chmod +x release_assets/jobseeker-fedora-amd64
 
     - name: Upload Release Assets
