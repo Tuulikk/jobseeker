@@ -1,10 +1,10 @@
-name: Multi-OS Build
+name: Multi-OS Build & Release
 
 on:
   push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
+    tags:
+      - 'v*' # Startar när du pushar en tagg som börjar på v (t.ex. v0.1.0)
+  workflow_dispatch: # Tillåter att man startar bygget manuellt
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,6 +16,16 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: jobseeker
+            asset_name: jobseeker-linux-amd64
+          - os: windows-latest
+            artifact_name: Jobseeker.exe
+            asset_name: jobseeker-windows-amd64.exe
+          - os: macos-latest
+            artifact_name: Jobseeker
+            asset_name: jobseeker-macos-arm64
 
     steps:
     - uses: actions/checkout@v4
@@ -32,10 +42,21 @@ jobs:
     - name: Build
       run: cargo build --release --verbose
       
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4
+    - name: Prepare Artifacts
+      shell: bash
+      run: |
+        mkdir -p release_assets
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          cp target/release/${{ matrix.artifact_name }} release_assets/${{ matrix.asset_name }}
+        else
+          cp target/release/${{ matrix.artifact_name }} release_assets/${{ matrix.asset_name }}
+          chmod +x release_assets/${{ matrix.asset_name }}
+        fi
+
+    - name: Upload Release Assets
+      uses: softprops/action-gh-release@v2
+      if: startsWith(github.ref, 'refs/tags/')
       with:
-        name: jobseeker-${{ matrix.os }}
-        path: |
-          target/release/jobseeker
-          target/release/jobseeker.exe
+        files: release_assets/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
