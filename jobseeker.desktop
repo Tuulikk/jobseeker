@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Jobseeker
+Comment=AI-powered job search assistant
+Exec=jobseeker
+Icon=app-icon
+Type=Application
+Categories=Utility;Office;
+Terminal=false
+StartupWMClass=Jobseeker
