@@ -52,7 +52,7 @@ pub fn main() -> iced::Result {
 }
 
 fn get_title(_: &Jobseeker) -> String {
-    "Jobseeker Gnag v0.2 - NY".to_string()
+    "Jobseeker v0.2".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -849,9 +849,9 @@ impl Jobseeker {
 
             if is_active {
                 tab_btn = tab_btn.style(|_theme: &Theme, _status| button::Style {
-                    background: Some(Color::from_rgb(0.2, 0.2, 0.25).into()),
+                    background: Some(Color::from_rgb(0.25, 0.3, 0.4).into()),
                     border: iced::Border {
-                        color: Color::from_rgb(0.3, 0.6, 0.8),
+                        color: Color::from_rgb(0.4, 0.6, 0.9),
                         width: 1.0,
                         radius: iced::border::Radius {
                             top_left: 5.0,
@@ -864,7 +864,7 @@ impl Jobseeker {
                 });
             } else {
                 tab_btn = tab_btn.style(|_theme: &Theme, _status| button::Style {
-                    background: Some(Color::from_rgb(0.1, 0.1, 0.1).into()),
+                    background: Some(Color::from_rgb(0.12, 0.14, 0.18).into()),
                     ..Default::default()
                 });
             }
