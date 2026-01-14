@@ -15,6 +15,10 @@ label = "Jobseeker"
 assets = "assets"
 build_targets = ["aarch64-linux-android"]
 
+[lib]
+name = "jobseeker"
+crate-type = ["cdylib"]
+
 [dependencies]
 anyhow = "1.0.100"
 async-openai = { version = "0.32.2", features = ["full"] }
