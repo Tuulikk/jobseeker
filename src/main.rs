@@ -37,7 +37,9 @@ const SVG_ALIGN_RIGHT: &[u8] = include_bytes!("../assets/icons/text-right.svg");
 const SVG_ALIGN_JUSTIFY: &[u8] = include_bytes!("../assets/icons/justify.svg");
 
 pub fn main() -> iced::Result {
+    #[cfg(not(target_os = "android"))]
     tracing_subscriber::fmt::init();
+    
     info!("Starting Jobseeker Gnag v0.2...");
 
     iced::application(|| (Jobseeker::new(), Task::done(Message::Init)), Jobseeker::update, Jobseeker::view)
@@ -49,6 +51,15 @@ pub fn main() -> iced::Result {
             ..Default::default()
         })
         .run()
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+fn android_main(app: android_activity::AndroidApp) {
+    android_logger::init_once(
+        android_logger::Config::default().with_max_level(tracing::log::LevelFilter::Info),
+    );
+    let _ = main();
 }
 
 fn get_title(_: &Jobseeker) -> String {
@@ -214,16 +225,19 @@ impl Jobseeker {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Init => {
-                info!("Initializing RedB Database in user data directory...");
+                info!("Initializing RedB Database...");
                 Task::perform(async {
-                    if let Some(proj_dirs) = ProjectDirs::from("com", "gnaw-software", "jobseeker") {
-                        let data_dir = proj_dirs.data_dir();
-                        std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
-                        let db_path = data_dir.join("jobseeker.redb");
-                        Db::new(db_path.to_str().ok_or("Invalid path")?).await.map_err(|e| e.to_string())
+                    let data_dir = if cfg!(target_os = "android") {
+                        std::path::PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files")
                     } else {
-                        Err("Could not find user data directory".to_string())
-                    }
+                        ProjectDirs::from("com", "gnaw-software", "jobseeker")
+                            .map(|p| p.data_dir().to_path_buf())
+                            .ok_or_else(|| "Could not find user data directory".to_string())?
+                    };
+
+                    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+                    let db_path = data_dir.join("jobseeker.redb");
+                    Db::new(db_path.to_str().ok_or("Invalid path")?).await.map_err(|e| e.to_string())
                 }, |res| Message::InitDb(Arc::new(res)))
             }
             Message::InitDb(res) => {

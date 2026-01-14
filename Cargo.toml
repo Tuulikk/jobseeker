@@ -1,6 +1,6 @@
 [package]
 name = "Jobseeker"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.3"
 edition = "2024"
 authors = ["Svensson <tuulikk@gmail.com>"]
 description = "Ett kraftfullt verktyg för att hitta jobb, ranka annonser med AI och hantera ansökningar direkt till PDF/Word."
@@ -8,6 +8,12 @@ license = "MPL-2.0"
 repository = "https://github.com/Gnaw-Software/Jobseeker"
 keywords = ["jobsearch", "rust", "ai", "ollama", "iced", "productivity", "redb"]
 categories = ["command-line-utilities", "productivity", "gui"]
+
+[package.metadata.android]
+package = "com.gnawsoftware.jobseeker"
+label = "Jobseeker"
+assets = "assets"
+build_targets = ["aarch64-linux-android"]
 
 [dependencies]
 anyhow = "1.0.100"
@@ -28,3 +34,8 @@ webbrowser = "1.0"
 rfd = "0.15"
 genpdf = "0.2"
 docx-rs = "0.4"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+android_logger = "0.14"
+jni = "0.21"
