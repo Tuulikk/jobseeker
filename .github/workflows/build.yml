@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - slint-conversion
     tags:
       - 'v*'
   pull_request:
@@ -15,22 +16,32 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Build on ${{ matrix.os }}
+  build-desktop:
+    name: Build ${{ matrix.asset_name }}
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
         include:
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
             asset_name: jobseeker-linux-amd64
+            use_cross: false
+            
           - os: windows-latest
+            target: x86_64-pc-windows-msvc
             asset_name: jobseeker-windows-amd64.exe
-          - os: macos-latest
+            use_cross: false
+            
+          - os: macos-13  # Intel Mac
+            target: x86_64-apple-darwin
+            asset_name: jobseeker-macos-intel
+            use_cross: false
+            
+          - os: macos-latest # Apple Silicon (ARM64)
+            target: aarch64-apple-darwin
             asset_name: jobseeker-macos-arm64
+            use_cross: false
 
     steps:
     - uses: actions/checkout@v4
@@ -41,99 +52,46 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libsoup-3.0-dev libgtk-4-dev libadwaita-1-dev libasound2-dev libvulkan-dev
         
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+        
     - name: Rust Cache
       uses: Swatinem/rust-cache@v2
 
     - name: Build
-      run: cargo build --release --verbose
+      run: cargo build --release --verbose --target ${{ matrix.target }}
       
-    - name: Prepare Artifacts
+    - name: Prepare Artifact
       shell: bash
       run: |
-        mkdir -p release_assets
-        echo "Checking target/release directory..."
-        ls -F target/release/
-        
+        mkdir -p dist
         if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          # Försök hitta Jobseeker.exe eller jobseeker.exe
-          cp target/release/Jobseeker.exe release_assets/${{ matrix.asset_name }} || cp target/release/jobseeker.exe release_assets/${{ matrix.asset_name }}
+          cp target/${{ matrix.target }}/release/Jobseeker.exe dist/${{ matrix.asset_name }}
         else
-          # Försök hitta Jobseeker eller jobseeker
-          cp target/release/Jobseeker release_assets/${{ matrix.asset_name }} || cp target/release/jobseeker release_assets/${{ matrix.asset_name }}
-          chmod +x release_assets/${{ matrix.asset_name }}
+          cp target/${{ matrix.target }}/release/Jobseeker dist/${{ matrix.asset_name }}
         fi
-        
-        echo "Contents of release_assets:"
-        ls -lh release_assets/
 
-    - name: Package AppImage
-      if: matrix.os == 'ubuntu-latest'
-      run: |
-        sudo apt-get install -y fuse
-        wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-        chmod +x linuxdeploy-x86_64.AppImage
-        
-        BINARY_PATH="target/release/jobseeker"
-        if [ ! -f "$BINARY_PATH" ]; then
-            BINARY_PATH="target/release/Jobseeker"
-        fi
-        
-        ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable "$BINARY_PATH" --desktop-file jobseeker.desktop --icon-file assets/app-icon.svg --output appimage
-        
-        mv Jobseeker*.AppImage release_assets/Jobseeker-x86_64.AppImage
+    # Ladda upp som artifact (för testning av varje commit)
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.asset_name }}
+        path: dist/${{ matrix.asset_name }}
 
-    - name: Upload Release Assets
+    # Ladda bara upp till Release om det är en tagg
+    - name: Upload to Release
       uses: softprops/action-gh-release@v2
       if: startsWith(github.ref, 'refs/tags/')
       with:
-        files: release_assets/*
-        fail_on_unmatched_files: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  build-fedora:
-    name: Build on Fedora
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    container:
-      image: fedora:latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Fedora Dependencies
-      run: |
-        dnf install -y gcc gcc-c++ make openssl-devel libsoup3-devel gtk4-devel libadwaita-devel alsa-lib-devel vulkan-loader-devel curl
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source $HOME/.cargo/env
-        
-    - name: Build
-      run: |
-        source $HOME/.cargo/env
-        cargo build --release --verbose
-        
-    - name: Prepare Artifacts
-      run: |
-        mkdir -p release_assets
-        # Försök hitta Jobseeker eller jobseeker
-        cp target/release/Jobseeker release_assets/jobseeker-fedora-amd64 || cp target/release/jobseeker release_assets/jobseeker-fedora-amd64
-        chmod +x release_assets/jobseeker-fedora-amd64
-        ls -lh release_assets/
-
-    - name: Upload Release Assets
-      uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: release_assets/*
-        fail_on_unmatched_files: true
+        files: dist/${{ matrix.asset_name }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-android:
-    name: Build for Android
+    name: Build Android APK
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       
@@ -151,15 +109,19 @@ jobs:
         
       - name: Prepare Assets
         run: |
-          mkdir -p release_assets
-          find target -name "*.apk" -exec cp {} release_assets/jobseeker-android.apk \;
-          ls -lh release_assets/
+          mkdir -p dist
+          find target -name "*.apk" -exec cp {} dist/jobseeker-android.apk \;
 
-      - name: Upload Release Assets
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jobseeker-android.apk
+          path: dist/jobseeker-android.apk
+
+      - name: Upload to Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: release_assets/*.apk
-          fail_on_unmatched_files: true
+          files: dist/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

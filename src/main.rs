@@ -8,6 +8,7 @@ use slint::Model;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
+use anyhow::Result;
 
 mod models;
 mod api;
@@ -15,11 +16,43 @@ mod db;
 mod ai;
 
 use crate::api::JobSearchClient;
+use crate::db::Db;
 use crate::ui::*;
 
-fn setup_ui(ui: &App, rt: Arc<Runtime>) {
+fn get_db_path() -> std::path::PathBuf {
+    if let Some(proj_dirs) = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker") {
+        let data_dir = proj_dirs.data_dir();
+        if let Err(e) = std::fs::create_dir_all(data_dir) {
+            tracing::error!("Failed to create data directory: {}", e);
+            return std::path::PathBuf::from("jobseeker.redb");
+        }
+        data_dir.join("jobseeker.redb")
+    } else {
+        std::path::PathBuf::from("jobseeker.redb")
+    }
+}
+
+fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
     let ui_weak = ui.as_weak();
     let api_client = Arc::new(JobSearchClient::new());
+    
+    // Load settings initially
+    let db_clone = db.clone();
+    let ui_weak_clone = ui_weak.clone();
+    rt.spawn(async move {
+        if let Ok(Some(settings)) = db_clone.load_settings().await {
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak_clone.upgrade() {
+                    ui.set_settings(AppSettings {
+                        keywords: settings.keywords.into(),
+                        locations_p1: settings.locations_p1.into(),
+                        locations_p2: settings.locations_p2.into(),
+                    });
+                    tracing::info!("Loaded settings from DB");
+                }
+            });
+        }
+    });
 
     ui.on_search_pressed(move |query| {
         let ui_weak = ui_weak.clone();
@@ -33,7 +66,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>) {
 
         let rt_handle = rt.handle().clone();
         rt_handle.spawn(async move {
-            // Här kan vi lägga till kommuner från inställningar senare
+            // TODO: Use locations from settings
             let result = api_client.search(&query, &[], 50).await;
             
             let _ = slint::invoke_from_event_loop(move || {
@@ -73,8 +106,25 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>) {
         }
     });
 
-    ui.on_save_settings(move |settings| {
-        tracing::info!("Sparar inställningar: Sökord='{}', Plats='{}'", settings.keywords, settings.locations_p1);
+    let db_clone = db.clone();
+    ui.on_save_settings(move |ui_settings| {
+        let db = db_clone.clone();
+        let settings = crate::models::AppSettings {
+            keywords: ui_settings.keywords.to_string(),
+            locations_p1: ui_settings.locations_p1.to_string(),
+            locations_p2: ui_settings.locations_p2.to_string(),
+            ..Default::default()
+        };
+        
+        // Spawn save task
+        let rt_handle = rt.handle().clone();
+        rt_handle.spawn(async move {
+            if let Err(e) = db.save_settings(&settings).await {
+                tracing::error!("Failed to save settings: {}", e);
+            } else {
+                tracing::info!("Settings saved successfully");
+            }
+        });
     });
 }
 
@@ -88,9 +138,18 @@ pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
     slint::android::init(app).expect("Failed to initialize Slint on Android");
 
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
+    
+    // Initialize DB
+    let db_path = get_db_path();
+    tracing::info!("Using database path: {:?}", db_path);
+    let db = rt.block_on(async {
+        Db::new(db_path.to_str().unwrap()).await
+    }).expect("Failed to initialize database");
+    let db = Arc::new(db);
+
     let ui = App::new().expect("Failed to create Slint UI");
     
-    setup_ui(&ui, rt);
+    setup_ui(&ui, rt, db);
     
     ui.run().expect("Failed to run Slint UI");
 }
@@ -100,9 +159,18 @@ fn main() {
     tracing_subscriber::fmt::init();
     tracing::info!("Starting Jobseeker on Desktop");
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
+    
+    // Initialize DB
+    let db_path = get_db_path();
+    tracing::info!("Using database path: {:?}", db_path);
+    let db = rt.block_on(async {
+        Db::new(db_path.to_str().unwrap()).await
+    }).expect("Failed to initialize database");
+    let db = Arc::new(db);
+
     let ui = App::new().expect("Failed to create Slint UI");
     
-    setup_ui(&ui, rt);
+    setup_ui(&ui, rt, db);
     
     ui.run().expect("Failed to run Slint UI");
 }
