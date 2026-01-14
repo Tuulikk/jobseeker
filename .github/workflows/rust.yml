@@ -145,6 +145,10 @@ jobs:
           
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          api-level: 30
+          ndk: 25.2.9519653
+          build-tools: 30.0.3
 
       - name: Install Android Platform
         run: |
