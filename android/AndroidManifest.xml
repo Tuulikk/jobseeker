@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.gnawsoftware.jobseeker"
+    android:versionCode="1"
+    android:versionName="0.2.0">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:label="Jobseeker"
+        android:hasCode="false"
+        android:icon="@mipmap/ic_launcher">
+        
+        <activity
+            android:name="android.app.NativeActivity"
+            android:label="Jobseeker"
+            android:configChanges="orientation|keyboardHidden|screenSize"
+            android:exported="true">
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="Jobseeker" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

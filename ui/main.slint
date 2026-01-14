@@ -1,36 +1,362 @@
-// Minimal Slint test application
-export component App inherits Window {
-    width: 400px;
-    height: 300px;
-    title: "Jobseeker - Slint Test";
+import { Button, LineEdit, ScrollView, TextEdit, CheckBox, HorizontalBox, VerticalBox, TabWidget } from "std-widgets.slint";
 
-    Rectangle {
-        background: #1e1e1e;
+export struct JobEntry {
+    id: string,
+    title: string,
+    employer: string,
+    location: string,
+    date: string,
+    rating: int,
+    status_text: string,
+}
+
+export struct AppSettings {
+    keywords: string,
+    locations_p1: string,
+    locations_p2: string,
+}
+
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <length> icon-size: 16px;
+    in property <bool> active: false;
+    callback clicked;
+    
+    width: 32px;
+    height: 32px;
+    border-radius: 4px;
+    background: active ? #3a3a3a : touch.pressed ? #3a3a3a : touch.has-hover ? #2d2d2d : transparent;
+
+    Image {
+        source: icon;
+        width: icon-size;
+        height: icon-size;
+        colorize: #cccccc;
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component JobListItem inherits Rectangle {
+    in property <JobEntry> job;
+    in property <bool> selected: false;
+    callback clicked;
+
+    height: 70px;
+    background: selected ? #2d2d3a : touch.pressed ? #2d2d2d : touch.has-hover ? #252525 : transparent;
+    border-radius: 4px;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding: 8px;
+        spacing: 10px;
+
+        // Status indicator
+        Rectangle {
+            width: 4px;
+            background: job.rating > 0 ? #ffd700 : #444444;
+            border-radius: 2px;
+        }
 
         VerticalLayout {
+            spacing: 2px;
             alignment: center;
-            spacing: 20px;
-            padding: 20px;
-
+            
             Text {
-                text: "Jobseeker - Slint Test";
-                font-size: 24px;
+                text: job.title;
                 color: #ffffff;
-                horizontal-alignment: center;
+                font-size: 14px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            
+            HorizontalLayout {
+                spacing: 5px;
+                Text {
+                    text: job.employer;
+                    color: #999999;
+                    font-size: 12px;
+                    overflow: elide;
+                }
+                Text {
+                    text: "• " + job.location;
+                    color: #4a90e2;
+                    font-size: 12px;
+                }
+            }
+        }
+        
+        Text {
+            text: job.date;
+            color: #666666;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component InboxPage inherits VerticalLayout {
+    in property <[JobEntry]> jobs;
+    in property <bool> searching;
+    in property <string> status-msg;
+    
+    callback search-pressed(string);
+    callback job-selected(string);
+    
+    spacing: 10px;
+    padding: 10px;
+
+    // Search bar
+    HorizontalLayout {
+        height: 40px;
+        spacing: 10px;
+        
+        search-input := LineEdit {
+            placeholder-text: "Sök (t.ex. rust, python)...";
+            accepted => { root.search-pressed(self.text); }
+        }
+        
+        Button {
+            text: root.searching ? "Söker..." : "Sök";
+            enabled: !root.searching;
+            clicked => { root.search-pressed(search-input.text); }
+        }
+    }
+
+    // Tools
+    Rectangle {
+        height: 40px;
+        background: #252525;
+        border-radius: 4px;
+        
+        HorizontalLayout {
+            padding: 4px;
+            spacing: 8px;
+            alignment: start;
+
+            IconButton { icon: @image-url("../assets/icons/bookmark-star-fill.svg"); }
+            IconButton { icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); }
+            IconButton { icon: @image-url("../assets/icons/check-circle-fill.svg"); }
+            
+            Rectangle { width: 1px; background: #444444; height: 20px; y: 10px; } // Separator
+            
+            Text {
+                text: root.status-msg;
+                color: #888888;
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // Job List
+    Rectangle {
+        background: #1e1e1e;
+        border-radius: 4px;
+        border-width: 1px;
+        border-color: #333333;
+        
+        ScrollView {
+            VerticalLayout {
+                for job in jobs : JobListItem {
+                    job: job;
+                    clicked => { root.job-selected(job.id); }
+                }
+            }
+        }
+        
+        if jobs.length == 0 && !searching : Text {
+            text: "Inga jobb att visa. Gör en sökning!";
+            color: #555555;
+            x: parent.width / 2 - self.width / 2;
+            y: parent.height / 2 - self.height / 2;
+        }
+    }
+}
+
+component SettingsPage inherits VerticalLayout {
+    in-out property <AppSettings> settings;
+    callback save-settings(AppSettings);
+
+    padding: 20px;
+    spacing: 20px;
+    alignment: start;
+
+    Text {
+        text: "Inställningar";
+        font-size: 24px;
+        font-weight: 700;
+        color: #ffffff;
+    }
+
+    VerticalLayout {
+        spacing: 5px;
+        Text { text: "Mina sökord (separera med komma):"; color: #aaaaaa; }
+        keywords-input := LineEdit {
+            text: root.settings.keywords;
+            placeholder-text: "t.ex. it-tekniker, utvecklare";
+        }
+    }
+
+    VerticalLayout {
+        spacing: 5px;
+        Text { text: "Geografiska områden (Prio 1):"; color: #aaaaaa; }
+        loc-p1-input := LineEdit {
+            text: root.settings.locations_p1;
+            placeholder-text: "t.ex. helsingborg, malmö";
+        }
+    }
+    
+    Button {
+        text: "Spara inställningar";
+        primary: true;
+        clicked => {
+            root.settings.keywords = keywords-input.text;
+            root.settings.locations_p1 = loc-p1-input.text;
+            root.save-settings(root.settings);
+        }
+    }
+}
+
+export component App inherits Window {
+    title: "Jobseeker";
+    min-width: 400px;
+    min-height: 800px;
+    background: #121212; // Dark theme background
+    preferred-width: 450px;
+    preferred-height: 850px;
+
+    in-out property <[JobEntry]> jobs: [];
+    in-out property <bool> searching: false;
+    in-out property <string> status-msg: "Redo";
+    in-out property <int> current-tab: 0;
+    
+    // Default settings
+    in-out property <AppSettings> settings: {
+        keywords: "rust, python",
+        locations_p1: "stockholm",
+        locations_p2: ""
+    };
+
+    callback search-pressed(string);
+    callback job-selected(string);
+    callback save-settings(AppSettings);
+
+    VerticalLayout {
+        // Content Area
+        Rectangle {
+            clip: true;
+            if root.current-tab == 0 : InboxPage {
+                jobs: root.jobs;
+                searching: root.searching;
+                status-msg: root.status-msg;
+                search-pressed(q) => { root.search-pressed(q); }
+                job-selected(id) => { root.job-selected(id); }
+            }
+            if root.current-tab == 1 : Rectangle {
+                Text { text: "Utkast (Kommer snart)"; color: white; }
+            }
+            if root.current-tab == 2 : SettingsPage {
+                settings: root.settings;
+                save-settings(s) => { root.save-settings(s); }
+            }
+        }
+
+        // Bottom Navigation Bar
+        Rectangle {
+            height: 60px;
+            background: #1e1e1e;
+            
+            // Top border
+            Rectangle {
+                y: 0;
+                width: 100%;
+                height: 1px;
+                background: #333333;
             }
 
-            Text {
-                text: "Hello from Slint!";
-                font-size: 16px;
-                color: #cccccc;
-                horizontal-alignment: center;
-            }
+            HorizontalLayout {
+                alignment: space-around;
+                
+                // Inbox Tab
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    width: 60px;
+                    
+                    touch-inbox := TouchArea {
+                        clicked => { root.current-tab = 0; }
+                    }
+                    
+                    Image {
+                        source: @image-url("../assets/icons/inbox-fill.svg");
+                        width: 24px;
+                        height: 24px;
+                        colorize: root.current-tab == 0 ? #4a90e2 : #666666;
+                        x: (parent.width - self.width) / 2;
+                    }
+                    Text {
+                        text: "Inbox";
+                        font-size: 10px;
+                        color: root.current-tab == 0 ? #4a90e2 : #666666;
+                        horizontal-alignment: center;
+                    }
+                }
 
-            Text {
-                text: "Building on multiple platforms \u{1F30F}";
-                font-size: 16px;
-                color: #00ff00;
-                horizontal-alignment: center;
+                // Drafts Tab
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    width: 60px;
+                    
+                    touch-drafts := TouchArea {
+                        clicked => { root.current-tab = 1; }
+                    }
+
+                    Image {
+                        source: @image-url("../assets/icons/clipboard-plus-fill.svg");
+                        width: 24px;
+                        height: 24px;
+                        colorize: root.current-tab == 1 ? #4a90e2 : #666666;
+                        x: (parent.width - self.width) / 2;
+                    }
+                    Text {
+                        text: "Utkast";
+                        font-size: 10px;
+                        color: root.current-tab == 1 ? #4a90e2 : #666666;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                // Settings Tab
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 4px;
+                    width: 60px;
+
+                    touch-settings := TouchArea {
+                        clicked => { root.current-tab = 2; }
+                    }
+
+                    Image {
+                        source: @image-url("../assets/icons/gear-fill.svg");
+                        width: 24px;
+                        height: 24px;
+                        colorize: root.current-tab == 2 ? #4a90e2 : #666666;
+                        x: (parent.width - self.width) / 2;
+                    }
+                    Text {
+                        text: "Inställ.";
+                        font-size: 10px;
+                        color: root.current-tab == 2 ? #4a90e2 : #666666;
+                        horizontal-alignment: center;
+                    }
+                }
             }
         }
     }

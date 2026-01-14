@@ -2,8 +2,13 @@ name: Multi-OS Build & Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 env:
@@ -137,27 +142,6 @@ jobs:
         with:
           targets: aarch64-linux-android
           
-      - name: Set up Android SDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r25b
-        env:
-          ACTIONS_ALLOW_UNSECURE_COMMANDS: true
-
-      - name: Install Android command line tools
-        run: |
-          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          mkdir -p $ANDROID_HOME/cmdline-tools
-          unzip -q commandlinetools-linux-11076708_latest.zip -d $ANDROID_HOME/cmdline-tools
-          mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
-
-      - name: Accept Android licenses and install platform
-        run: |
-          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
-          yes | sdkmanager --licenses
-          sdkmanager "platforms;android-30" "build-tools;30.0.3"
-
       - name: Install cargo-apk
         run: cargo install cargo-apk
         

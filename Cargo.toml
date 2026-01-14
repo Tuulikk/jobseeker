@@ -14,6 +14,7 @@ package = "com.gnawsoftware.jobseeker"
 label = "Jobseeker"
 assets = "assets"
 build_targets = ["aarch64-linux-android"]
+manifest = "android/AndroidManifest.xml"
 
 [build-dependencies]
 slint-build = "1.14"
