@@ -138,7 +138,11 @@ jobs:
           targets: aarch64-linux-android
           
       - name: Set up Android SDK
-        uses: actions/setup-android@v1
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25b
+        env:
+          ACTIONS_ALLOW_UNSECURE_COMMANDS: true
 
       - name: Install cargo-apk
         run: cargo install cargo-apk
