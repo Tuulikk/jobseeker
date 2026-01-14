@@ -79,11 +79,6 @@ jobs:
           yes | sdkmanager --licenses
           sdkmanager "platforms;android-30" "build-tools;30.0.3" "platform-tools"
 
-      - name: Build APK
+      - name: Build for Android
         run: |
-          cargo install cargo-apk
-          cargo apk build --release
-
-      - name: Find APK
-        run: |
-          find target -name "*.apk" -exec echo "Found: {}" \;
+          cargo build --target aarch64-linux-android --release
