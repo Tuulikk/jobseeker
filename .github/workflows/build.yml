@@ -95,6 +95,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        
+      - name: Install Android Platform
+        run: sdkmanager "platforms;android-30" "build-tools;30.0.3" "platform-tools"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:

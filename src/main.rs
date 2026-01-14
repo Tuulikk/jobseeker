@@ -8,7 +8,6 @@ use slint::Model;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use anyhow::Result;
 
 mod models;
 mod api;
@@ -54,6 +53,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
         }
     });
 
+    let rt_clone = rt.clone();
     ui.on_search_pressed(move |query| {
         let ui_weak = ui_weak.clone();
         let api_client = api_client.clone();
@@ -64,7 +64,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
             ui.set_status_msg("Söker...".into());
         }
 
-        let rt_handle = rt.handle().clone();
+        let rt_handle = rt_clone.handle().clone();
         rt_handle.spawn(async move {
             // TODO: Use locations from settings
             let result = api_client.search(&query, &[], 50).await;
@@ -107,6 +107,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
     });
 
     let db_clone = db.clone();
+    let rt_clone = rt.clone();
     ui.on_save_settings(move |ui_settings| {
         let db = db_clone.clone();
         let settings = crate::models::AppSettings {
@@ -117,7 +118,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
         };
         
         // Spawn save task
-        let rt_handle = rt.handle().clone();
+        let rt_handle = rt_clone.handle().clone();
         rt_handle.spawn(async move {
             if let Err(e) = db.save_settings(&settings).await {
                 tracing::error!("Failed to save settings: {}", e);
