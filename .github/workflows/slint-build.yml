@@ -47,42 +47,5 @@ jobs:
         chmod +x release_assets/${{ matrix.asset_name }}
         ls -lh release_assets/
 
-  build-android:
-    name: Build for Android
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-
-      - name: Set up Android SDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r25b
-        env:
-          ACTIONS_ALLOW_UNSECURE_COMMANDS: true
-
-      - name: Install Android command line tools
-        run: |
-          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          mkdir -p $ANDROID_HOME/cmdline-tools
-          unzip -q commandlinetools-linux-11076708_latest.zip -d $ANDROID_HOME/cmdline-tools
-          mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
-          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
-
-      - name: Accept Android licenses and install platform
-        run: |
-          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
-          yes | sdkmanager --licenses
-          sdkmanager "platforms;android-30" "build-tools;30.0.3" "platform-tools"
-
-      - name: Build for Android
-        run: |
-          export CC=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
-          export CXX=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++
-          export AR=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
-          cargo build --target aarch64-linux-android --release
+  # Android build temporarily disabled - Slint backend version conflicts
+  # build-android:
