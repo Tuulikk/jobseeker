@@ -33,7 +33,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 urlencoding = "2.1"
 webbrowser = "1.0"
-rfd = "0.15"
+# rfd = "0.15"  # Temporarily disabled - ashpd version conflicts
 genpdf = "0.2"
 docx-rs = "0.4"
 slint = "1.10"
@@ -42,3 +42,6 @@ slint = "1.10"
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.14"
 jni = "0.21"
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+rfd = "0.15"
