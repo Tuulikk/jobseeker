@@ -1,0 +1,39 @@
+// Minimal Slint test application
+export component App inherits Window {
+    width: 400px;
+    height: 300px;
+    title: "Jobseeker - Slint Test";
+    
+    Rectangle {
+        background: #1e1e1e;
+        
+        VerticalLayout {
+            alignment: center;
+            spacing: 20px;
+            padding: 20px;
+            
+            Text {
+                text: "Jobseeker - Slint Test";
+                font-size: 24px;
+                color: #ffffff;
+                horizontal-alignment: center;
+            }
+            
+            Text {
+                text: "Hello from Slint!";
+                font-size: 16px;
+                color: #cccccc;
+                horizontal-alignment: center;
+            }
+            
+            if RuntimeInfo.os == "Android" : {
+                Text {
+                    text: "Running on Android \u{1F3C7}";
+                    font-size: 16px;
+                    color: #00ff00;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+}
