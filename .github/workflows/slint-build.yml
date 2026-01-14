@@ -1,0 +1,89 @@
+name: Slint Multi-OS Build
+
+on:
+  push:
+    branches: ['slint-conversion']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            asset_name: jobseeker-linux-amd64
+          - os: windows-latest
+            asset_name: jobseeker-windows-amd64.exe
+          - os: macos-latest
+            asset_name: jobseeker-macos-arm64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Linux Dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libsoup-3.0-dev libgtk-4-dev libadwaita-1-dev libasound2-dev libvulkan-dev
+
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: Build
+      run: cargo build --release --verbose
+
+    - name: Prepare Artifacts
+      shell: bash
+      run: |
+        mkdir -p release_assets
+        cp target/release/jobseeker release_assets/${{ matrix.asset_name }} || cp target/release/Jobseeker release_assets/${{ matrix.asset_name }}
+        chmod +x release_assets/${{ matrix.asset_name }}
+        ls -lh release_assets/
+
+  build-android:
+    name: Build for Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Set up Android SDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25b
+        env:
+          ACTIONS_ALLOW_UNSECURE_COMMANDS: true
+
+      - name: Install Android command line tools
+        run: |
+          wget https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          unzip -q commandlinetools-linux-11076708_latest.zip -d $ANDROID_HOME/cmdline-tools
+          mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
+
+      - name: Accept Android licenses and install platform
+        run: |
+          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
+          yes | sdkmanager --licenses
+          sdkmanager "platforms;android-30" "build-tools;30.0.3" "platform-tools"
+
+      - name: Build APK
+        run: |
+          cargo install cargo-apk
+          cargo apk build --release
+
+      - name: Find APK
+        run: |
+          find target -name "*.apk" -exec echo "Found: {}" \;
