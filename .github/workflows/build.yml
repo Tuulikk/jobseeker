@@ -15,6 +15,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+
 jobs:
   build-desktop:
     name: Build ${{ matrix.asset_name }}
