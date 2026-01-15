@@ -92,6 +92,10 @@ jobs:
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      NDK_VERSION: "25.2.9519653"
     steps:
       - uses: actions/checkout@v4
       
@@ -104,8 +108,9 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         
-      - name: Install Android Platform
-        run: sdkmanager "platforms;android-30" "build-tools;30.0.3" "platform-tools"
+      - name: Install NDK and Tools
+        run: |
+          sdkmanager --install "ndk;$NDK_VERSION" "platforms;android-30" "build-tools;30.0.3" "platform-tools"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
