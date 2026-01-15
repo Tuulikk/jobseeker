@@ -155,23 +155,25 @@ pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
     ui.run().expect("Failed to run Slint UI");
 }
 
-#[cfg(not(target_os = "android"))]
 fn main() {
-    tracing_subscriber::fmt::init();
-    tracing::info!("Starting Jobseeker on Desktop");
-    let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
-    
-    // Initialize DB
-    let db_path = get_db_path();
-    tracing::info!("Using database path: {:?}", db_path);
-    let db = rt.block_on(async {
-        Db::new(db_path.to_str().unwrap()).await
-    }).expect("Failed to initialize database");
-    let db = Arc::new(db);
+    #[cfg(not(target_os = "android"))]
+    {
+        tracing_subscriber::fmt::init();
+        tracing::info!("Starting Jobseeker on Desktop");
+        let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
+        
+        // Initialize DB
+        let db_path = get_db_path();
+        tracing::info!("Using database path: {:?}", db_path);
+        let db = rt.block_on(async {
+            Db::new(db_path.to_str().unwrap()).await
+        }).expect("Failed to initialize database");
+        let db = Arc::new(db);
 
-    let ui = App::new().expect("Failed to create Slint UI");
-    
-    setup_ui(&ui, rt, db);
-    
-    ui.run().expect("Failed to run Slint UI");
+        let ui = App::new().expect("Failed to create Slint UI");
+        
+        setup_ui(&ui, rt, db);
+        
+        ui.run().expect("Failed to run Slint UI");
+    }
 }
