@@ -126,7 +126,7 @@ jobs:
         
       - name: Build APK
         run: |
-          cargo apk build --release
+          cargo apk build --release --lib
         
       - name: Prepare Assets
         run: |
