@@ -4,6 +4,7 @@ mod ui {
 }
 
 use slint::ComponentHandle;
+use slint::Model; // Ensure Model trait is imported for .iter()
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -136,50 +137,40 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
         let action_str = action.to_string();
         let ui_weak = ui_weak_action.clone();
 
-        let rt_handle = rt_clone.handle().clone();
-        rt_handle.spawn(async move {
+        let _rt_handle = rt_clone.handle().clone();
+        rt_clone.spawn(async move {
             let new_status = match action_str.as_str() {
                 "reject" => AdStatus::Rejected,
-                "save" => {
-                    // Toggle logic could be here, but simpler to just set for now or check DB
-                    AdStatus::Bookmarked
-                },
+                "save" => AdStatus::Bookmarked,
                 "thumbsup" => AdStatus::ThumbsUp,
                 "apply" => AdStatus::Applied,
                 _ => return,
             };
 
-            // TODO: Implement toggle logic by checking current status if needed.
-            // For now, enforce the new status.
             if let Err(e) = db.update_ad_status(&id_str, new_status).await {
                 tracing::error!("Failed to update status: {}", e);
             } else {
                 tracing::info!("Updated job {} to {:?}", id_str, new_status);
                 
-                // Update UI Model directly to reflect change immediately
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         let jobs = ui.get_jobs();
-                        // Find the row and update it
-                        // This is a bit inefficient in Slint VecModel, usually we reload or map.
-                        // But we can iterate rows.
-                        // Since we can't easily modify a ModelRc in place efficiently without full reload in this simple setup,
-                        // we might just re-trigger a local filter or just update visually if we had a better model.
-                        // For now: simplest is to live with it updating on next search OR 
-                        // construct a new vector with the updated item.
-                        
+                        // Create a new vector to modify
                         let mut vec: Vec<JobEntry> = jobs.iter().collect();
+                        
                         if let Some(pos) = vec.iter().position(|j| j.id == id_str) {
                             let mut entry = vec[pos].clone();
                             entry.status = new_status as i32;
                             
-                            // If rejected, maybe remove from list?
                             if new_status == AdStatus::Rejected {
                                 vec.remove(pos);
                             } else {
                                 vec[pos] = entry;
                             }
-                            ui.set_jobs(Rc::new(slint::VecModel::from(vec)).into());
+                            
+                            // Create a new ModelRc from the vector
+                            let new_model = Rc::new(slint::VecModel::from(vec));
+                            ui.set_jobs(new_model.into());
                         }
                     }
                 });
@@ -201,8 +192,8 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
             ..Default::default()
         };
         
-        let rt_handle = rt_clone.handle().clone();
-        rt_handle.spawn(async move {
+        let _rt_handle = rt_clone.handle().clone();
+        rt_clone.spawn(async move {
             if let Err(e) = db.save_settings(&settings).await {
                 tracing::error!("Failed to save settings: {}", e);
             } else {
@@ -239,8 +230,9 @@ async fn perform_search(
     };
 
     if query.is_empty() {
+        let ui_weak_local = ui_weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ui_weak_local.upgrade() {
                 ui.set_searching(false);
                 ui.set_status_msg("Inga sökord angivna.".into());
             }
@@ -253,22 +245,13 @@ async fn perform_search(
 
     let result = api_client.search(&query, &municipalities, 100).await;
     
-    // Prepare blacklist
     let blacklist: Vec<String> = settings.blacklist_keywords.split(',')
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty())
         .collect();
 
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(ui) = ui_weak.upgrade() {
-            ui.set_searching(false);
-            
-            // Handle result inside spawn or handle here? 
-            // We need async DB access to check status. 
-            // Spawning a new task inside the UI thread callback is not ideal, 
-            // better to continue async here (we are in async perform_search).
-        }
-    });
+    // Only for hiding the spinner immediately if error occurs later logic handles update
+    // Actually better to just do it in the result block
     
     match result {
         Ok(api_ads) => {
@@ -284,19 +267,16 @@ async fn perform_search(
                 }
 
                 // 2. Check/Save DB
-                // We must use the ad from DB if it exists (to get status), otherwise save the new one.
-                // Since db.get_job_ad is async, we do it here.
-                let db_ad_opt = db.get_job_ad(&ad.id).await.unwrap_or(None);
+                let db_ad_opt = db.get_job_ad(&ad.id).await.ok().flatten();
                 
                 let display_ad = if let Some(local_ad) = db_ad_opt {
                     local_ad
                 } else {
-                    // Save new ad to DB
                     let _ = db.save_job_ad(&ad).await;
                     ad
                 };
 
-                // 3. Filter Rejected (unless we are in a "Trash" view, but this is Inbox)
+                // 3. Filter Rejected
                 if display_ad.status == Some(AdStatus::Rejected) {
                     continue;
                 }
@@ -327,9 +307,11 @@ async fn perform_search(
             }
 
             let count = final_entries.len();
+            let ui_weak_success = ui_weak.clone();
             
             let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak.upgrade() {
+                if let Some(ui) = ui_weak_success.upgrade() {
+                    ui.set_searching(false);
                     let model = Rc::new(slint::VecModel::from(final_entries));
                     ui.set_jobs(model.into());
                     ui.set_status_msg(format!("Hittade {} annonser", count).into());
@@ -337,11 +319,59 @@ async fn perform_search(
             });
         }
         Err(e) => {
+            let ui_weak_error = ui_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak.upgrade() {
+                if let Some(ui) = ui_weak_error.upgrade() {
+                    ui.set_searching(false);
                     ui.set_status_msg(format!("Fel: {}", e).into());
                 }
             });
         }
     }
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
+    android_logger::init_once(
+        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
+    );
+    tracing::info!("Starting Jobseeker on Android");
+    slint::android::init(app).expect("Failed to initialize Slint on Android");
+
+    let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
+    
+    // Initialize DB
+    let db_path = get_db_path();
+    tracing::info!("Using database path: {:?}", db_path);
+    let db = rt.block_on(async {
+        Db::new(db_path.to_str().unwrap()).await
+    }).expect("Failed to initialize database");
+    let db = Arc::new(db);
+
+    let ui = App::new().expect("Failed to create Slint UI");
+    
+    setup_ui(&ui, rt, db);
+    
+    ui.run().expect("Failed to run Slint UI");
+}
+
+pub fn desktop_main() {
+    tracing_subscriber::fmt::init();
+    tracing::info!("Starting Jobseeker on Desktop");
+    let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
+    
+    // Initialize DB
+    let db_path = get_db_path();
+    tracing::info!("Using database path: {:?}", db_path);
+    let db = rt.block_on(async {
+        Db::new(db_path.to_str().unwrap()).await
+    }).expect("Failed to initialize database");
+    let db = Arc::new(db);
+
+    let ui = App::new().expect("Failed to create Slint UI");
+    
+    setup_ui(&ui, rt, db);
+    
+    ui.run().expect("Failed to run Slint UI");
 }
