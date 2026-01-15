@@ -18,6 +18,8 @@ export struct AppSettings {
     locations_p1: string,
     locations_p2: string,
     locations_p3: string,
+    my_profile: string,
+    ollama_url: string,
 }
 
 component IconButton inherits Rectangle {
@@ -31,7 +33,7 @@ component IconButton inherits Rectangle {
     height: 32px;
     border-radius: 4px;
     
-    state := Rectangle {
+    Rectangle {
         background: active ? (danger ? #802020 : #4a90e2) : touch.pressed ? #3a3a3a : touch.has-hover ? #2d2d2d : transparent;
         width: 100%;
         height: 100%;
@@ -183,7 +185,6 @@ component InboxPane inherits VerticalLayout {
             padding: 4px;
             spacing: 8px;
             alignment: start;
-            // Filter icons can go here later
             Text {
                 text: root.status-msg;
                 color: #888888;
@@ -224,7 +225,7 @@ component InboxPane inherits VerticalLayout {
 component JobDetailPane inherits Rectangle {
     in property <JobEntry> job;
     callback close;
-    callback action(string); // "reject", "save", "thumbsup", "apply"
+    callback action(string);
     
     background: #1e1e1e;
     
@@ -271,40 +272,30 @@ component JobDetailPane inherits Rectangle {
             HorizontalLayout {
                 alignment: space-around;
                 padding: 5px;
-                
-                // Reject
                 IconButton { 
                     icon: @image-url("../assets/icons/hand-thumbs-down-fill.svg"); 
                     icon-size: 20px;
                     danger: true;
                     clicked => { root.action("reject"); }
                 }
-
-                // Bookmark (Status 2)
                 IconButton { 
                     icon: @image-url("../assets/icons/bookmark-star-fill.svg"); 
                     icon-size: 20px; 
                     active: job.status == 2;
                     clicked => { root.action("save"); }
                 }
-
-                // Thumbs Up (Status 3)
                 IconButton { 
                     icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); 
                     icon-size: 20px; 
                     active: job.status == 3;
                     clicked => { root.action("thumbsup"); }
                 }
-
-                // Applied (Status 4)
                 IconButton { 
                     icon: @image-url("../assets/icons/check-circle-fill.svg"); 
                     icon-size: 20px; 
                     active: job.status == 4;
                     clicked => { root.action("apply"); }
                 }
-                
-                // Globe (Open in browser) - Future feature
                 IconButton { 
                     icon: @image-url("../assets/icons/globe.svg"); 
                     icon-size: 20px; 
@@ -361,9 +352,8 @@ component InboxPage inherits Rectangle {
     callback search-pressed(string);
     callback search-prio(int);
     callback job-selected(string);
-    callback job-action(string, string); // id, action
+    callback job-action(string, string);
 
-    // Desktop Layout (> 700px)
     if root.width > 700px : HorizontalLayout {
         InboxPane {
             width: 350px;
@@ -378,9 +368,7 @@ component InboxPage inherits Rectangle {
                 root.job-selected(id); 
             }
         }
-        
         Rectangle { width: 1px; background: #333333; }
-
         JobDetailContainer {
             job: root.jobs[root.selected-index];
             has-selection: root.has-selection;
@@ -389,7 +377,6 @@ component InboxPage inherits Rectangle {
         }
     }
 
-    // Mobile Layout (<= 700px)
     if root.width <= 700px : Rectangle {
         if !root.has-selection : InboxPane {
             width: 100%;
@@ -405,7 +392,6 @@ component InboxPage inherits Rectangle {
                 root.job-selected(id); 
             }
         }
-
         if root.has-selection : JobDetailContainer {
             width: 100%;
             height: 100%;
@@ -417,80 +403,113 @@ component InboxPage inherits Rectangle {
     }
 }
 
-// SettingsPage omitted for brevity, assumed unchanged from previous step unless we need to add more fields later.
-// But we need to include it for the full file write.
-component SettingsPage inherits VerticalLayout {
+component SettingsPage inherits Rectangle {
     in-out property <AppSettings> settings;
     callback save-settings(AppSettings);
 
-    padding: 20px;
-    spacing: 10px;
-    alignment: start;
+    background: #121212;
 
-    Text {
-        text: "Inställningar";
-        font-size: 24px;
-        font-weight: 700;
-        color: #ffffff;
-    }
-    
-    ScrollView {
-        VerticalLayout {
-            spacing: 15px;
-            
-            VerticalLayout {
-                spacing: 5px;
-                Text { text: "Sökord (inkludera):"; color: #aaaaaa; }
-                keywords-input := LineEdit {
-                    text: root.settings.keywords;
-                    placeholder-text: "t.ex. rust, python";
-                }
-            }
+    VerticalLayout {
+        padding: 20px;
+        spacing: 15px;
+        alignment: start;
 
+        Text {
+            text: "Inställningar";
+            font-size: 24px;
+            font-weight: 700;
+            color: #ffffff;
+        }
+        
+        ScrollView {
             VerticalLayout {
-                spacing: 5px;
-                Text { text: "Blockord (exkludera):"; color: #ff6666; }
-                blacklist-input := LineEdit {
-                    text: root.settings.blacklist_keywords;
-                    placeholder-text: "t.ex. säljare, telemarketing";
-                }
-            }
+                spacing: 20px;
+                padding-bottom: 20px;
+                
+                // Section: Keywords
+                VerticalLayout {
+                    spacing: 8px;
+                    Text { text: "SÖKORD & FILTER"; color: #4a90e2; font-weight: 700; font-size: 12px; }
+                    
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Inkludera sökord (komma-separerade):"; color: #aaaaaa; font-size: 12px; }
+                        keywords-input := LineEdit {
+                            text: root.settings.keywords;
+                            placeholder-text: "t.ex. rust, python, it-support";
+                        }
+                    }
 
-            VerticalLayout {
-                spacing: 5px;
-                Text { text: "Område Prio 1:"; color: #4a90e2; }
-                loc-p1-input := LineEdit {
-                    text: root.settings.locations_p1;
-                    placeholder-text: "t.ex. stockholm (eller kod)";
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Blockera ord (exkludera annonser):"; color: #ff6666; font-size: 12px; }
+                        blacklist-input := LineEdit {
+                            text: root.settings.blacklist_keywords;
+                            placeholder-text: "t.ex. säljare, telefonförsäljare";
+                        }
+                    }
                 }
-            }
 
-            VerticalLayout {
-                spacing: 5px;
-                Text { text: "Område Prio 2:"; color: #4a90e2; }
-                loc-p2-input := LineEdit {
-                    text: root.settings.locations_p2;
+                // Section: Locations
+                VerticalLayout {
+                    spacing: 8px;
+                    Text { text: "GEOGRAFISKA OMRÅDEN"; color: #4a90e2; font-weight: 700; font-size: 12px; }
+                    
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Prio 1 (Högsta):"; color: #aaaaaa; font-size: 12px; }
+                        loc-p1-input := LineEdit { text: root.settings.locations_p1; placeholder-text: "t.ex. stockholm"; }
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Prio 2:"; color: #aaaaaa; font-size: 12px; }
+                        loc-p2-input := LineEdit { text: root.settings.locations_p2; }
+                    }
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Prio 3:"; color: #aaaaaa; font-size: 12px; }
+                        loc-p3-input := LineEdit { text: root.settings.locations_p3; }
+                    }
                 }
-            }
 
-            VerticalLayout {
-                spacing: 5px;
-                Text { text: "Område Prio 3:"; color: #4a90e2; }
-                loc-p3-input := LineEdit {
-                    text: root.settings.locations_p3;
+                // Section: AI & Profile
+                VerticalLayout {
+                    spacing: 8px;
+                    Text { text: "AI & PROFIL"; color: #ffd700; font-weight: 700; font-size: 12px; }
+                    
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Min bakgrund (för AI-matchning):"; color: #aaaaaa; font-size: 12px; }
+                        profile-input := TextEdit {
+                            text: root.settings.my_profile;
+                            height: 100px;
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: "Ollama API URL:"; color: #aaaaaa; font-size: 12px; }
+                        ollama-input := LineEdit {
+                            text: root.settings.ollama_url;
+                            placeholder-text: "http://localhost:11434/v1";
+                        }
+                    }
                 }
-            }
-            
-            Button {
-                text: "Spara inställningar";
-                primary: true;
-                clicked => {
-                    root.settings.keywords = keywords-input.text;
-                    root.settings.blacklist_keywords = blacklist-input.text;
-                    root.settings.locations_p1 = loc-p1-input.text;
-                    root.settings.locations_p2 = loc-p2-input.text;
-                    root.settings.locations_p3 = loc-p3-input.text;
-                    root.save-settings(root.settings);
+                
+                Button {
+                    text: "Spara alla inställningar";
+                    primary: true;
+                    height: 45px;
+                    clicked => {
+                        root.settings.keywords = keywords-input.text;
+                        root.settings.blacklist_keywords = blacklist-input.text;
+                        root.settings.locations_p1 = loc-p1-input.text;
+                        root.settings.locations_p2 = loc-p2-input.text;
+                        root.settings.locations_p3 = loc-p3-input.text;
+                        root.settings.my_profile = profile-input.text;
+                        root.settings.ollama_url = ollama-input.text;
+                        root.save-settings(root.settings);
+                    }
                 }
             }
         }
@@ -515,7 +534,9 @@ export component App inherits Window {
         blacklist_keywords: "",
         locations_p1: "",
         locations_p2: "",
-        locations_p3: ""
+        locations_p3: "",
+        my_profile: "",
+        ollama_url: "http://localhost:11434/v1"
     };
 
     callback search-pressed(string);
@@ -547,34 +568,44 @@ export component App inherits Window {
 
         // Bottom Navigation Bar
         Rectangle {
-            height: 60px;
+            height: 65px;
             background: #1e1e1e;
-            Rectangle {
-                y: 0;
-                width: 100%;
-                height: 1px;
-                background: #333333;
-            }
+            Rectangle { y: 0; width: 100%; height: 1px; background: #333333; }
 
             HorizontalLayout {
                 alignment: space-around;
-                VerticalLayout {
-                    alignment: center; spacing: 4px; width: 60px;
-                    touch-inbox := TouchArea { clicked => { root.current-tab = 0; } }
-                    Image { source: @image-url("../assets/icons/inbox-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 0 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
-                    Text { text: "Inbox"; font-size: 10px; color: root.current-tab == 0 ? #4a90e2 : #666666; horizontal-alignment: center; }
+                
+                // Inbox Tab
+                Rectangle {
+                    width: parent.width / 3;
+                    VerticalLayout {
+                        alignment: center; spacing: 4px;
+                        Image { source: @image-url("../assets/icons/inbox-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 0 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
+                        Text { text: "Inkorg"; font-size: 10px; color: root.current-tab == 0 ? #4a90e2 : #666666; horizontal-alignment: center; }
+                    }
+                    TouchArea { clicked => { root.current-tab = 0; } }
                 }
-                VerticalLayout {
-                    alignment: center; spacing: 4px; width: 60px;
-                    touch-drafts := TouchArea { clicked => { root.current-tab = 1; } }
-                    Image { source: @image-url("../assets/icons/clipboard-plus-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 1 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
-                    Text { text: "Utkast"; font-size: 10px; color: root.current-tab == 1 ? #4a90e2 : #666666; horizontal-alignment: center; }
+
+                // Drafts Tab
+                Rectangle {
+                    width: parent.width / 3;
+                    VerticalLayout {
+                        alignment: center; spacing: 4px;
+                        Image { source: @image-url("../assets/icons/clipboard-plus-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 1 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
+                        Text { text: "Utkast"; font-size: 10px; color: root.current-tab == 1 ? #4a90e2 : #666666; horizontal-alignment: center; }
+                    }
+                    TouchArea { clicked => { root.current-tab = 1; } }
                 }
-                VerticalLayout {
-                    alignment: center; spacing: 4px; width: 60px;
-                    touch-settings := TouchArea { clicked => { root.current-tab = 2; } }
-                    Image { source: @image-url("../assets/icons/gear-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 2 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
-                    Text { text: "Inställ."; font-size: 10px; color: root.current-tab == 2 ? #4a90e2 : #666666; horizontal-alignment: center; }
+
+                // Settings Tab
+                Rectangle {
+                    width: parent.width / 3;
+                    VerticalLayout {
+                        alignment: center; spacing: 4px;
+                        Image { source: @image-url("../assets/icons/gear-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 2 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
+                        Text { text: "Inställ."; font-size: 10px; color: root.current-tab == 2 ? #4a90e2 : #666666; horizontal-alignment: center; }
+                    }
+                    TouchArea { clicked => { root.current-tab = 2; } }
                 }
             }
         }

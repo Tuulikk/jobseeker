@@ -4,7 +4,7 @@ mod ui {
 }
 
 use slint::ComponentHandle;
-use slint::Model; // Ensure Model trait is imported for .iter()
+use slint::Model;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -41,7 +41,6 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
     let db_clone = db.clone();
     let ui_weak_clone = ui_weak.clone();
     let api_client_clone = api_client.clone();
-    let _rt_handle = rt.handle().clone(); 
     
     rt.spawn(async move {
         let settings = db_clone.load_settings().await.unwrap_or(Some(Default::default())).unwrap_or_default();
@@ -57,6 +56,8 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
                     locations_p1: settings_for_callback.locations_p1.clone().into(),
                     locations_p2: settings_for_callback.locations_p2.clone().into(),
                     locations_p3: settings_for_callback.locations_p3.clone().into(),
+                    my_profile: settings_for_callback.my_profile.clone().into(),
+                    ollama_url: settings_for_callback.ollama_url.clone().into(),
                 });
                 tracing::info!("Loaded settings from DB");
             }
@@ -137,8 +138,8 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
         let action_str = action.to_string();
         let ui_weak = ui_weak_action.clone();
 
-        let _rt_handle = rt_clone.handle().clone();
-        rt_clone.spawn(async move {
+        let rt_handle = rt_clone.handle().clone();
+        rt_handle.spawn(async move {
             let new_status = match action_str.as_str() {
                 "reject" => AdStatus::Rejected,
                 "save" => AdStatus::Bookmarked,
@@ -155,7 +156,6 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         let jobs = ui.get_jobs();
-                        // Create a new vector to modify
                         let mut vec: Vec<JobEntry> = jobs.iter().collect();
                         
                         if let Some(pos) = vec.iter().position(|j| j.id == id_str) {
@@ -167,10 +167,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
                             } else {
                                 vec[pos] = entry;
                             }
-                            
-                            // Create a new ModelRc from the vector
-                            let new_model = Rc::new(slint::VecModel::from(vec));
-                            ui.set_jobs(new_model.into());
+                            ui.set_jobs(Rc::new(slint::VecModel::from(vec)).into());
                         }
                     }
                 });
@@ -189,11 +186,12 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
             locations_p1: ui_settings.locations_p1.to_string(),
             locations_p2: ui_settings.locations_p2.to_string(),
             locations_p3: ui_settings.locations_p3.to_string(),
-            ..Default::default()
+            my_profile: ui_settings.my_profile.to_string(),
+            ollama_url: ui_settings.ollama_url.to_string(),
         };
         
-        let _rt_handle = rt_clone.handle().clone();
-        rt_clone.spawn(async move {
+        let rt_handle = rt_clone.handle().clone();
+        rt_handle.spawn(async move {
             if let Err(e) = db.save_settings(&settings).await {
                 tracing::error!("Failed to save settings: {}", e);
             } else {
@@ -214,7 +212,6 @@ async fn perform_search(
 ) {
     let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
     
-    // Determine query and locations
     let (query, locations_str) = if let Some(q) = free_query {
         (q, String::new()) 
     } else if let Some(p) = prio {
@@ -250,15 +247,11 @@ async fn perform_search(
         .filter(|s| !s.is_empty())
         .collect();
 
-    // Only for hiding the spinner immediately if error occurs later logic handles update
-    // Actually better to just do it in the result block
-    
     match result {
         Ok(api_ads) => {
             let mut final_entries = Vec::new();
             
             for ad in api_ads {
-                // 1. Check blacklist
                 let title = ad.headline.to_lowercase();
                 let desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("").to_lowercase();
                 
@@ -266,7 +259,6 @@ async fn perform_search(
                     continue; 
                 }
 
-                // 2. Check/Save DB
                 let db_ad_opt = db.get_job_ad(&ad.id).await.ok().flatten();
                 
                 let display_ad = if let Some(local_ad) = db_ad_opt {
@@ -276,12 +268,10 @@ async fn perform_search(
                     ad
                 };
 
-                // 3. Filter Rejected
                 if display_ad.status == Some(AdStatus::Rejected) {
                     continue;
                 }
 
-                // 4. Convert to UI struct
                 let desc_text = display_ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
                 let clean_desc = re_html.replace_all(desc_text, "").to_string();
                 
@@ -341,7 +331,6 @@ pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
 
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     
-    // Initialize DB
     let db_path = get_db_path();
     tracing::info!("Using database path: {:?}", db_path);
     let db = rt.block_on(async {
@@ -361,7 +350,6 @@ pub fn desktop_main() {
     tracing::info!("Starting Jobseeker on Desktop");
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     
-    // Initialize DB
     let db_path = get_db_path();
     tracing::info!("Using database path: {:?}", db_path);
     let db = rt.block_on(async {
