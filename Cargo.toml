@@ -16,6 +16,11 @@ assets = "assets"
 build_targets = ["aarch64-linux-android"]
 manifest = "android/AndroidManifest.xml"
 
+[lib]
+name = "Jobseeker"
+path = "src/main.rs"
+crate-type = ["cdylib", "rlib"]
+
 [build-dependencies]
 slint-build = "1.14"
 
