@@ -8,6 +8,7 @@ use slint::Model;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
+use regex::Regex;
 
 pub mod models;
 pub mod api;
@@ -66,6 +67,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
 
         let rt_handle = rt_clone.handle().clone();
         rt_handle.spawn(async move {
+            let re = Regex::new(r"<[^>]*>").expect("Invalid regex");
             // TODO: Use locations from settings
             let result = api_client.search(&query, &[], 50).await;
             
@@ -75,11 +77,15 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
                     match result {
                         Ok(ads) => {
                             let entries: Vec<JobEntry> = ads.into_iter().map(|ad| {
+                                let desc_text = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
+                                let clean_desc = re.replace_all(desc_text, "").to_string();
+
                                 JobEntry {
                                     id: ad.id.into(),
                                     title: ad.headline.into(),
                                     employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
                                     location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
+                                    description: clean_desc.into(),
                                     date: ad.publication_date.split('T').next().unwrap_or("").into(),
                                     rating: ad.rating.unwrap_or(0) as i32,
                                     status_text: "".into(),

@@ -5,6 +5,7 @@ export struct JobEntry {
     title: string,
     employer: string,
     location: string,
+    description: string,
     date: string,
     rating: int,
     status_text: string,
@@ -44,7 +45,7 @@ component JobListItem inherits Rectangle {
     in property <bool> selected: false;
     callback clicked;
 
-    height: 70px;
+    height: 80px;
     background: selected ? #2d2d3a : touch.pressed ? #2d2d2d : touch.has-hover ? #252525 : transparent;
     border-radius: 4px;
 
@@ -100,16 +101,17 @@ component JobListItem inherits Rectangle {
     }
 }
 
-component InboxPage inherits VerticalLayout {
+component InboxPane inherits VerticalLayout {
     in property <[JobEntry]> jobs;
     in property <bool> searching;
     in property <string> status-msg;
+    in property <int> selected-index;
     
     callback search-pressed(string);
-    callback job-selected(string);
-    
-    spacing: 10px;
+    callback job-selected(string, int);
+
     padding: 10px;
+    spacing: 10px;
 
     // Search bar
     HorizontalLayout {
@@ -133,18 +135,11 @@ component InboxPage inherits VerticalLayout {
         height: 40px;
         background: #252525;
         border-radius: 4px;
-        
         HorizontalLayout {
             padding: 4px;
             spacing: 8px;
             alignment: start;
-
             IconButton { icon: @image-url("../assets/icons/bookmark-star-fill.svg"); }
-            IconButton { icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); }
-            IconButton { icon: @image-url("../assets/icons/check-circle-fill.svg"); }
-            
-            Rectangle { width: 1px; background: #444444; height: 20px; y: 10px; } // Separator
-            
             Text {
                 text: root.status-msg;
                 color: #888888;
@@ -154,7 +149,7 @@ component InboxPage inherits VerticalLayout {
         }
     }
 
-    // Job List
+    // List
     Rectangle {
         background: #1e1e1e;
         border-radius: 4px;
@@ -163,18 +158,173 @@ component InboxPage inherits VerticalLayout {
         
         ScrollView {
             VerticalLayout {
-                for job in jobs : JobListItem {
+                for job[idx] in jobs : JobListItem {
                     job: job;
-                    clicked => { root.job-selected(job.id); }
+                    selected: idx == root.selected-index;
+                    clicked => {
+                        root.job-selected(job.id, idx);
+                    }
                 }
             }
         }
         
         if jobs.length == 0 && !searching : Text {
-            text: "Inga jobb att visa. Gör en sökning!";
+            text: "Sök efter jobb...";
             color: #555555;
             x: parent.width / 2 - self.width / 2;
             y: parent.height / 2 - self.height / 2;
+        }
+    }
+}
+
+component JobDetailPane inherits Rectangle {
+    in property <JobEntry> job;
+    callback close;
+    
+    background: #1e1e1e;
+    
+    VerticalLayout {
+        padding: 20px;
+        spacing: 15px;
+        
+        // Header with Back button
+        HorizontalLayout {
+            height: 30px;
+            IconButton {
+                icon: @image-url("../assets/icons/chevron-left.svg");
+                clicked => { root.close(); }
+            }
+            Text {
+                text: "Tillbaka";
+                vertical-alignment: center;
+                color: #888888;
+                font-size: 12px;
+            }
+            Rectangle {} // Spacer
+        }
+
+        Text {
+            text: job.title;
+            font-size: 22px;
+            font-weight: 700;
+            color: #ffffff;
+            wrap: word-wrap;
+        }
+        
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: job.employer; color: #aaaaaa; font-size: 14px; }
+            Text { text: "•"; color: #666666; }
+            Text { text: job.location; color: #aaaaaa; font-size: 14px; }
+        }
+
+        // Action Bar
+        Rectangle {
+            height: 50px;
+            background: #252525;
+            border-radius: 8px;
+            HorizontalLayout {
+                alignment: space-around;
+                padding: 5px;
+                IconButton { icon: @image-url("../assets/icons/bookmark-star-fill.svg"); icon-size: 20px; }
+                IconButton { icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); icon-size: 20px; }
+                IconButton { icon: @image-url("../assets/icons/hand-thumbs-down-fill.svg"); icon-size: 20px; }
+                IconButton { icon: @image-url("../assets/icons/globe.svg"); icon-size: 20px; }
+            }
+        }
+
+        // Description
+        ScrollView {
+            Text {
+                text: job.description;
+                color: #dddddd;
+                font-size: 14px;
+                wrap: word-wrap;
+                width: parent.width;
+            }
+        }
+    }
+}
+
+component JobDetailContainer inherits Rectangle {
+    in property <JobEntry> job;
+    in property <bool> has-selection;
+    callback close;
+    
+    background: #121212;
+    
+    if has-selection : JobDetailPane {
+        width: 100%;
+        height: 100%;
+        job: job;
+        close => { root.close(); }
+    }
+
+    if !has-selection : Text {
+        text: "Välj ett jobb för att se detaljer";
+        color: #444444;
+        x: parent.width / 2 - self.width / 2;
+        y: parent.height / 2 - self.height / 2;
+    }
+}
+
+component InboxPage inherits Rectangle {
+    in property <[JobEntry]> jobs;
+    in property <bool> searching;
+    in property <string> status-msg;
+    
+    in-out property <int> selected-index: -1;
+    property <bool> has-selection: selected-index >= 0;
+    
+    callback search-pressed(string);
+    callback job-selected(string);
+
+    // Desktop Layout (> 700px)
+    if root.width > 700px : HorizontalLayout {
+        InboxPane {
+            width: 350px;
+            jobs: root.jobs;
+            searching: root.searching;
+            status-msg: root.status-msg;
+            selected-index: root.selected-index;
+            search-pressed(s) => { root.search-pressed(s); }
+            job-selected(id, idx) => { 
+                root.selected-index = idx;
+                root.job-selected(id); 
+            }
+        }
+        
+        Rectangle { width: 1px; background: #333333; }
+
+        JobDetailContainer {
+            job: root.jobs[root.selected-index];
+            has-selection: root.has-selection;
+            close => { root.selected-index = -1; }
+        }
+    }
+
+    // Mobile Layout (<= 700px)
+    if root.width <= 700px : Rectangle {
+        if !root.has-selection : InboxPane {
+            width: 100%;
+            height: 100%;
+            jobs: root.jobs;
+            searching: root.searching;
+            status-msg: root.status-msg;
+            selected-index: root.selected-index;
+            search-pressed(s) => { root.search-pressed(s); }
+            job-selected(id, idx) => { 
+                root.selected-index = idx;
+                root.job-selected(id); 
+            }
+        }
+
+        if root.has-selection : JobDetailContainer {
+            width: 100%;
+            height: 100%;
+            job: root.jobs[root.selected-index];
+            has-selection: root.has-selection;
+            close => { root.selected-index = -1; }
         }
     }
 }
@@ -228,8 +378,8 @@ export component App inherits Window {
     min-width: 400px;
     min-height: 800px;
     background: #121212; // Dark theme background
-    preferred-width: 450px;
-    preferred-height: 850px;
+    preferred-width: 900px; // Wider default for desktop
+    preferred-height: 800px;
 
     in-out property <[JobEntry]> jobs: [];
     in-out property <bool> searching: false;
