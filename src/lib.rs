@@ -17,6 +17,7 @@ pub mod ai;
 use crate::api::JobSearchClient;
 use crate::db::Db;
 use crate::ui::*;
+use crate::models::AdStatus;
 
 fn get_db_path() -> std::path::PathBuf {
     if let Some(proj_dirs) = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker") {
@@ -63,6 +64,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
         // Auto-search Prio 1
         perform_search(
             api_client_clone, 
+            db_clone,
             ui_weak_clone, 
             Some(1), 
             None, 
@@ -89,7 +91,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
 
         rt_handle.spawn(async move {
             let settings = db.load_settings().await.unwrap_or(Some(Default::default())).unwrap_or_default();
-            perform_search(api_client, ui_weak, None, Some(query), settings).await;
+            perform_search(api_client, db, ui_weak, None, Some(query), settings).await;
         });
     });
 
@@ -111,7 +113,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
 
         rt_handle.spawn(async move {
             let settings = db.load_settings().await.unwrap_or(Some(Default::default())).unwrap_or_default();
-            perform_search(api_client, ui_weak, Some(prio), None, settings).await;
+            perform_search(api_client, db, ui_weak, Some(prio), None, settings).await;
         });
     });
 
@@ -121,6 +123,68 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
         if let Some(_ui) = ui_weak.upgrade() {
             tracing::info!("Valt jobb: {}", id);
         }
+    });
+
+    // Callback: Job Action
+    let db_clone = db.clone();
+    let rt_clone = rt.clone();
+    let ui_weak_action = ui.as_weak();
+    
+    ui.on_job_action(move |id, action| {
+        let db = db_clone.clone();
+        let id_str = id.to_string();
+        let action_str = action.to_string();
+        let ui_weak = ui_weak_action.clone();
+
+        let rt_handle = rt_clone.handle().clone();
+        rt_handle.spawn(async move {
+            let new_status = match action_str.as_str() {
+                "reject" => AdStatus::Rejected,
+                "save" => {
+                    // Toggle logic could be here, but simpler to just set for now or check DB
+                    AdStatus::Bookmarked
+                },
+                "thumbsup" => AdStatus::ThumbsUp,
+                "apply" => AdStatus::Applied,
+                _ => return,
+            };
+
+            // TODO: Implement toggle logic by checking current status if needed.
+            // For now, enforce the new status.
+            if let Err(e) = db.update_ad_status(&id_str, new_status).await {
+                tracing::error!("Failed to update status: {}", e);
+            } else {
+                tracing::info!("Updated job {} to {:?}", id_str, new_status);
+                
+                // Update UI Model directly to reflect change immediately
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        let jobs = ui.get_jobs();
+                        // Find the row and update it
+                        // This is a bit inefficient in Slint VecModel, usually we reload or map.
+                        // But we can iterate rows.
+                        // Since we can't easily modify a ModelRc in place efficiently without full reload in this simple setup,
+                        // we might just re-trigger a local filter or just update visually if we had a better model.
+                        // For now: simplest is to live with it updating on next search OR 
+                        // construct a new vector with the updated item.
+                        
+                        let mut vec: Vec<JobEntry> = jobs.iter().collect();
+                        if let Some(pos) = vec.iter().position(|j| j.id == id_str) {
+                            let mut entry = vec[pos].clone();
+                            entry.status = new_status as i32;
+                            
+                            // If rejected, maybe remove from list?
+                            if new_status == AdStatus::Rejected {
+                                vec.remove(pos);
+                            } else {
+                                vec[pos] = entry;
+                            }
+                            ui.set_jobs(Rc::new(slint::VecModel::from(vec)).into());
+                        }
+                    }
+                });
+            }
+        });
     });
 
     // Callback: Save Settings
@@ -151,6 +215,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
 // Helper function to handle search logic
 async fn perform_search(
     api_client: Arc<JobSearchClient>,
+    db: Arc<Db>,
     ui_weak: slint::Weak<App>,
     prio: Option<i32>,
     free_query: Option<String>,
@@ -160,7 +225,7 @@ async fn perform_search(
     
     // Determine query and locations
     let (query, locations_str) = if let Some(q) = free_query {
-        (q, String::new()) // Free search ignores locations for now, or could use P1?
+        (q, String::new()) 
     } else if let Some(p) = prio {
         let locs = match p {
             1 => &settings.locations_p1,
@@ -197,88 +262,86 @@ async fn perform_search(
     let _ = slint::invoke_from_event_loop(move || {
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_searching(false);
-            match result {
-                Ok(ads) => {
-                    let entries: Vec<JobEntry> = ads.into_iter()
-                        .filter(|ad| {
-                            // Filter against blacklist
-                            if blacklist.is_empty() { return true; }
-                            let title = ad.headline.to_lowercase();
-                            let desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("").to_lowercase();
-                            
-                            !blacklist.iter().any(|bad_word| title.contains(bad_word) || desc.contains(bad_word))
-                        })
-                        .map(|ad| {
-                            let desc_text = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
-                            let clean_desc = re_html.replace_all(desc_text, "").to_string();
+            
+            // Handle result inside spawn or handle here? 
+            // We need async DB access to check status. 
+            // Spawning a new task inside the UI thread callback is not ideal, 
+            // better to continue async here (we are in async perform_search).
+        }
+    });
+    
+    match result {
+        Ok(api_ads) => {
+            let mut final_entries = Vec::new();
+            
+            for ad in api_ads {
+                // 1. Check blacklist
+                let title = ad.headline.to_lowercase();
+                let desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("").to_lowercase();
+                
+                if !blacklist.is_empty() && blacklist.iter().any(|bad| title.contains(bad) || desc.contains(bad)) {
+                    continue; 
+                }
 
-                            JobEntry {
-                                id: ad.id.into(),
-                                title: ad.headline.into(),
-                                employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
-                                location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
-                                description: clean_desc.into(),
-                                date: ad.publication_date.split('T').next().unwrap_or("").into(),
-                                rating: ad.rating.unwrap_or(0) as i32,
-                                status_text: "".into(),
-                            }
-                        }).collect();
-                    
-                    let count = entries.len();
-                    let model = Rc::new(slint::VecModel::from(entries));
+                // 2. Check/Save DB
+                // We must use the ad from DB if it exists (to get status), otherwise save the new one.
+                // Since db.get_job_ad is async, we do it here.
+                let db_ad_opt = db.get_job_ad(&ad.id).await.unwrap_or(None);
+                
+                let display_ad = if let Some(local_ad) = db_ad_opt {
+                    local_ad
+                } else {
+                    // Save new ad to DB
+                    let _ = db.save_job_ad(&ad).await;
+                    ad
+                };
+
+                // 3. Filter Rejected (unless we are in a "Trash" view, but this is Inbox)
+                if display_ad.status == Some(AdStatus::Rejected) {
+                    continue;
+                }
+
+                // 4. Convert to UI struct
+                let desc_text = display_ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
+                let clean_desc = re_html.replace_all(desc_text, "").to_string();
+                
+                let status_int = match display_ad.status {
+                    Some(AdStatus::Rejected) => 1,
+                    Some(AdStatus::Bookmarked) => 2,
+                    Some(AdStatus::ThumbsUp) => 3,
+                    Some(AdStatus::Applied) => 4,
+                    _ => 0,
+                };
+
+                final_entries.push(JobEntry {
+                    id: display_ad.id.into(),
+                    title: display_ad.headline.into(),
+                    employer: display_ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
+                    location: display_ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
+                    description: clean_desc.into(),
+                    date: display_ad.publication_date.split('T').next().unwrap_or("").into(),
+                    rating: display_ad.rating.unwrap_or(0) as i32,
+                    status: status_int,
+                    status_text: "".into(),
+                });
+            }
+
+            let count = final_entries.len();
+            
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    let model = Rc::new(slint::VecModel::from(final_entries));
                     ui.set_jobs(model.into());
                     ui.set_status_msg(format!("Hittade {} annonser", count).into());
                 }
-                Err(e) => {
+            });
+        }
+        Err(e) => {
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
                     ui.set_status_msg(format!("Fel: {}", e).into());
                 }
-            }
+            });
         }
-    });
-}
-
-#[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
-    );
-    tracing::info!("Starting Jobseeker on Android");
-    slint::android::init(app).expect("Failed to initialize Slint on Android");
-
-    let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
-    
-    // Initialize DB
-    let db_path = get_db_path();
-    tracing::info!("Using database path: {:?}", db_path);
-    let db = rt.block_on(async {
-        Db::new(db_path.to_str().unwrap()).await
-    }).expect("Failed to initialize database");
-    let db = Arc::new(db);
-
-    let ui = App::new().expect("Failed to create Slint UI");
-    
-    setup_ui(&ui, rt, db);
-    
-    ui.run().expect("Failed to run Slint UI");
-}
-
-pub fn desktop_main() {
-    tracing_subscriber::fmt::init();
-    tracing::info!("Starting Jobseeker on Desktop");
-    let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
-    
-    // Initialize DB
-    let db_path = get_db_path();
-    tracing::info!("Using database path: {:?}", db_path);
-    let db = rt.block_on(async {
-        Db::new(db_path.to_str().unwrap()).await
-    }).expect("Failed to initialize database");
-    let db = Arc::new(db);
-
-    let ui = App::new().expect("Failed to create Slint UI");
-    
-    setup_ui(&ui, rt, db);
-    
-    ui.run().expect("Failed to run Slint UI");
+    }
 }

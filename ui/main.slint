@@ -8,6 +8,7 @@ export struct JobEntry {
     description: string,
     date: string,
     rating: int,
+    status: int, // 0=New, 1=Rejected, 2=Saved, 3=ThumbsUp, 4=Applied
     status_text: string,
 }
 
@@ -23,18 +24,25 @@ component IconButton inherits Rectangle {
     in property <image> icon;
     in property <length> icon-size: 16px;
     in property <bool> active: false;
+    in property <bool> danger: false;
     callback clicked;
     
     width: 32px;
     height: 32px;
     border-radius: 4px;
-    background: active ? #3a3a3a : touch.pressed ? #3a3a3a : touch.has-hover ? #2d2d2d : transparent;
+    
+    state := Rectangle {
+        background: active ? (danger ? #802020 : #4a90e2) : touch.pressed ? #3a3a3a : touch.has-hover ? #2d2d2d : transparent;
+        width: 100%;
+        height: 100%;
+        border-radius: 4px;
+    }
 
     Image {
         source: icon;
         width: icon-size;
         height: icon-size;
-        colorize: #cccccc;
+        colorize: active ? #ffffff : (danger ? #ff6666 : #cccccc);
     }
 
     touch := TouchArea {
@@ -62,7 +70,7 @@ component JobListItem inherits Rectangle {
         // Status indicator
         Rectangle {
             width: 4px;
-            background: job.rating > 0 ? #ffd700 : #444444;
+            background: job.status == 4 ? #00ff00 : (job.status == 3 ? #00ffff : (job.status == 2 ? #ffd700 : #444444));
             border-radius: 2px;
         }
 
@@ -94,11 +102,22 @@ component JobListItem inherits Rectangle {
             }
         }
         
-        Text {
-            text: job.date;
-            color: #666666;
-            font-size: 11px;
-            vertical-alignment: center;
+        VerticalLayout {
+            alignment: center;
+            width: 60px;
+            Text {
+                text: job.date;
+                color: #666666;
+                font-size: 11px;
+                horizontal-alignment: right;
+            }
+            if job.status == 4 : Text {
+                text: "SÖKT";
+                color: #00ff00;
+                font-size: 10px;
+                font-weight: 700;
+                horizontal-alignment: right;
+            }
         }
     }
 }
@@ -164,7 +183,7 @@ component InboxPane inherits VerticalLayout {
             padding: 4px;
             spacing: 8px;
             alignment: start;
-            IconButton { icon: @image-url("../assets/icons/bookmark-star-fill.svg"); }
+            // Filter icons can go here later
             Text {
                 text: root.status-msg;
                 color: #888888;
@@ -205,6 +224,7 @@ component InboxPane inherits VerticalLayout {
 component JobDetailPane inherits Rectangle {
     in property <JobEntry> job;
     callback close;
+    callback action(string); // "reject", "save", "thumbsup", "apply"
     
     background: #1e1e1e;
     
@@ -251,10 +271,45 @@ component JobDetailPane inherits Rectangle {
             HorizontalLayout {
                 alignment: space-around;
                 padding: 5px;
-                IconButton { icon: @image-url("../assets/icons/bookmark-star-fill.svg"); icon-size: 20px; }
-                IconButton { icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); icon-size: 20px; }
-                IconButton { icon: @image-url("../assets/icons/hand-thumbs-down-fill.svg"); icon-size: 20px; }
-                IconButton { icon: @image-url("../assets/icons/globe.svg"); icon-size: 20px; }
+                
+                // Reject
+                IconButton { 
+                    icon: @image-url("../assets/icons/hand-thumbs-down-fill.svg"); 
+                    icon-size: 20px;
+                    danger: true;
+                    clicked => { root.action("reject"); }
+                }
+
+                // Bookmark (Status 2)
+                IconButton { 
+                    icon: @image-url("../assets/icons/bookmark-star-fill.svg"); 
+                    icon-size: 20px; 
+                    active: job.status == 2;
+                    clicked => { root.action("save"); }
+                }
+
+                // Thumbs Up (Status 3)
+                IconButton { 
+                    icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); 
+                    icon-size: 20px; 
+                    active: job.status == 3;
+                    clicked => { root.action("thumbsup"); }
+                }
+
+                // Applied (Status 4)
+                IconButton { 
+                    icon: @image-url("../assets/icons/check-circle-fill.svg"); 
+                    icon-size: 20px; 
+                    active: job.status == 4;
+                    clicked => { root.action("apply"); }
+                }
+                
+                // Globe (Open in browser) - Future feature
+                IconButton { 
+                    icon: @image-url("../assets/icons/globe.svg"); 
+                    icon-size: 20px; 
+                    clicked => { root.action("open"); }
+                }
             }
         }
 
@@ -275,6 +330,7 @@ component JobDetailContainer inherits Rectangle {
     in property <JobEntry> job;
     in property <bool> has-selection;
     callback close;
+    callback action(string);
     
     background: #121212;
     
@@ -283,6 +339,7 @@ component JobDetailContainer inherits Rectangle {
         height: 100%;
         job: job;
         close => { root.close(); }
+        action(act) => { root.action(act); }
     }
 
     if !has-selection : Text {
@@ -304,6 +361,7 @@ component InboxPage inherits Rectangle {
     callback search-pressed(string);
     callback search-prio(int);
     callback job-selected(string);
+    callback job-action(string, string); // id, action
 
     // Desktop Layout (> 700px)
     if root.width > 700px : HorizontalLayout {
@@ -327,6 +385,7 @@ component InboxPage inherits Rectangle {
             job: root.jobs[root.selected-index];
             has-selection: root.has-selection;
             close => { root.selected-index = -1; }
+            action(act) => { root.job-action(root.jobs[root.selected-index].id, act); }
         }
     }
 
@@ -353,16 +412,19 @@ component InboxPage inherits Rectangle {
             job: root.jobs[root.selected-index];
             has-selection: root.has-selection;
             close => { root.selected-index = -1; }
+            action(act) => { root.job-action(root.jobs[root.selected-index].id, act); }
         }
     }
 }
 
+// SettingsPage omitted for brevity, assumed unchanged from previous step unless we need to add more fields later.
+// But we need to include it for the full file write.
 component SettingsPage inherits VerticalLayout {
     in-out property <AppSettings> settings;
     callback save-settings(AppSettings);
 
     padding: 20px;
-    spacing: 10px; // Tightened spacing
+    spacing: 10px;
     alignment: start;
 
     Text {
@@ -439,8 +501,8 @@ export component App inherits Window {
     title: "Jobseeker";
     min-width: 400px;
     min-height: 800px;
-    background: #121212; // Dark theme background
-    preferred-width: 900px; // Wider default for desktop
+    background: #121212;
+    preferred-width: 900px;
     preferred-height: 800px;
 
     in-out property <[JobEntry]> jobs: [];
@@ -448,7 +510,6 @@ export component App inherits Window {
     in-out property <string> status-msg: "Redo";
     in-out property <int> current-tab: 0;
     
-    // Default settings
     in-out property <AppSettings> settings: {
         keywords: "",
         blacklist_keywords: "",
@@ -460,10 +521,10 @@ export component App inherits Window {
     callback search-pressed(string);
     callback search-prio(int);
     callback job-selected(string);
+    callback job-action(string, string);
     callback save-settings(AppSettings);
 
     VerticalLayout {
-        // Content Area
         Rectangle {
             clip: true;
             if root.current-tab == 0 : InboxPage {
@@ -473,6 +534,7 @@ export component App inherits Window {
                 search-pressed(q) => { root.search-pressed(q); }
                 search-prio(p) => { root.search-prio(p); }
                 job-selected(id) => { root.job-selected(id); }
+                job-action(id, act) => { root.job-action(id, act); }
             }
             if root.current-tab == 1 : Rectangle {
                 Text { text: "Utkast (Kommer snart)"; color: white; }
@@ -487,8 +549,6 @@ export component App inherits Window {
         Rectangle {
             height: 60px;
             background: #1e1e1e;
-            
-            // Top border
             Rectangle {
                 y: 0;
                 width: 100%;
@@ -498,80 +558,23 @@ export component App inherits Window {
 
             HorizontalLayout {
                 alignment: space-around;
-                
-                // Inbox Tab
                 VerticalLayout {
-                    alignment: center;
-                    spacing: 4px;
-                    width: 60px;
-                    
-                    touch-inbox := TouchArea {
-                        clicked => { root.current-tab = 0; }
-                    }
-                    
-                    Image {
-                        source: @image-url("../assets/icons/inbox-fill.svg");
-                        width: 24px;
-                        height: 24px;
-                        colorize: root.current-tab == 0 ? #4a90e2 : #666666;
-                        x: (parent.width - self.width) / 2;
-                    }
-                    Text {
-                        text: "Inbox";
-                        font-size: 10px;
-                        color: root.current-tab == 0 ? #4a90e2 : #666666;
-                        horizontal-alignment: center;
-                    }
+                    alignment: center; spacing: 4px; width: 60px;
+                    touch-inbox := TouchArea { clicked => { root.current-tab = 0; } }
+                    Image { source: @image-url("../assets/icons/inbox-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 0 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
+                    Text { text: "Inbox"; font-size: 10px; color: root.current-tab == 0 ? #4a90e2 : #666666; horizontal-alignment: center; }
                 }
-
-                // Drafts Tab
                 VerticalLayout {
-                    alignment: center;
-                    spacing: 4px;
-                    width: 60px;
-                    
-                    touch-drafts := TouchArea {
-                        clicked => { root.current-tab = 1; }
-                    }
-
-                    Image {
-                        source: @image-url("../assets/icons/clipboard-plus-fill.svg");
-                        width: 24px;
-                        height: 24px;
-                        colorize: root.current-tab == 1 ? #4a90e2 : #666666;
-                        x: (parent.width - self.width) / 2;
-                    }
-                    Text {
-                        text: "Utkast";
-                        font-size: 10px;
-                        color: root.current-tab == 1 ? #4a90e2 : #666666;
-                        horizontal-alignment: center;
-                    }
+                    alignment: center; spacing: 4px; width: 60px;
+                    touch-drafts := TouchArea { clicked => { root.current-tab = 1; } }
+                    Image { source: @image-url("../assets/icons/clipboard-plus-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 1 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
+                    Text { text: "Utkast"; font-size: 10px; color: root.current-tab == 1 ? #4a90e2 : #666666; horizontal-alignment: center; }
                 }
-
-                // Settings Tab
                 VerticalLayout {
-                    alignment: center;
-                    spacing: 4px;
-                    width: 60px;
-
-                    touch-settings := TouchArea {
-                        clicked => { root.current-tab = 2; }
-                    }
-
-                    Image {
-                        source: @image-url("../assets/icons/gear-fill.svg");
-                        width: 24px;
-                        height: 24px;
-                        colorize: root.current-tab == 2 ? #4a90e2 : #666666;
-                        x: (parent.width - self.width) / 2;
-                    }
-                    Text {
-                        text: "Inställ.";
-                        font-size: 10px;
-                        color: root.current-tab == 2 ? #4a90e2 : #666666;
-                        horizontal-alignment: center;
-                    }
+                    alignment: center; spacing: 4px; width: 60px;
+                    touch-settings := TouchArea { clicked => { root.current-tab = 2; } }
+                    Image { source: @image-url("../assets/icons/gear-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 2 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
+                    Text { text: "Inställ."; font-size: 10px; color: root.current-tab == 2 ? #4a90e2 : #666666; horizontal-alignment: center; }
                 }
             }
         }
