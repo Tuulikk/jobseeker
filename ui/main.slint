@@ -13,8 +13,10 @@ export struct JobEntry {
 
 export struct AppSettings {
     keywords: string,
+    blacklist_keywords: string,
     locations_p1: string,
     locations_p2: string,
+    locations_p3: string,
 }
 
 component IconButton inherits Rectangle {
@@ -108,25 +110,48 @@ component InboxPane inherits VerticalLayout {
     in property <int> selected-index;
     
     callback search-pressed(string);
+    callback search-prio(int);
     callback job-selected(string, int);
 
     padding: 10px;
     spacing: 10px;
 
-    // Search bar
-    HorizontalLayout {
-        height: 40px;
-        spacing: 10px;
+    // Search bar and Prio buttons
+    VerticalLayout {
+        spacing: 8px;
         
-        search-input := LineEdit {
-            placeholder-text: "Sök (t.ex. rust, python)...";
-            accepted => { root.search-pressed(self.text); }
+        HorizontalLayout {
+            height: 40px;
+            spacing: 10px;
+            
+            search-input := LineEdit {
+                placeholder-text: "Fri sökning (ignorerar Prio-filter)...";
+                accepted => { root.search-pressed(self.text); }
+            }
+            
+            Button {
+                text: root.searching ? "..." : "Sök";
+                width: 60px;
+                enabled: !root.searching;
+                clicked => { root.search-pressed(search-input.text); }
+            }
         }
-        
-        Button {
-            text: root.searching ? "Söker..." : "Sök";
-            enabled: !root.searching;
-            clicked => { root.search-pressed(search-input.text); }
+
+        HorizontalLayout {
+            height: 30px;
+            spacing: 5px;
+            alignment: start;
+            
+            Text { 
+                text: "Ladda:"; 
+                vertical-alignment: center; 
+                color: #888888;
+                font-size: 12px;
+            }
+            
+            Button { text: "Prio 1"; width: 60px; clicked => { root.search-prio(1); } }
+            Button { text: "Prio 2"; width: 60px; clicked => { root.search-prio(2); } }
+            Button { text: "Prio 3"; width: 60px; clicked => { root.search-prio(3); } }
         }
     }
 
@@ -169,7 +194,7 @@ component InboxPane inherits VerticalLayout {
         }
         
         if jobs.length == 0 && !searching : Text {
-            text: "Sök efter jobb...";
+            text: "Ladda en prioritet eller sök...";
             color: #555555;
             x: parent.width / 2 - self.width / 2;
             y: parent.height / 2 - self.height / 2;
@@ -277,6 +302,7 @@ component InboxPage inherits Rectangle {
     property <bool> has-selection: selected-index >= 0;
     
     callback search-pressed(string);
+    callback search-prio(int);
     callback job-selected(string);
 
     // Desktop Layout (> 700px)
@@ -288,6 +314,7 @@ component InboxPage inherits Rectangle {
             status-msg: root.status-msg;
             selected-index: root.selected-index;
             search-pressed(s) => { root.search-pressed(s); }
+            search-prio(p) => { root.search-prio(p); }
             job-selected(id, idx) => { 
                 root.selected-index = idx;
                 root.job-selected(id); 
@@ -313,6 +340,7 @@ component InboxPage inherits Rectangle {
             status-msg: root.status-msg;
             selected-index: root.selected-index;
             search-pressed(s) => { root.search-pressed(s); }
+            search-prio(p) => { root.search-prio(p); }
             job-selected(id, idx) => { 
                 root.selected-index = idx;
                 root.job-selected(id); 
@@ -334,7 +362,7 @@ component SettingsPage inherits VerticalLayout {
     callback save-settings(AppSettings);
 
     padding: 20px;
-    spacing: 20px;
+    spacing: 10px; // Tightened spacing
     alignment: start;
 
     Text {
@@ -343,32 +371,66 @@ component SettingsPage inherits VerticalLayout {
         font-weight: 700;
         color: #ffffff;
     }
-
-    VerticalLayout {
-        spacing: 5px;
-        Text { text: "Mina sökord (separera med komma):"; color: #aaaaaa; }
-        keywords-input := LineEdit {
-            text: root.settings.keywords;
-            placeholder-text: "t.ex. it-tekniker, utvecklare";
-        }
-    }
-
-    VerticalLayout {
-        spacing: 5px;
-        Text { text: "Geografiska områden (Prio 1):"; color: #aaaaaa; }
-        loc-p1-input := LineEdit {
-            text: root.settings.locations_p1;
-            placeholder-text: "t.ex. helsingborg, malmö";
-        }
-    }
     
-    Button {
-        text: "Spara inställningar";
-        primary: true;
-        clicked => {
-            root.settings.keywords = keywords-input.text;
-            root.settings.locations_p1 = loc-p1-input.text;
-            root.save-settings(root.settings);
+    ScrollView {
+        VerticalLayout {
+            spacing: 15px;
+            
+            VerticalLayout {
+                spacing: 5px;
+                Text { text: "Sökord (inkludera):"; color: #aaaaaa; }
+                keywords-input := LineEdit {
+                    text: root.settings.keywords;
+                    placeholder-text: "t.ex. rust, python";
+                }
+            }
+
+            VerticalLayout {
+                spacing: 5px;
+                Text { text: "Blockord (exkludera):"; color: #ff6666; }
+                blacklist-input := LineEdit {
+                    text: root.settings.blacklist_keywords;
+                    placeholder-text: "t.ex. säljare, telemarketing";
+                }
+            }
+
+            VerticalLayout {
+                spacing: 5px;
+                Text { text: "Område Prio 1:"; color: #4a90e2; }
+                loc-p1-input := LineEdit {
+                    text: root.settings.locations_p1;
+                    placeholder-text: "t.ex. stockholm (eller kod)";
+                }
+            }
+
+            VerticalLayout {
+                spacing: 5px;
+                Text { text: "Område Prio 2:"; color: #4a90e2; }
+                loc-p2-input := LineEdit {
+                    text: root.settings.locations_p2;
+                }
+            }
+
+            VerticalLayout {
+                spacing: 5px;
+                Text { text: "Område Prio 3:"; color: #4a90e2; }
+                loc-p3-input := LineEdit {
+                    text: root.settings.locations_p3;
+                }
+            }
+            
+            Button {
+                text: "Spara inställningar";
+                primary: true;
+                clicked => {
+                    root.settings.keywords = keywords-input.text;
+                    root.settings.blacklist_keywords = blacklist-input.text;
+                    root.settings.locations_p1 = loc-p1-input.text;
+                    root.settings.locations_p2 = loc-p2-input.text;
+                    root.settings.locations_p3 = loc-p3-input.text;
+                    root.save-settings(root.settings);
+                }
+            }
         }
     }
 }
@@ -388,12 +450,15 @@ export component App inherits Window {
     
     // Default settings
     in-out property <AppSettings> settings: {
-        keywords: "rust, python",
-        locations_p1: "stockholm",
-        locations_p2: ""
+        keywords: "",
+        blacklist_keywords: "",
+        locations_p1: "",
+        locations_p2: "",
+        locations_p3: ""
     };
 
     callback search-pressed(string);
+    callback search-prio(int);
     callback job-selected(string);
     callback save-settings(AppSettings);
 
@@ -406,6 +471,7 @@ export component App inherits Window {
                 searching: root.searching;
                 status-msg: root.status-msg;
                 search-pressed(q) => { root.search-pressed(q); }
+                search-prio(p) => { root.search-prio(p); }
                 job-selected(id) => { root.job-selected(id); }
             }
             if root.current-tab == 1 : Rectangle {

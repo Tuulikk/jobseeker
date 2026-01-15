@@ -68,6 +68,22 @@ impl JobSearchClient {
             })
     }
 
+    pub fn parse_locations(input: &str) -> Vec<String> {
+        input.split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                // If it looks like a code (digits), keep it. Otherwise try to resolve name.
+                if s.chars().all(char::is_numeric) {
+                    s.to_string()
+                } else {
+                    Self::get_municipality_code(s).map(|c| c.to_string()).unwrap_or_default()
+                }
+            })
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
     pub async fn search(&self, query: &str, municipalities: &[String], limit: u32) -> Result<Vec<JobAd>> {
         let mut params = vec![
             ("q", query.to_string()),
