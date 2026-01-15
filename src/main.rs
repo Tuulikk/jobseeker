@@ -129,11 +129,11 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
     });
 }
 
-#[no_mangle]
 #[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
 pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
     android_logger::init_once(
-        android_logger::Config::default().with_max_level(tracing::log::LevelFilter::Info),
+        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
     );
     tracing::info!("Starting Jobseeker on Android");
     slint::android::init(app).expect("Failed to initialize Slint on Android");

@@ -17,6 +17,7 @@ dependencies = [
  "genpdf",
  "i-slint-backend-android-activity",
  "jni",
+ "log",
  "redb",
  "reqwest",
  "serde",
@@ -2441,7 +2442,7 @@ dependencies = [
  "i-slint-core",
  "i-slint-renderer-skia",
  "jni",
- "ndk 0.8.0",
+ "ndk 0.9.0",
  "raw-window-handle",
 ]
 
@@ -2493,6 +2494,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e138660c634d6bbdf98bb2d0cfa487cda28e032e133a2a2c974f1cc494198765"
 dependencies = [
  "cfg-if",
+ "i-slint-backend-android-activity",
  "i-slint-backend-linuxkms",
  "i-slint-backend-qt",
  "i-slint-backend-winit",
@@ -3448,7 +3450,6 @@ dependencies = [
  "log",
  "ndk-sys 0.5.0+25.2.9519653",
  "num_enum",
- "raw-window-handle",
  "thiserror 1.0.69",
 ]
 
