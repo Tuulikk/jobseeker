@@ -119,6 +119,10 @@ jobs:
           
       - name: Install cargo-apk
         run: cargo install cargo-apk
+
+      - name: Generate Dummy Keystore
+        run: |
+          keytool -genkey -v -keystore dummy.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 -storepass password -keypass password -dname "CN=Android Debug,O=Android,C=US"
         
       - name: Build APK
         run: |

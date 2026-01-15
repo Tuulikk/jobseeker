@@ -16,6 +16,12 @@ assets = "assets"
 build_targets = ["aarch64-linux-android"]
 manifest = "android/AndroidManifest.xml"
 
+[package.metadata.android.signing.release]
+path = "dummy.keystore"
+keystore_password = "password"
+key_alias = "android"
+key_password = "password"
+
 [lib]
 name = "Jobseeker"
 path = "src/main.rs"
