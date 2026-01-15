@@ -24,7 +24,7 @@ key_password = "password"
 
 [lib]
 name = "Jobseeker"
-path = "src/main.rs"
+path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]
