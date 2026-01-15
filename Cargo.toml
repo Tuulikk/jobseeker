@@ -44,7 +44,7 @@ genpdf = "0.2"
 docx-rs = "0.4"
 
 [target.'cfg(target_os = "android")'.dependencies]
-slint = { version = "1.14", default-features = false, features = ["backend-android-activity-05", "renderer-skia", "compat-1-2", "i-slint-backend-android-activity"] }
+slint = { version = "1.14", default-features = false, features = ["backend-android-activity-06", "renderer-skia", "compat-1-2", "i-slint-backend-android-activity"] }
 i-slint-backend-android-activity = { version = "1.14", features = ["native-activity"] }
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.14"

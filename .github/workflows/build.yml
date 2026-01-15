@@ -33,8 +33,8 @@ jobs:
             asset_name: jobseeker-windows-amd64.exe
             use_cross: false
             
-          - os: macos-12  # Intel Mac (macos-13 retired)
-            target: x86_64-apple-darwin
+          - os: macos-latest  # Use latest runner (likely ARM)
+            target: x86_64-apple-darwin # Build for Intel
             asset_name: jobseeker-macos-intel
             use_cross: false
             
