@@ -4,7 +4,6 @@ mod ui {
 }
 
 use slint::ComponentHandle;
-use slint::Model;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -40,31 +39,31 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
     let db_clone = db.clone();
     let ui_weak_clone = ui_weak.clone();
     let api_client_clone = api_client.clone();
-    let rt_handle = rt.handle().clone(); // Need handle for nested spawn if we wanted, but we are in spawn
+    let _rt_handle = rt.handle().clone(); 
     
     rt.spawn(async move {
         let settings = db_clone.load_settings().await.unwrap_or(Some(Default::default())).unwrap_or_default();
         
+        let ui_weak_for_callback = ui_weak_clone.clone();
+        let settings_for_callback = settings.clone();
+
         let _ = slint::invoke_from_event_loop(move || {
-            if let Some(ui) = ui_weak_clone.upgrade() {
+            if let Some(ui) = ui_weak_for_callback.upgrade() {
                 ui.set_settings(AppSettings {
-                    keywords: settings.keywords.clone().into(),
-                    blacklist_keywords: settings.blacklist_keywords.clone().into(),
-                    locations_p1: settings.locations_p1.clone().into(),
-                    locations_p2: settings.locations_p2.clone().into(),
-                    locations_p3: settings.locations_p3.clone().into(),
+                    keywords: settings_for_callback.keywords.clone().into(),
+                    blacklist_keywords: settings_for_callback.blacklist_keywords.clone().into(),
+                    locations_p1: settings_for_callback.locations_p1.clone().into(),
+                    locations_p2: settings_for_callback.locations_p2.clone().into(),
+                    locations_p3: settings_for_callback.locations_p3.clone().into(),
                 });
                 tracing::info!("Loaded settings from DB");
-                
-                // Trigger auto-search for P1 (simulated by calling search logic directly or via callback if we could)
-                // Since we are in Rust, we can just call the search logic.
             }
         });
 
         // Auto-search Prio 1
         perform_search(
             api_client_clone, 
-            ui_weak_clone.clone(), 
+            ui_weak_clone, 
             Some(1), 
             None, 
             settings
