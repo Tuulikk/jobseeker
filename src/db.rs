@@ -167,7 +167,7 @@ impl Db {
         Ok(())
     }
 
-    async fn get_job_ad(&self, id: &str) -> Result<Option<JobAd>> {
+    pub async fn get_job_ad(&self, id: &str) -> Result<Option<JobAd>> {
         let read_txn = self.database.begin_read()?;
         let table = read_txn.open_table(JOB_ADS_TABLE)?;
         if let Some(json_handle) = table.get(id)? {
