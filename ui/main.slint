@@ -129,6 +129,7 @@ component InboxPane inherits VerticalLayout {
     in property <bool> searching;
     in property <string> status-msg;
     in property <int> selected-index;
+    in-out property <int> active-filter: 0; 
     
     callback search-pressed(string);
     callback search-prio(int);
@@ -146,7 +147,7 @@ component InboxPane inherits VerticalLayout {
             spacing: 10px;
             
             search-input := LineEdit {
-                placeholder-text: "Fri sökning (ignorerar Prio-filter)...";
+                placeholder-text: "Fri sökning...";
                 accepted => { root.search-pressed(self.text); }
             }
             
@@ -170,27 +171,29 @@ component InboxPane inherits VerticalLayout {
                 font-size: 12px;
             }
             
-            Button { text: "Prio 1"; width: 60px; clicked => { root.search-prio(1); } }
-            Button { text: "Prio 2"; width: 60px; clicked => { root.search-prio(2); } }
-            Button { text: "Prio 3"; width: 60px; clicked => { root.search-prio(3); } }
+            Button { text: "Prio 1"; width: 65px; clicked => { root.search-prio(1); } }
+            Button { text: "Prio 2"; width: 65px; clicked => { root.search-prio(2); } }
+            Button { text: "Prio 3"; width: 65px; clicked => { root.search-prio(3); } }
         }
     }
 
-    // Tools
-    Rectangle {
-        height: 40px;
-        background: #252525;
-        border-radius: 4px;
-        HorizontalLayout {
-            padding: 4px;
-            spacing: 8px;
-            alignment: start;
-            Text {
-                text: root.status-msg;
-                color: #888888;
-                font-size: 12px;
-                vertical-alignment: center;
-            }
+    // Filter Bar
+    HorizontalLayout {
+        height: 35px;
+        spacing: 5px;
+        
+        Button { text: "Alla"; primary: root.active-filter == 0; clicked => { root.active-filter = 0; } }
+        IconButton { icon: @image-url("../assets/icons/bookmark-star-fill.svg"); active: root.active-filter == 2; clicked => { root.active-filter = 2; } }
+        IconButton { icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); active: root.active-filter == 3; clicked => { root.active-filter = 3; } }
+        IconButton { icon: @image-url("../assets/icons/check-circle-fill.svg"); active: root.active-filter == 4; clicked => { root.active-filter = 4; } }
+        
+        Rectangle { horizontal-stretch: 1; }
+        
+        Text {
+            text: root.status-msg;
+            color: #888888;
+            font-size: 11px;
+            vertical-alignment: center;
         }
     }
 
@@ -204,6 +207,8 @@ component InboxPane inherits VerticalLayout {
         ScrollView {
             VerticalLayout {
                 for job[idx] in jobs : JobListItem {
+                    visible: root.active-filter == 0 || job.status == root.active-filter;
+                    height: self.visible ? 80px : 0px;
                     job: job;
                     selected: idx == root.selected-index;
                     clicked => {
@@ -214,7 +219,7 @@ component InboxPane inherits VerticalLayout {
         }
         
         if jobs.length == 0 && !searching : Text {
-            text: "Ladda en prioritet eller sök...";
+            text: "Inga jobb i vald prio.";
             color: #555555;
             x: parent.width / 2 - self.width / 2;
             y: parent.height / 2 - self.height / 2;
@@ -226,6 +231,7 @@ component JobDetailPane inherits Rectangle {
     in property <JobEntry> job;
     callback close;
     callback action(string);
+    callback copy(string);
     
     background: #1e1e1e;
     
@@ -262,6 +268,19 @@ component JobDetailPane inherits Rectangle {
             Text { text: job.employer; color: #aaaaaa; font-size: 14px; }
             Text { text: "•"; color: #666666; }
             Text { text: job.location; color: #aaaaaa; font-size: 14px; }
+        }
+
+        // Reporting Help
+        if job.status == 4 : VerticalLayout {
+            spacing: 5px;
+            Text { text: "RAPPORTERINGSHJÄLP (Klicka för att kopiera)"; color: #00ff00; font-weight: 700; font-size: 10px; }
+            HorizontalLayout {
+                spacing: 5px;
+                Button { text: "Företag"; clicked => { root.copy(job.employer); } }
+                Button { text: "Kommun"; clicked => { root.copy(job.location); } }
+                Button { text: "Datum"; clicked => { root.copy(job.date); } }
+                Button { text: "Titel"; clicked => { root.copy(job.title); } }
+            }
         }
 
         // Action Bar
@@ -322,6 +341,7 @@ component JobDetailContainer inherits Rectangle {
     in property <bool> has-selection;
     callback close;
     callback action(string);
+    callback copy(string);
     
     background: #121212;
     
@@ -329,6 +349,7 @@ component JobDetailContainer inherits Rectangle {
         job: job;
         close => { root.close(); }
         action(act) => { root.action(act); }
+        copy(text) => { root.copy(text); }
     }
 
     if !has-selection : Text {
@@ -351,6 +372,7 @@ component InboxPage inherits Rectangle {
     callback search-prio(int);
     callback job-selected(string);
     callback job-action(string, string);
+    callback copy-text(string);
 
     // Desktop Layout (> 700px)
     if root.width > 700px : HorizontalLayout {
@@ -371,16 +393,20 @@ component InboxPage inherits Rectangle {
         Rectangle { width: 1px; background: #333333; }
 
         JobDetailContainer {
+            horizontal-stretch: 1; 
             job: root.jobs[root.selected-index];
             has-selection: root.has-selection;
             close => { root.selected-index = -1; }
             action(act) => { root.job-action(root.jobs[root.selected-index].id, act); }
+            copy(text) => { root.copy-text(text); }
         }
     }
 
     // Mobile Layout (<= 700px)
     if root.width <= 700px : Rectangle {
         if !root.has-selection : InboxPane {
+            width: 100%;
+            height: 100%;
             jobs: root.jobs;
             searching: root.searching;
             status-msg: root.status-msg;
@@ -394,10 +420,13 @@ component InboxPage inherits Rectangle {
         }
 
         if root.has-selection : JobDetailContainer {
+            width: 100%;
+            height: 100%;
             job: root.jobs[root.selected-index];
             has-selection: root.has-selection;
             close => { root.selected-index = -1; }
             action(act) => { root.job-action(root.jobs[root.selected-index].id, act); }
+            copy(text) => { root.copy-text(text); }
         }
     }
 }
@@ -517,7 +546,7 @@ component SettingsPage inherits Rectangle {
 export component App inherits Window {
     title: "Jobseeker";
     min-width: 400px;
-    min-height: 800px;
+    min-height: 600px;
     background: #121212;
     preferred-width: 900px;
     preferred-height: 800px;
@@ -541,15 +570,18 @@ export component App inherits Window {
     callback search-prio(int);
     callback job-selected(string);
     callback job-action(string, string);
+    callback copy-text(string); // NAMNET FIXAT HÄR
     callback save-settings(AppSettings);
 
     VerticalLayout {
         // Main Content Area
         Rectangle {
             vertical-stretch: 1;
+            horizontal-stretch: 1;
             clip: true;
             
             if root.current-tab == 0 : InboxPage {
+                width: 100%; height: 100%;
                 jobs: root.jobs;
                 searching: root.searching;
                 status-msg: root.status-msg;
@@ -557,11 +589,13 @@ export component App inherits Window {
                 search-prio(p) => { root.search-prio(p); }
                 job-selected(id) => { root.job-selected(id); }
                 job-action(id, act) => { root.job-action(id, act); }
+                copy-text(text) => { root.copy-text(text); }
             }
             if root.current-tab == 1 : Rectangle {
                 Text { text: "Utkast (Kommer snart)"; color: white; }
             }
             if root.current-tab == 2 : SettingsPage {
+                width: 100%; height: 100%;
                 settings: root.settings;
                 save-settings(s) => { root.save-settings(s); }
             }
@@ -570,10 +604,12 @@ export component App inherits Window {
         // Bottom Navigation Bar
         Rectangle {
             height: 65px;
+            width: 100%;
             background: #1e1e1e;
             Rectangle { y: 0; width: 100%; height: 1px; background: #333333; }
 
             HorizontalLayout {
+                width: 100%;
                 padding-top: 5px;
                 padding-bottom: 5px;
                 

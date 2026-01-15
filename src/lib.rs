@@ -33,6 +33,26 @@ fn get_db_path() -> std::path::PathBuf {
     }
 }
 
+fn normalize_locations(input: &str) -> String {
+    input.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if s.chars().all(char::is_numeric) {
+                JobSearchClient::get_municipality_name(s).unwrap_or_else(|| s.to_string())
+            } else {
+                let mut chars = s.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().collect::<String>() + chars.as_str().to_lowercase().as_str(),
+                }
+            }
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
     let ui_weak = ui.as_weak();
     let api_client = Arc::new(JobSearchClient::new());
@@ -53,9 +73,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
                 ui.set_settings(AppSettings {
                     keywords: settings_for_callback.keywords.clone().into(),
                     blacklist_keywords: settings_for_callback.blacklist_keywords.clone().into(),
-                    locations_p1: settings_for_callback.locations_p1.clone().into(),
-                    locations_p2: settings_for_callback.locations_p2.clone().into(),
-                    locations_p3: settings_for_callback.locations_p3.clone().into(),
+                    locations_p1: normalize_locations(&settings_for_callback.locations_p1).into(),
+                    locations_p2: normalize_locations(&settings_for_callback.locations_p2).into(),
+                    locations_p3: normalize_locations(&settings_for_callback.locations_p3).into(),
                     my_profile: settings_for_callback.my_profile.clone().into(),
                     ollama_url: settings_for_callback.ollama_url.clone().into(),
                 });
@@ -63,7 +83,6 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
             }
         });
 
-        // Auto-search Prio 1
         perform_search(
             api_client_clone, 
             db_clone,
@@ -120,9 +139,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
     });
 
     // Callback: Job Selected
-    let ui_weak = ui.as_weak();
+    let ui_weak_sel = ui.as_weak();
     ui.on_job_selected(move |id| {
-        if let Some(_ui) = ui_weak.upgrade() {
+        if let Some(_ui) = ui_weak_sel.upgrade() {
             tracing::info!("Valt jobb: {}", id);
         }
     });
@@ -140,6 +159,15 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
 
         let rt_handle = rt_clone.handle().clone();
         rt_handle.spawn(async move {
+            if action_str == "open" {
+                if let Ok(Some(ad)) = db.get_job_ad(&id_str).await {
+                    if let Some(url) = ad.webpage_url {
+                        let _ = webbrowser::open(&url);
+                    }
+                }
+                return;
+            }
+
             let new_status = match action_str.as_str() {
                 "reject" => AdStatus::Rejected,
                 "save" => AdStatus::Bookmarked,
@@ -175,11 +203,37 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
         });
     });
 
+    // Callback: Copy Text to Clipboard
+    ui.on_copy_text(move |text| {
+        let text_str = text.to_string();
+        #[cfg(not(target_os = "android"))]
+        {
+            use arboard::Clipboard;
+            match Clipboard::new() {
+                Ok(mut clipboard) => {
+                    if let Err(e) = clipboard.set_text(text_str) {
+                        tracing::error!("Failed to copy to clipboard: {}", e);
+                    } else {
+                        tracing::info!("Copied to clipboard");
+                    }
+                }
+                Err(e) => tracing::error!("Failed to initialize clipboard: {}", e),
+            }
+        }
+        #[cfg(target_os = "android")]
+        {
+            tracing::info!("Copy requested on Android (Not yet implemented via JNI): {}", text_str);
+        }
+    });
+
     // Callback: Save Settings
     let db_clone = db.clone();
     let rt_clone = rt.clone();
+    let ui_weak_save = ui.as_weak();
     ui.on_save_settings(move |ui_settings| {
         let db = db_clone.clone();
+        let ui_weak = ui_weak_save.clone();
+        
         let settings = crate::models::AppSettings {
             keywords: ui_settings.keywords.to_string(),
             blacklist_keywords: ui_settings.blacklist_keywords.to_string(),
@@ -196,6 +250,15 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
                 tracing::error!("Failed to save settings: {}", e);
             } else {
                 tracing::info!("Settings saved successfully");
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        let mut s = ui.get_settings();
+                        s.locations_p1 = normalize_locations(&s.locations_p1).into();
+                        s.locations_p2 = normalize_locations(&s.locations_p2).into();
+                        s.locations_p3 = normalize_locations(&s.locations_p3).into();
+                        ui.set_settings(s);
+                    }
+                });
             }
         });
     });
@@ -212,7 +275,7 @@ async fn perform_search(
 ) {
     let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
     
-    let (query, locations_str) = if let Some(q) = free_query {
+    let (raw_query, locations_str) = if let Some(q) = free_query {
         (q, String::new()) 
     } else if let Some(p) = prio {
         let locs = match p {
@@ -226,7 +289,9 @@ async fn perform_search(
         (String::new(), String::new())
     };
 
-    if query.is_empty() {
+    let query = raw_query.replace(',', " ");
+
+    if query.trim().is_empty() {
         let ui_weak_local = ui_weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui_weak_local.upgrade() {
@@ -238,6 +303,18 @@ async fn perform_search(
     }
 
     let municipalities = JobSearchClient::parse_locations(&locations_str);
+    
+    if prio.is_some() && !locations_str.is_empty() && municipalities.is_empty() {
+        let ui_weak_local = ui_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak_local.upgrade() {
+                ui.set_searching(false);
+                ui.set_status_msg("Kunde inte hitta de angivna kommunerna.".into());
+            }
+        });
+        return;
+    }
+
     tracing::info!("Searching: query='{}', locs={:?}", query, municipalities);
 
     let result = api_client.search(&query, &municipalities, 100).await;
