@@ -1,0 +1,3 @@
+tuulikk@fedora:/mnt/content/dev/Gnaw-Software/Jobseeker$ ^C
+tuulikk@fedora:/mnt/content/dev/Gnaw-Software/Jobseeker$ ^C
+tuulikk@fedora:/mnt/content/dev/Gnaw-Software/Jobseeker$ export __GL_VBLANK_MODE=1GSYNC_ALLOWED=0VBLANK_MODE=1gnaw
