@@ -122,7 +122,7 @@ jobs:
         
       - name: Install NDK and Tools
         run: |
-          sdkmanager --install "ndk;$NDK_VERSION" "platforms;android-30" "build-tools;300.0.3" "platform-tools"
+          sdkmanager --install "ndk;$NDK_VERSION" "platforms;android-30" "build-tools;30.0.3" "platform-tools"
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
