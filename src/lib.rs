@@ -20,6 +20,76 @@ use crate::db::Db;
 use crate::ui::*;
 use crate::models::AdStatus;
 
+use std::sync::mpsc;
+use tracing_subscriber::prelude::*;
+
+// Log buffer to keep track of recent logs for the UI
+static LOG_SENDER: std::sync::OnceLock<mpsc::Sender<String>> = std::sync::OnceLock::new();
+
+struct SlintLogWriter {
+    sender: mpsc::Sender<String>,
+}
+
+impl std::io::Write for SlintLogWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if let Ok(msg) = String::from_utf8(buf.to_vec()) {
+            let _ = self.sender.send(msg);
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+}
+
+fn setup_logging() -> (tracing_appender::non_blocking::WorkerGuard, mpsc::Receiver<String>) {
+    let (tx, rx) = mpsc::channel();
+    let _ = LOG_SENDER.set(tx.clone());
+
+    let log_dir = if let Some(proj_dirs) = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker") {
+        proj_dirs.data_dir().join("logs")
+    } else {
+        std::path::PathBuf::from("logs")
+    };
+    std::fs::create_dir_all(&log_dir).unwrap_or_default();
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "jobseeker.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
+    let slint_writer = SlintLogWriter { sender: tx };
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout).with_ansi(true))
+        .with(tracing_subscriber::fmt::layer().with_writer(move || slint_writer.sender.clone().into_writer()).with_ansi(false))
+        .init();
+
+    (guard, rx)
+}
+
+// Simple trait to convert Sender to Writer
+trait ToWriter {
+    fn into_writer(self) -> mpsc_writer::MpscWriter;
+}
+
+impl ToWriter for mpsc::Sender<String> {
+    fn into_writer(self) -> mpsc_writer::MpscWriter {
+        mpsc_writer::MpscWriter { sender: self }
+    }
+}
+
+mod mpsc_writer {
+    use std::sync::mpsc;
+    pub struct MpscWriter { pub sender: mpsc::Sender<String> }
+    impl std::io::Write for MpscWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if let Ok(msg) = String::from_utf8(buf.to_vec()) {
+                let _ = self.sender.send(msg);
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    }
+}
+
 fn get_db_path() -> std::path::PathBuf {
     if let Some(proj_dirs) = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker") {
         let data_dir = proj_dirs.data_dir();
@@ -53,8 +123,27 @@ fn normalize_locations(input: &str) -> String {
         .join(", ")
 }
 
-fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
+fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<String>) {
     let ui_weak = ui.as_weak();
+    
+    // Log receiver task
+    let ui_weak_log = ui.as_weak();
+    std::thread::spawn(move || {
+        let mut log_lines: Vec<String> = Vec::new();
+        while let Ok(msg) = log_rx.recv() {
+            log_lines.push(msg.trim().to_string());
+            if log_lines.len() > 100 { log_lines.remove(0); }
+            
+            let lines_to_show = log_lines.join("\n");
+            let ui_weak = ui_weak_log.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_system_logs(lines_to_show.into());
+                }
+            });
+        }
+    });
+
     let api_client = Arc::new(JobSearchClient::new());
     
     // Load settings initially and trigger P1 search
@@ -162,13 +251,14 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
             if action_str == "open" {
                 if let Ok(Some(ad)) = db.get_job_ad(&id_str).await {
                     if let Some(url) = ad.webpage_url {
+                        tracing::info!("Opening browser for job {}: {}", id_str, url);
                         let _ = webbrowser::open(&url);
                     }
                 }
                 return;
             }
 
-            let new_status = match action_str.as_str() {
+            let target_status = match action_str.as_str() {
                 "reject" => AdStatus::Rejected,
                 "save" => AdStatus::Bookmarked,
                 "thumbsup" => AdStatus::ThumbsUp,
@@ -176,11 +266,29 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
                 _ => return,
             };
 
-            if let Err(e) = db.update_ad_status(&id_str, new_status).await {
-                tracing::error!("Failed to update status: {}", e);
+            // Toggle logic
+            let current_ad = db.get_job_ad(&id_str).await.ok().flatten();
+            let current_status = current_ad.and_then(|ad| ad.status);
+            
+            let new_status = if current_status == Some(target_status) {
+                tracing::info!("Toggling status OFF for job {} (was {:?})", id_str, target_status);
+                None
             } else {
-                tracing::info!("Updated job {} to {:?}", id_str, new_status);
-                
+                tracing::info!("Setting status for job {} to {:?}", id_str, target_status);
+                Some(target_status)
+            };
+
+            if let Err(e) = db.update_ad_status(&id_str, new_status).await {
+                tracing::error!("Failed to update status for {}: {}", id_str, e);
+            } else {
+                let status_int = match new_status {
+                    Some(AdStatus::Rejected) => 1,
+                    Some(AdStatus::Bookmarked) => 2,
+                    Some(AdStatus::ThumbsUp) => 3,
+                    Some(AdStatus::Applied) => 4,
+                    Some(AdStatus::New) | None => 0,
+                };
+
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         let jobs = ui.get_jobs();
@@ -188,10 +296,12 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>) {
                         
                         if let Some(pos) = vec.iter().position(|j| j.id == id_str) {
                             let mut entry = vec[pos].clone();
-                            entry.status = new_status as i32;
+                            entry.status = status_int;
                             
-                            if new_status == AdStatus::Rejected {
+                            // If rejected, remove from list if not in a special view
+                            if status_int == 1 {
                                 vec.remove(pos);
+                                tracing::info!("Removed rejected job {} from view", id_str);
                             } else {
                                 vec[pos] = entry;
                             }
@@ -357,7 +467,7 @@ async fn perform_search(
                     Some(AdStatus::Bookmarked) => 2,
                     Some(AdStatus::ThumbsUp) => 3,
                     Some(AdStatus::Applied) => 4,
-                    _ => 0,
+                    Some(AdStatus::New) | None => 0,
                 };
 
                 final_entries.push(JobEntry {
@@ -406,6 +516,7 @@ pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
     tracing::info!("Starting Jobseeker on Android");
     slint::android::init(app).expect("Failed to initialize Slint on Android");
 
+    let (guard, log_rx) = setup_logging();
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     
     let db_path = get_db_path();
@@ -417,13 +528,14 @@ pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
 
     let ui = App::new().expect("Failed to create Slint UI");
     
-    setup_ui(&ui, rt, db);
+    setup_ui(&ui, rt, db, log_rx);
     
+    let _log_guard = guard;
     ui.run().expect("Failed to run Slint UI");
 }
 
 pub fn desktop_main() {
-    tracing_subscriber::fmt::init();
+    let (guard, log_rx) = setup_logging();
     tracing::info!("Starting Jobseeker on Desktop");
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     
@@ -436,7 +548,8 @@ pub fn desktop_main() {
 
     let ui = App::new().expect("Failed to create Slint UI");
     
-    setup_ui(&ui, rt, db);
+    setup_ui(&ui, rt, db, log_rx);
     
+    let _log_guard = guard;
     ui.run().expect("Failed to run Slint UI");
 }

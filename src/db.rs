@@ -152,15 +152,17 @@ impl Db {
         Ok(ads)
     }
 
-    pub async fn update_ad_status(&self, id: &str, status: AdStatus) -> Result<()> {
+        pub async fn update_ad_status(&self, id: &str, status: Option<AdStatus>) -> Result<()> {
         let mut ad = self.get_job_ad(id).await?.context("Ad not found")?;
-        ad.status = Some(status);
+        ad.status = status;
         
         let now = Utc::now();
-        match status {
-            AdStatus::Applied => ad.applied_at = Some(now),
-            AdStatus::Bookmarked | AdStatus::ThumbsUp => ad.bookmarked_at = Some(now),
-            _ => {}
+        if let Some(s) = status {
+            match s {
+                AdStatus::Applied => ad.applied_at = Some(now),
+                AdStatus::Bookmarked | AdStatus::ThumbsUp => ad.bookmarked_at = Some(now),
+                _ => {}
+            }
         }
         
         self.save_job_ad(&ad).await?;
