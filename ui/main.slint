@@ -649,10 +649,11 @@ export component App inherits Window {
                 width: 100%;
                 padding-top: 5px;
                 padding-bottom: 5px;
+                alignment: space-around; // FIX: Spread icons evenly
                 
                 // Tab 0
                 Rectangle {
-                    horizontal-stretch: 1;
+                    width: 60px; // FIX: Fixed width for touch area
                     VerticalLayout {
                         alignment: center; spacing: 4px;
                         Image { source: @image-url("../assets/icons/inbox-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 0 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
@@ -663,7 +664,7 @@ export component App inherits Window {
 
                 // Tab 1
                 Rectangle {
-                    horizontal-stretch: 1;
+                    width: 60px;
                     VerticalLayout {
                         alignment: center; spacing: 4px;
                         Image { source: @image-url("../assets/icons/clipboard-plus-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 1 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }
@@ -674,7 +675,7 @@ export component App inherits Window {
 
                 // Tab 2
                 Rectangle {
-                    horizontal-stretch: 1;
+                    width: 60px;
                     VerticalLayout {
                         alignment: center; spacing: 4px;
                         Image { source: @image-url("../assets/icons/gear-fill.svg"); width: 24px; height: 24px; colorize: root.current-tab == 2 ? #4a90e2 : #666666; x: (parent.width - self.width) / 2; }

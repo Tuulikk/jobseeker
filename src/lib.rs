@@ -40,29 +40,37 @@ impl std::io::Write for SlintLogWriter {
     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
-fn setup_logging() -> (tracing_appender::non_blocking::WorkerGuard, mpsc::Receiver<String>) {
+fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc::Receiver<String>) {
     let (tx, rx) = mpsc::channel();
     let _ = LOG_SENDER.set(tx.clone());
 
-    let log_dir = if let Some(proj_dirs) = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker") {
-        proj_dirs.data_dir().join("logs")
-    } else {
-        std::path::PathBuf::from("logs")
-    };
-    std::fs::create_dir_all(&log_dir).unwrap_or_default();
-
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "jobseeker.log");
-    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-
     let slint_writer = SlintLogWriter { sender: tx };
-
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+    let mut registry = tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout).with_ansi(true))
-        .with(tracing_subscriber::fmt::layer().with_writer(move || slint_writer.sender.clone().into_writer()).with_ansi(false))
-        .init();
+        .with(tracing_subscriber::fmt::layer().with_writer(move || slint_writer.sender.clone().into_writer()).with_ansi(false));
 
-    (guard, rx)
+    // Only enable file logging on non-Android platforms to avoid permission crashes
+    #[cfg(not(target_os = "android"))]
+    {
+        let log_dir = if let Some(proj_dirs) = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker") {
+            proj_dirs.data_dir().join("logs")
+        } else {
+            std::path::PathBuf::from("logs")
+        };
+        let _ = std::fs::create_dir_all(&log_dir);
+
+        let file_appender = tracing_appender::rolling::daily(&log_dir, "jobseeker.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        
+        registry.with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false)).init();
+        (Some(guard), rx)
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        registry.init();
+        (None, rx)
+    }
 }
 
 // Simple trait to convert Sender to Writer
@@ -383,9 +391,14 @@ async fn perform_search(
     free_query: Option<String>,
     settings: crate::models::AppSettings
 ) {
+    tracing::info!("--- SEARCH START ---");
+    tracing::debug!("Loaded Settings: keywords='{}', p1='{}', p2='{}', p3='{}'", 
+        settings.keywords, settings.locations_p1, settings.locations_p2, settings.locations_p3);
+
     let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
     
     let (raw_query, locations_str) = if let Some(q) = free_query {
+        tracing::info!("Type: Free Search, Query: '{}'", q);
         (q, String::new()) 
     } else if let Some(p) = prio {
         let locs = match p {
@@ -394,14 +407,17 @@ async fn perform_search(
             3 => &settings.locations_p3,
             _ => &settings.locations_p1,
         };
+        tracing::info!("Type: Prio Search, Level: {}, Keywords: '{}', Locations: '{}'", p, settings.keywords, locs);
         (settings.keywords.clone(), locs.clone())
     } else {
+        tracing::warn!("Type: Unknown Search");
         (String::new(), String::new())
     };
 
     let query = raw_query.replace(',', " ");
 
     if query.trim().is_empty() {
+        tracing::warn!("Aborting search: Empty query");
         let ui_weak_local = ui_weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui_weak_local.upgrade() {
@@ -412,20 +428,32 @@ async fn perform_search(
         return;
     }
 
-    let municipalities = JobSearchClient::parse_locations(&locations_str);
-    
-    if prio.is_some() && !locations_str.is_empty() && municipalities.is_empty() {
+    if prio.is_some() && locations_str.trim().is_empty() {
+        tracing::warn!("Aborting Prio search: No locations configured for this level");
         let ui_weak_local = ui_weak.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui_weak_local.upgrade() {
                 ui.set_searching(false);
-                ui.set_status_msg("Kunde inte hitta de angivna kommunerna.".into());
+                ui.set_status_msg(format!("Inga platser konfigurerade för Prio {}.", prio.unwrap()).into());
             }
         });
         return;
     }
 
-    tracing::info!("Searching: query='{}', locs={:?}", query, municipalities);
+    let municipalities = JobSearchClient::parse_locations(&locations_str);
+    tracing::info!("Parsed Municipalities: {:?} from input '{}'", municipalities, locations_str);
+    
+    if prio.is_some() && !locations_str.is_empty() && municipalities.is_empty() {
+        tracing::error!("Aborting search: Prio selected with locations, but none could be resolved to IDs");
+        let ui_weak_local = ui_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak_local.upgrade() {
+                ui.set_searching(false);
+                ui.set_status_msg("Kunde inte hitta kommunernas ID:n.".into());
+            }
+        });
+        return;
+    }
 
     let result = api_client.search(&query, &municipalities, 100).await;
     

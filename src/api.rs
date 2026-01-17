@@ -23,7 +23,7 @@ const MUNICIPALITIES: &[(&str, &str)] = &[
     // Stor-Stockholm & Mälardalen
     ("stockholm", "0180"), ("huddinge", "0126"), ("nacka", "0182"), ("botkyrka", "0127"),
     ("haninge", "0136"), ("tyresö", "0138"), ("täby", "0160"), ("sollentuna", "0163"),
-    ("järfälla", "0180"), ("solna", "0184"), ("upplands väsby", "0114"), ("södertälje", "0181"),
+    ("järfälla", "0123"), ("solna", "0184"), ("upplands väsby", "0114"), ("södertälje", "0181"),
     ("lidingö", "0186"), ("sigtuna", "0191"), ("sundbyberg", "0115"), ("uppsala", "0380"),
     ("enköping", "0381"), ("västerås", "1980"), ("eskilstuna", "0484"), ("nyköping", "0480"),
 
@@ -97,6 +97,7 @@ impl JobSearchClient {
         }
 
         let url = format!("{}/search", self.base_url);
+        tracing::debug!("API Call: {} with params {:?}", url, params);
         
         let response = self.client.get(&url)
             .header("accept", "application/json")
@@ -105,9 +106,12 @@ impl JobSearchClient {
             .await
             .context("Failed to send request to JobSearch API")?;
 
+        tracing::info!("API Response Status: {}", response.status());
+
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            tracing::error!("API Error Detail: {}", body);
             return Err(anyhow::anyhow!("API Error: {} - {}", status, body));
         }
 
@@ -115,6 +119,8 @@ impl JobSearchClient {
         
         let hits = json["hits"].as_array()
             .context("No 'hits' array found in response")?;
+
+        tracing::info!("API found {} raw hits", hits.len());
 
         let mut ads = Vec::new();
         for hit in hits {
