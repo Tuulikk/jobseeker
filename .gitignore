@@ -1,3 +1,9 @@
 /target
 *.redb
 settings.json
+/GnawData
+/sessions
+/logs
+*.log
+.gnawtreewriter_backups/
+.gnawtreewriter_session*
