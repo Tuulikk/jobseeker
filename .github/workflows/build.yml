@@ -66,41 +66,36 @@ jobs:
       shell: bash
       run: |
         mkdir -p dist
-        
         if [ "${{ matrix.os }}" = "windows-latest" ]; then
           cp target/${{ matrix.target }}/release/Jobseeker.exe dist/${{ matrix.asset_name }}
-        
         elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
           APP_NAME="Jobseeker.app"
           mkdir -p "$APP_NAME/Contents/MacOS"
           mkdir -p "$APP_NAME/Contents/Resources"
           cp "target/${{ matrix.target }}/release/Jobseeker" "$APP_NAME/Contents/MacOS/Jobseeker"
           chmod +x "$APP_NAME/Contents/MacOS/Jobseeker"
-          
-          # Compact Info.plist creation to avoid YAML indentation issues
-          PLIST_CONTENT='<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>Jobseeker</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.gnawsoftware.jobseeker</string>
-    <key>CFBundleName</key>
-    <string>Jobseeker</string>
-    <key>CFBundleVersion</key>
-    <string>%s</string>
-    <key>CFBundleShortVersionString</key>
-    <string>%s</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>10.13</string>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-</dict>
-</plist>'
-          printf "$PLIST_CONTENT" "${{ github.ref_name }}" "${{ github.ref_name }}" > "$APP_NAME/Contents/Info.plist"
-          
+          INFO_PLIST="$APP_NAME/Contents/Info.plist"
+          echo '<?xml version="1.0" encoding="UTF-8"?>' > "$INFO_PLIST"
+          echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> "$INFO_PLIST"
+          echo '<plist version="1.0">' >> "$INFO_PLIST"
+          echo '<dict>' >> "$INFO_PLIST"
+          echo '    <key>CFBundleExecutable</key>' >> "$INFO_PLIST"
+          echo '    <string>Jobseeker</string>' >> "$INFO_PLIST"
+          echo '    <key>CFBundleIdentifier</key>' >> "$INFO_PLIST"
+          echo '    <string>com.gnawsoftware.jobseeker</string>' >> "$INFO_PLIST"
+          echo '    <key>CFBundleName</key>' >> "$INFO_PLIST"
+          echo '    <string>Jobseeker</string>' >> "$INFO_PLIST"
+          echo '    <key>CFBundleVersion</key>' >> "$INFO_PLIST"
+          echo "    <string>${{ github.ref_name }}</string>" >> "$INFO_PLIST"
+          echo '    <key>CFBundleShortVersionString</key>' >> "$INFO_PLIST"
+          echo "    <string>${{ github.ref_name }}</string>" >> "$INFO_PLIST"
+          echo '    <key>LSMinimumSystemVersion</key>' >> "$INFO_PLIST"
+          echo '    <string>10.13</string>' >> "$INFO_PLIST"
+          echo '    <key>NSHighResolutionCapable</key>' >> "$INFO_PLIST"
+          echo '    <true/>' >> "$INFO_PLIST"
+          echo '</dict>' >> "$INFO_PLIST"
+          echo '</plist>' >> "$INFO_PLIST"
           zip -r "dist/${{ matrix.asset_name }}" "$APP_NAME"
-          
         else
           cp target/${{ matrix.target }}/release/Jobseeker dist/${{ matrix.asset_name }}
         fi
