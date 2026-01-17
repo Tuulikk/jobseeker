@@ -99,15 +99,26 @@ mod mpsc_writer {
 }
 
 fn get_db_path() -> std::path::PathBuf {
-    if let Some(proj_dirs) = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker") {
-        let data_dir = proj_dirs.data_dir();
-        if let Err(e) = std::fs::create_dir_all(data_dir) {
-            tracing::error!("Failed to create data directory: {}", e);
-            return std::path::PathBuf::from("jobseeker.redb");
+    #[cfg(target_os = "android")]
+    {
+        // On Android, use the internal data directory provided by the system
+        let path = std::path::PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files");
+        let _ = std::fs::create_dir_all(&path);
+        return path.join("jobseeker.redb");
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        if let Some(proj_dirs) = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker") {
+            let data_dir = proj_dirs.data_dir();
+            if let Err(e) = std::fs::create_dir_all(data_dir) {
+                tracing::error!("Failed to create data directory: {}", e);
+                return std::path::PathBuf::from("jobseeker.redb");
+            }
+            data_dir.join("jobseeker.redb")
+        } else {
+            std::path::PathBuf::from("jobseeker.redb")
         }
-        data_dir.join("jobseeker.redb")
-    } else {
-        std::path::PathBuf::from("jobseeker.redb")
     }
 }
 

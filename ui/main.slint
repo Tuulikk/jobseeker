@@ -531,7 +531,7 @@ component SettingsPage inherits Rectangle {
                     Text { text: "SYSTEMLOGG & DIAGNOSTIK"; color: #888888; font-weight: 700; font-size: 12px; }
                     
                     Rectangle {
-                        height: 200px;
+                        height: 300px; // Larger
                         background: #000000;
                         border-radius: 4px;
                         border-width: 1px;
@@ -544,16 +544,25 @@ component SettingsPage inherits Rectangle {
                                     text: root.system-logs;
                                     color: #00ff00;
                                     font-family: "monospace";
-                                    font-size: 10px;
+                                    font-size: 11px;
                                     wrap: word-wrap;
                                 }
                             }
                         }
                     }
-                    
-                    Button {
-                        text: "Rensa vy";
-                        clicked => { root.clear-logs(); }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Button {
+                            text: "Kopiera logg";
+                            width: 120px;
+                            clicked => { root.copy-text(root.system-logs); }
+                        }
+                        Button {
+                            text: "Rensa vy";
+                            width: 100px;
+                            clicked => { root.clear-logs(); }
+                        }
                     }
                 }
                 
