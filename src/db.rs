@@ -17,7 +17,7 @@ impl Db {
     pub async fn new(db_path: &str) -> Result<Self> {
         let db = Database::create(db_path)
             .context("Failed to create/open RedB database")?;
-        
+
         // Initiera tabeller
         let write_txn = db.begin_write()?;
         {
@@ -75,12 +75,12 @@ impl Db {
         let read_txn = self.database.begin_read()?;
         let apps_table = read_txn.open_table(APPLICATIONS_TABLE)?;
         let ads_table = read_txn.open_table(JOB_ADS_TABLE)?;
-        
+
         let mut drafts = Vec::new();
         for item in apps_table.iter()? {
             let (id_handle, _content_handle) = item?;
             let id = id_handle.value();
-            
+
             let headline = if let Some(ad_json) = ads_table.get(id)? {
                 match serde_json::from_str::<JobAd>(ad_json.value()) {
                     Ok(ad) => ad.headline,
@@ -110,7 +110,7 @@ impl Db {
     pub async fn get_filtered_jobs(&self, status_filter: &[AdStatus], year: Option<i32>, month: Option<u32>) -> Result<Vec<JobAd>> {
         let read_txn = self.database.begin_read()?;
         let table = read_txn.open_table(JOB_ADS_TABLE)?;
-        
+
         let mut ads = Vec::new();
         for item in table.iter()? {
             let (_, json_handle) = item?;
@@ -129,33 +129,49 @@ impl Db {
             }
 
             if let (Some(y), Some(m)) = (year, month) {
-                let date_to_check = if ad.status == Some(AdStatus::Applied) {
-                    ad.applied_at
-                } else if ad.status == Some(AdStatus::Bookmarked) || ad.status == Some(AdStatus::ThumbsUp) {
-                    ad.bookmarked_at
-                } else {
-                    Some(ad.internal_created_at)
-                };
+                let mut matched = false;
+                let year_str = y.to_string();
+                let month_str = format!("{:02}", m);
 
-                if let Some(dt) = date_to_check {
+                // 1. Testa avancerad parsing (RFC3339)
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&ad.publication_date) {
                     use chrono::Datelike;
-                    if dt.year() == y && dt.month() == m {
-                        ads.push(ad);
+                    if dt.year() == y && dt.month() == m { matched = true; }
+                }
+                // 2. Testa NaiveDate (YYYY-MM-DD)
+                else if let Ok(dt) = chrono::NaiveDate::parse_from_str(&ad.publication_date, "%Y-%m-%d") {
+                    use chrono::Datelike;
+                    if dt.year() == y && dt.month() == m { matched = true; }
+                }
+                // 3. Fallback: Kolla om strängen börjar med YYYY-MM (enklast och säkrast)
+                else {
+                    let prefix = format!("{}-{}", year_str, month_str);
+                    if ad.publication_date.starts_with(&prefix) {
+                        matched = true;
                     }
+                }
+
+                if matched {
+                    ads.push(ad);
                 }
             } else {
                 ads.push(ad);
             }
         }
 
-        ads.sort_by(|a, b| b.publication_date.cmp(&a.publication_date));
+        // Ersätt raden ads.sort_by... med detta:
+        ads.sort_by(|a, b| {
+            let date_a = a.applied_at.or(a.bookmarked_at).unwrap_or(a.internal_created_at);
+            let date_b = b.applied_at.or(b.bookmarked_at).unwrap_or(b.internal_created_at);
+            date_b.cmp(&date_a)
+        });
         Ok(ads)
     }
 
         pub async fn update_ad_status(&self, id: &str, status: Option<AdStatus>) -> Result<()> {
         let mut ad = self.get_job_ad(id).await?.context("Ad not found")?;
         ad.status = status;
-        
+
         let now = Utc::now();
         if let Some(s) = status {
             match s {
@@ -164,7 +180,7 @@ impl Db {
                 _ => {}
             }
         }
-        
+
         self.save_job_ad(&ad).await?;
         Ok(())
     }
@@ -201,11 +217,11 @@ impl Db {
         {
             let mut table = write_txn.open_table(JOB_ADS_TABLE)?;
             let mut keys_to_remove = Vec::new();
-            
+
             for item in table.iter()? {
                 let (id_handle, json_handle) = item?;
                 let ad: JobAd = serde_json::from_str(json_handle.value())?;
-                
+
                 let status = ad.status.unwrap_or(AdStatus::New);
                 if status == AdStatus::New || status == AdStatus::Rejected {
                     keys_to_remove.push(id_handle.value().to_string());

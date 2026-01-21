@@ -9,6 +9,25 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use regex::Regex;
+use chrono::{Utc, Datelike};
+
+fn swedish_month_name(month: u32) -> &'static str {
+    match month {
+        1 => "Januari",
+        2 => "Februari",
+        3 => "Mars",
+        4 => "April",
+        5 => "Maj",
+        6 => "Juni",
+        7 => "Juli",
+        8 => "Augusti",
+        9 => "September",
+        10 => "Oktober",
+        11 => "November",
+        12 => "December",
+        _ => "",
+    }
+}
 
 pub mod models;
 pub mod api;
@@ -61,7 +80,7 @@ fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc
 
         let file_appender = tracing_appender::rolling::daily(&log_dir, "jobseeker.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-        
+
         registry.with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false)).init();
         (Some(guard), rx)
     }
@@ -144,7 +163,7 @@ fn normalize_locations(input: &str) -> String {
 
 fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<String>) {
     let ui_weak = ui.as_weak();
-    
+
     // Log receiver task
     let ui_weak_log = ui.as_weak();
     std::thread::spawn(move || {
@@ -152,7 +171,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         while let Ok(msg) = log_rx.recv() {
             log_lines.push(msg.trim().to_string());
             if log_lines.len() > 100 { log_lines.remove(0); }
-            
+
             let lines_to_show = log_lines.join("\n");
             let ui_weak = ui_weak_log.clone();
             let _ = slint::invoke_from_event_loop(move || {
@@ -164,41 +183,104 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     });
 
     let api_client = Arc::new(JobSearchClient::new());
-    
-    // Load settings initially and trigger P1 search
+
+    // Load settings initially, trigger P1 search and load current month from DB
     let db_clone = db.clone();
     let ui_weak_clone = ui_weak.clone();
     let api_client_clone = api_client.clone();
-    
+
     rt.spawn(async move {
         let settings = db_clone.load_settings().await.unwrap_or(Some(Default::default())).unwrap_or_default();
-        
+
         let ui_weak_for_callback = ui_weak_clone.clone();
         let settings_for_callback = settings.clone();
+        let settings_for_ui = settings_for_callback.clone();
 
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = ui_weak_for_callback.upgrade() {
                 ui.set_settings(AppSettings {
-                    keywords: settings_for_callback.keywords.clone().into(),
-                    blacklist_keywords: settings_for_callback.blacklist_keywords.clone().into(),
-                    locations_p1: normalize_locations(&settings_for_callback.locations_p1).into(),
-                    locations_p2: normalize_locations(&settings_for_callback.locations_p2).into(),
-                    locations_p3: normalize_locations(&settings_for_callback.locations_p3).into(),
-                    my_profile: settings_for_callback.my_profile.clone().into(),
-                    ollama_url: settings_for_callback.ollama_url.clone().into(),
+                    keywords: settings_for_ui.keywords.clone().into(),
+                    blacklist_keywords: settings_for_ui.blacklist_keywords.clone().into(),
+                    locations_p1: normalize_locations(&settings_for_ui.locations_p1).into(),
+                    locations_p2: normalize_locations(&settings_for_ui.locations_p2).into(),
+                    locations_p3: normalize_locations(&settings_for_ui.locations_p3).into(),
+                    my_profile: settings_for_ui.my_profile.clone().into(),
+                    ollama_url: settings_for_ui.ollama_url.clone().into(),
                 });
                 tracing::info!("Loaded settings from DB");
             }
         });
 
+        // Initial priority search (as before)
         perform_search(
-            api_client_clone, 
-            db_clone,
-            ui_weak_clone, 
-            Some(1), 
-            None, 
-            settings
+            api_client_clone.clone(),
+            db_clone.clone(),
+            ui_weak_clone.clone(),
+            Some(1),
+            None,
+            settings_for_callback.clone()
         ).await;
+
+        // Set initial active month to current month and load jobs from DB for that month
+        let now = chrono::Utc::now();
+        let month_str = format!("{:04}-{:02}", now.year(), now.month());
+        let month_display = format!("{} {}", swedish_month_name(now.month()), now.year());
+        if let Some(ui) = ui_weak_clone.upgrade() {
+            ui.set_active_month(month_str.clone().into());
+            ui.set_active_month_display(month_display.clone().into());
+            ui.set_status_msg(format!("Laddar {}...", month_display).into());
+        }
+
+        match db_clone.get_filtered_jobs(&[], Some(now.year()), Some(now.month())).await {
+            Ok(ads) => {
+                let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
+                let entries: Vec<JobEntry> = ads.into_iter().map(|ad| {
+                    let desc_text = ad.description.as_ref()
+                        .and_then(|d| d.text.as_ref())
+                        .map(|s| s.as_str()).unwrap_or("");
+                    let clean_desc = re_html.replace_all(desc_text, "").to_string();
+                    let status_int = match ad.status {
+                        Some(AdStatus::Rejected) => 1,
+                        Some(AdStatus::Bookmarked) => 2,
+                        Some(AdStatus::ThumbsUp) => 3,
+                        Some(AdStatus::Applied) => 4,
+                        Some(AdStatus::New) | None => 0,
+                    };
+                    JobEntry {
+                        id: ad.id.into(),
+                        title: ad.headline.into(),
+                        employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
+                        location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
+                        description: clean_desc.into(),
+                        date: ad.publication_date.split('T').next().unwrap_or("").into(),
+                        rating: ad.rating.unwrap_or(0) as i32,
+                        status: status_int,
+                        status_text: "".into(),
+                    }
+                }).collect();
+
+                let ui_weak_for_invoke = ui_weak_clone.clone();
+                let entries_copy = entries.clone();
+                let count = entries_copy.len();
+                let month_copy = month_str.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak_for_invoke.upgrade() {
+                        let model = Rc::new(slint::VecModel::from(entries_copy));
+                        ui.set_jobs(model.into());
+                        ui.set_status_msg(format!("Laddade {} annonser för {}", count, month_copy).into());
+                    }
+                });
+            }
+            Err(e) => {
+                tracing::error!("Failed to load jobs for initial month: {}", e);
+                let ui_weak_for_err = ui_weak_clone.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak_for_err.upgrade() {
+                        ui.set_status_msg("Fel vid laddning av annonser för månaden".into());
+                    }
+                });
+            }
+        }
     });
 
     // Callback: Free Search
@@ -206,13 +288,13 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     let db_c = db.clone();
     let ui_weak_c = ui_weak.clone();
     let rt_handle = rt.handle().clone();
-    
+
     ui.on_search_pressed(move |query| {
         let api_client = api_client_c.clone();
         let db = db_c.clone();
         let ui_weak = ui_weak_c.clone();
         let query = query.to_string();
-        
+
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_searching(true);
             ui.set_status_msg("Söker fritt...".into());
@@ -234,7 +316,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let api_client = api_client_c.clone();
         let db = db_c.clone();
         let ui_weak = ui_weak_c.clone();
-        
+
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_searching(true);
             ui.set_status_msg(format!("Laddar Prio {}...", prio).into());
@@ -248,9 +330,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
 
     // Callback: Job Selected
     let ui_weak_sel = ui.as_weak();
-    ui.on_job_selected(move |id| {
+    ui.on_job_selected(move |id, idx| {
         if let Some(_ui) = ui_weak_sel.upgrade() {
-            tracing::info!("Valt jobb: {}", id);
+            tracing::info!("Valt jobb: {} (idx={})", id, idx);
         }
     });
 
@@ -258,7 +340,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     let db_clone = db.clone();
     let rt_clone = rt.clone();
     let ui_weak_action = ui.as_weak();
-    
+
     ui.on_job_action(move |id, action| {
         let db = db_clone.clone();
         let id_str = id.to_string();
@@ -288,7 +370,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             // Toggle logic
             let current_ad = db.get_job_ad(&id_str).await.ok().flatten();
             let current_status = current_ad.and_then(|ad| ad.status);
-            
+
             let new_status = if current_status == Some(target_status) {
                 tracing::info!("Toggling status OFF for job {} (was {:?})", id_str, target_status);
                 None
@@ -312,11 +394,11 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     if let Some(ui) = ui_weak.upgrade() {
                         let jobs = ui.get_jobs();
                         let mut vec: Vec<JobEntry> = jobs.iter().collect();
-                        
+
                         if let Some(pos) = vec.iter().position(|j| j.id == id_str) {
                             let mut entry = vec[pos].clone();
                             entry.status = status_int;
-                            
+
                             // If rejected, remove from list if not in a special view
                             if status_int == 1 {
                                 vec.remove(pos);
@@ -362,7 +444,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     ui.on_save_settings(move |ui_settings| {
         let db = db_clone.clone();
         let ui_weak = ui_weak_save.clone();
-        
+
         let settings = crate::models::AppSettings {
             keywords: ui_settings.keywords.to_string(),
             blacklist_keywords: ui_settings.blacklist_keywords.to_string(),
@@ -372,7 +454,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             my_profile: ui_settings.my_profile.to_string(),
             ollama_url: ui_settings.ollama_url.to_string(),
         };
-        
+
         let rt_handle = rt_clone.handle().clone();
         rt_handle.spawn(async move {
             if let Err(e) = db.save_settings(&settings).await {
@@ -391,9 +473,113 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             }
         });
     });
+
+    // Callback: Month Offset (previous/next month requested from UI)
+    let db_clone_month = db.clone();
+    let rt_clone_month = rt.clone();
+    let ui_weak_month = ui.as_weak();
+    ui.on_month_offset(move |offset| {
+        let db = db_clone_month.clone();
+        let ui_weak_inner = ui_weak_month.clone();
+        let rt_handle = rt_clone_month.handle().clone();
+
+        // Read current month on UI thread and compute new month string
+        let current_month = if let Some(ui) = ui_weak_inner.upgrade() {
+            ui.get_active_month().to_string()
+        } else {
+            // fallback to current date
+            let now = chrono::Utc::now();
+            format!("{:04}-{:02}", now.year(), now.month())
+        };
+
+        // compute new year/month
+        let mut parts = current_month.split('-');
+        let year = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or_else(|| chrono::Utc::now().year());
+        let month = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(1);
+        let mut new_month = month + offset as i32;
+        let mut new_year = year;
+        while new_month <= 0 {
+            new_month += 12;
+            new_year -= 1;
+        }
+        while new_month > 12 {
+            new_month -= 12;
+            new_year += 1;
+        }
+        let new_month_str = format!("{:04}-{:02}", new_year, new_month as u32);
+        let new_month_display = format!("{} {}", swedish_month_name(new_month as u32), new_year);
+
+        // Clone explicitly so each closure gets its own copy (avoid move-after-use)
+        let new_month_str_ui = new_month_str.clone();
+        let new_month_display_ui = new_month_display.clone();
+        let new_month_str_err = new_month_str.clone();
+
+        // Update UI immediately
+        let ui_for_update = ui_weak_inner.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_for_update.upgrade() {
+                ui.set_active_month(new_month_str_ui.clone().into());
+                ui.set_active_month_display(new_month_display_ui.clone().into());
+                ui.set_status_msg(format!("Laddar {}...", new_month_display_ui).into());
+            }
+        });
+
+        // Spawn async job to fetch data for the month from DB
+        rt_handle.spawn(async move {
+            match db.get_filtered_jobs(&[], Some(new_year), Some(new_month as u32)).await {
+                Ok(ads) => {
+                    let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
+                    let entries: Vec<JobEntry> = ads.into_iter().map(|ad| {
+                        let desc_text = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
+                        let clean_desc = re_html.replace_all(desc_text, "").to_string();
+                        let status_int = match ad.status {
+                            Some(AdStatus::Rejected) => 1,
+                            Some(AdStatus::Bookmarked) => 2,
+                            Some(AdStatus::ThumbsUp) => 3,
+                            Some(AdStatus::Applied) => 4,
+                            Some(AdStatus::New) | None => 0,
+                        };
+                        JobEntry {
+                            id: ad.id.into(),
+                            title: ad.headline.into(),
+                            employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
+                            location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
+                            description: clean_desc.into(),
+                            date: ad.publication_date.split('T').next().unwrap_or("").into(),
+                            rating: ad.rating.unwrap_or(0) as i32,
+                            status: status_int,
+                            status_text: "".into(),
+                        }
+                    }).collect();
+
+                    let ui_for_invoke = ui_weak_inner.clone();
+                    let entries_copy = entries.clone();
+                    let count = entries_copy.len();
+                    let month_copy = new_month_display.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_for_invoke.upgrade() {
+                            let model = Rc::new(slint::VecModel::from(entries_copy));
+                            ui.set_jobs(model.into());
+                            ui.set_status_msg(format!("Laddade {} annonser för {}", count, month_copy).into());
+                        }
+                    });
+                }
+                Err(e) => {
+                tracing::error!("Failed to load jobs for month {}: {}", new_month_str_err, e);
+                let ui_for_err = ui_weak_inner.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_for_err.upgrade() {
+                        ui.set_status_msg("Fel vid laddning av annonser för månaden".into());
+                    }
+                });
+            }
+            }
+        });
+    });
 }
 
 // Helper function to handle search logic
+// Tool Definition Header: API Mapping Fix for perform_search
 async fn perform_search(
     api_client: Arc<JobSearchClient>,
     db: Arc<Db>,
@@ -402,144 +588,119 @@ async fn perform_search(
     free_query: Option<String>,
     settings: crate::models::AppSettings
 ) {
-    tracing::info!("--- SEARCH START ---");
-    tracing::debug!("Loaded Settings: keywords='{}', p1='{}', p2='{}', p3='{}'", 
-        settings.keywords, settings.locations_p1, settings.locations_p2, settings.locations_p3);
+    // 1. Uppdatera UI initialt (trådsäkert utan att hålla 'ui' över await)
+    let ui_start = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_start.upgrade() {
+            ui.set_searching(true);
+            ui.set_status_msg("Söker...".into());
+        }
+    });
 
     let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
-    
-    let (raw_query, locations_str) = if let Some(q) = free_query {
-        tracing::info!("Type: Free Search, Query: '{}'", q);
-        (q, String::new()) 
-    } else if let Some(p) = prio {
-        let locs = match p {
-            1 => &settings.locations_p1,
-            2 => &settings.locations_p2,
-            3 => &settings.locations_p3,
-            _ => &settings.locations_p1,
-        };
-        tracing::info!("Type: Prio Search, Level: {}, Keywords: '{}', Locations: '{}'", p, settings.keywords, locs);
-        (settings.keywords.clone(), locs.clone())
-    } else {
-        tracing::warn!("Type: Unknown Search");
-        (String::new(), String::new())
+
+    // 2. Bestäm sökparametrar baserat på dina PRIO-zoner
+    let (raw_query, locations_str) = match (free_query, prio) {
+        (Some(q), _) => (q, String::new()),
+        (None, Some(p)) => {
+            let locs = match p {
+                1 => &settings.locations_p1,
+                2 => &settings.locations_p2,
+                3 => &settings.locations_p3,
+                _ => &settings.locations_p1,
+            };
+            // LOGG: Här ser vi om agenten har tömt dina inställningar
+            println!("INFO: Söker med Prio P{}. Platser: '{}'", p, locs);
+            (settings.keywords.clone(), locs.clone())
+        },
+        _ => (String::new(), String::new()),
     };
 
-    let query = raw_query.replace(',', " ");
-
-    if query.trim().is_empty() {
-        tracing::warn!("Aborting search: Empty query");
-        let ui_weak_local = ui_weak.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(ui) = ui_weak_local.upgrade() {
-                ui.set_searching(false);
-                ui.set_status_msg("Inga sökord angivna.".into());
-            }
-        });
-        return;
-    }
-
-    if prio.is_some() && locations_str.trim().is_empty() {
-        tracing::warn!("Aborting Prio search: No locations configured for this level");
-        let ui_weak_local = ui_weak.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(ui) = ui_weak_local.upgrade() {
-                ui.set_searching(false);
-                ui.set_status_msg(format!("Inga platser konfigurerade för Prio {}.", prio.unwrap()).into());
-            }
-        });
-        return;
-    }
-
+    let query_for_api = raw_query.replace(',', " ");
     let municipalities = JobSearchClient::parse_locations(&locations_str);
-    tracing::info!("Parsed Municipalities: {:?} from input '{}'", municipalities, locations_str);
-    
-    if prio.is_some() && !locations_str.is_empty() && municipalities.is_empty() {
-        tracing::error!("Aborting search: Prio selected with locations, but none could be resolved to IDs");
-        let ui_weak_local = ui_weak.clone();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(ui) = ui_weak_local.upgrade() {
-                ui.set_searching(false);
-                ui.set_status_msg("Kunde inte hitta kommunernas ID:n.".into());
-            }
-        });
-        return;
-    }
 
-    let result = api_client.search(&query, &municipalities, 100).await;
-    
-    let blacklist: Vec<String> = settings.blacklist_keywords.split(',')
-        .map(|s| s.trim().to_lowercase())
-        .filter(|s| !s.is_empty())
-        .collect();
+    // LOGG: Här ser vi om parse_locations faktiskt lyckas skapa ID-koder
+    println!("INFO: Tolkade {} st kommun-ID:n", municipalities.len());
+
+    // 3. API-anropet (här sker .await, så ingen 'ui' får finnas i scope)
+    let result = api_client.search(&query_for_api, &municipalities, 100).await;
 
     match result {
-        Ok(api_ads) => {
-            let mut final_entries = Vec::new();
-            
-            for ad in api_ads {
-                let title = ad.headline.to_lowercase();
-                let desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("").to_lowercase();
-                
-                if !blacklist.is_empty() && blacklist.iter().any(|bad| title.contains(bad) || desc.contains(bad)) {
-                    continue; 
-                }
+        Ok(ads) => {
+            println!("INFO: API hittade {} råa annonser", ads.len());
 
-                let db_ad_opt = db.get_job_ad(&ad.id).await.ok().flatten();
-                
-                let display_ad = if let Some(local_ad) = db_ad_opt {
-                    local_ad
-                } else {
-                    let _ = db.save_job_ad(&ad).await;
-                    ad
-                };
+            let blacklist: Vec<String> = settings.blacklist_keywords
+                .split(',')
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect();
 
-                if display_ad.status == Some(AdStatus::Rejected) {
-                    continue;
-                }
+            let mut final_jobs = Vec::new();
+            for ad in ads {
+                let raw_desc = ad.description.as_ref().and_then(|d| d.text.as_deref()).unwrap_or("");
+                let clean_description = re_html.replace_all(raw_desc, "").into_owned();
 
-                let desc_text = display_ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
-                let clean_desc = re_html.replace_all(desc_text, "").to_string();
-                
-                let status_int = match display_ad.status {
-                    Some(AdStatus::Rejected) => 1,
-                    Some(AdStatus::Bookmarked) => 2,
-                    Some(AdStatus::ThumbsUp) => 3,
-                    Some(AdStatus::Applied) => 4,
-                    Some(AdStatus::New) | None => 0,
-                };
+                let employer_name = ad.employer.as_ref().and_then(|e| e.name.as_deref()).unwrap_or("Ospecificerad");
+                let city = ad.workplace_address.as_ref().and_then(|a| a.city.as_deref()).unwrap_or("Ospecificerad");
+                let pub_date = ad.publication_date.clone();
 
-                final_entries.push(JobEntry {
-                    id: display_ad.id.into(),
-                    title: display_ad.headline.into(),
-                    employer: display_ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
-                    location: display_ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
-                    description: clean_desc.into(),
-                    date: display_ad.publication_date.split('T').next().unwrap_or("").into(),
-                    rating: display_ad.rating.unwrap_or(0) as i32,
-                    status: status_int,
-                    status_text: "".into(),
+                let desc_lc = clean_description.to_lowercase();
+                let title_lc = ad.headline.to_lowercase();
+
+                let is_blacklisted = blacklist.iter().any(|word| {
+                    title_lc.contains(word) || desc_lc.contains(word)
                 });
+
+                if !is_blacklisted {
+                    // Kontrollera status i databasen (också asynkront)
+                    let db_status = if let Ok(Some(existing)) = db.get_job_ad(&ad.id).await {
+                        // Mappa AdStatus enum till i32 för Slint
+                        match existing.status {
+                            Some(crate::models::AdStatus::New) => 0,
+                            Some(crate::models::AdStatus::Rejected) => 1,
+                            Some(crate::models::AdStatus::Bookmarked) => 2,
+                            Some(crate::models::AdStatus::ThumbsUp) => 3,
+                            Some(crate::models::AdStatus::Applied) => 4,
+                            None => 0,
+                        }
+                    } else {
+                        0
+                    };
+
+                    final_jobs.push(JobEntry {
+                        id: ad.id.into(),
+                        title: ad.headline.into(),
+                        employer: employer_name.to_string().into(),
+                        location: city.to_string().into(),
+                        description: clean_description.into(),
+                        date: pub_date.into(),
+                        status: db_status, // Nu matchar typerna (i32)
+                        status_text: "Ny".into(),
+                        rating: 0,
+                    });
+                }
             }
 
-            let count = final_entries.len();
-            let ui_weak_success = ui_weak.clone();
-            
+            // 4. Skicka tillbaka resultatet till UI-tråden
+            let ui_final = ui_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak_success.upgrade() {
-                    ui.set_searching(false);
-                    let model = Rc::new(slint::VecModel::from(final_entries));
-                    ui.set_jobs(model.into());
+                if let Some(ui) = ui_final.upgrade() {
+                    let count = final_jobs.len();
+                    let job_model = std::rc::Rc::new(slint::VecModel::from(final_jobs));
+                    ui.set_jobs(job_model.into());
                     ui.set_status_msg(format!("Hittade {} annonser", count).into());
+                    ui.set_searching(false);
                 }
             });
-        }
+        },
         Err(e) => {
-            let ui_weak_error = ui_weak.clone();
+            println!("ERROR: API-anrop misslyckades: {:?}", e);
+            let ui_err = ui_weak.clone();
+            let err_msg = e.to_string();
             let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak_error.upgrade() {
+                if let Some(ui) = ui_err.upgrade() {
+                    ui.set_status_msg(format!("Fel: {}", err_msg).into());
                     ui.set_searching(false);
-                    ui.set_status_msg(format!("Fel: {}", e).into());
                 }
             });
         }
@@ -557,7 +718,7 @@ pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
 
     let (guard, log_rx) = setup_logging();
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
-    
+
     let db_path = get_db_path();
     tracing::info!("Using database path: {:?}", db_path);
     let db = rt.block_on(async {
@@ -566,9 +727,9 @@ pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
     let db = Arc::new(db);
 
     let ui = App::new().expect("Failed to create Slint UI");
-    
+
     setup_ui(&ui, rt, db, log_rx);
-    
+
     let _log_guard = guard;
     ui.run().expect("Failed to run Slint UI");
 }
@@ -577,7 +738,7 @@ pub fn desktop_main() {
     let (guard, log_rx) = setup_logging();
     tracing::info!("Starting Jobseeker on Desktop");
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
-    
+
     let db_path = get_db_path();
     tracing::info!("Using database path: {:?}", db_path);
     let db = rt.block_on(async {
@@ -586,9 +747,9 @@ pub fn desktop_main() {
     let db = Arc::new(db);
 
     let ui = App::new().expect("Failed to create Slint UI");
-    
+
     setup_ui(&ui, rt, db, log_rx);
-    
+
     let _log_guard = guard;
     ui.run().expect("Failed to run Slint UI");
 }

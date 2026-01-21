@@ -1,8 +1,8 @@
 [Desktop Entry]
 Name=Jobseeker
 Comment=AI-powered job search assistant
-Exec=jobseeker
-Icon=app-icon
+Exec=/mnt/content/dev/Gnaw-Software/Jobseeker/run_jobseeker.sh
+Icon=/mnt/content/dev/Gnaw-Software/Jobseeker/assets/app-icon.svg
 Type=Application
 Categories=Utility;Office;
 Terminal=false
