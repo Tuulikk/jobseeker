@@ -86,6 +86,8 @@ fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc
         let local_log_dir = std::path::PathBuf::from("logs");
         let _ = std::fs::create_dir_all(&local_log_dir);
         let local_file = local_log_dir.join("jobseeker.log");
+        // Ensure the local log file exists immediately so developers can read it in the project
+        let _ = std::fs::File::create(&local_file);
         tracing::info!("Also writing a local copy to: {}", local_file.display());
 
         // Rolling appender in the platform data dir
