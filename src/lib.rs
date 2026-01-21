@@ -44,6 +44,7 @@ use tracing_subscriber::prelude::*;
 
 // Log buffer to keep track of recent logs for the UI
 static LOG_SENDER: std::sync::OnceLock<mpsc::Sender<String>> = std::sync::OnceLock::new();
+static LOCAL_LOG_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> = std::sync::OnceLock::new();
 
 struct SlintLogWriter {
     sender: mpsc::Sender<String>,
@@ -71,17 +72,38 @@ fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc
     // Only enable file logging on non-Android platforms to avoid permission crashes
     #[cfg(not(target_os = "android"))]
     {
+        // Primary log directory (platform-specific recommended dir)
         let log_dir = if let Some(proj_dirs) = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker") {
             proj_dirs.data_dir().join("logs")
         } else {
             std::path::PathBuf::from("logs")
         };
+        let log_file = log_dir.join("jobseeker.log");
+        tracing::info!("Logging to file: {}", log_file.display());
         let _ = std::fs::create_dir_all(&log_dir);
 
+        // Also ensure a local ./logs folder exists so it's easy to find logs in dev environments
+        let local_log_dir = std::path::PathBuf::from("logs");
+        let _ = std::fs::create_dir_all(&local_log_dir);
+        let local_file = local_log_dir.join("jobseeker.log");
+        tracing::info!("Also writing a local copy to: {}", local_file.display());
+
+        // Rolling appender in the platform data dir
         let file_appender = tracing_appender::rolling::daily(&log_dir, "jobseeker.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-        registry.with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false)).init();
+        // Rolling appender in local ./logs
+        let local_appender = tracing_appender::rolling::daily(&local_log_dir, "jobseeker.log");
+        let (local_non_blocking, local_guard) = tracing_appender::non_blocking(local_appender);
+
+        // Keep the local guard alive for the lifetime of the program
+        let _ = LOCAL_LOG_GUARD.set(local_guard);
+
+        // Add both file writers to the registry so both files receive logs
+        let r = registry
+            .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+            .with(tracing_subscriber::fmt::layer().with_writer(local_non_blocking).with_ansi(false));
+        r.init();
         (Some(guard), rx)
     }
 
@@ -215,6 +237,16 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     });
 
     let api_client = Arc::new(JobSearchClient::new());
+
+    // Expose the local log file path (./logs/jobseeker.log) in the UI so it's easy to open/fetch logs.
+    let local_path = std::path::PathBuf::from("logs").join("jobseeker.log");
+    let local_path_str = local_path.to_string_lossy().to_string();
+    let ui_weak_for_log = ui_weak.clone();
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_weak_for_log.upgrade() {
+            ui.set_log_file_path(local_path_str.into());
+        }
+    });
 
     // Load settings initially, trigger P1 search and load current month from DB
     let db_clone = db.clone();
@@ -656,6 +688,15 @@ async fn perform_search(
 
     // LOGG: Här ser vi om parse_locations faktiskt lyckas skapa ID-koder
     tracing::info!("Tolkade {} st kommun-ID:n: {:?}", municipalities.len(), municipalities);
+
+    // Visa enkel sammanfattning av vad som skickas i UI (senaste API‑request)
+    let ui_for_req = ui_weak.clone();
+    let request_info = format!("query='{}' municipalities={:?}", query_for_api, municipalities);
+    let _ = slint::invoke_from_event_loop(move || {
+        if let Some(ui) = ui_for_req.upgrade() {
+            ui.set_last_api_request(request_info.into());
+        }
+    });
 
     // 3. API-anropet (här sker .await, så ingen 'ui' får finnas i scope)
     let result = api_client.search(&query_for_api, &municipalities, 100).await;
