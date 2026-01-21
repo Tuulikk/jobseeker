@@ -128,8 +128,8 @@ component JobListItem inherits Rectangle {
 component InboxPane inherits VerticalLayout {
     in property <[JobEntry]> jobs;
     in property <bool> searching;
-    in property <string> status-msg;
-    in property <int> selected-index;
+    in-out property <string> status-msg: "Redo";
+    in-out property <int> selected-index: -1;
     in-out property <int> active-filter: 0;
     in-out property <string> active-month: "2026-01";
     in-out property <string> active-month-display: "Januari 2026";
@@ -170,9 +170,9 @@ component InboxPane inherits VerticalLayout {
             HorizontalLayout {
                 spacing: 4px;
                 alignment: space-between;
-                Button { text: "P1"; width: 45px; clicked => { root.search-prio(1); } }
-                Button { text: "P2"; width: 45px; clicked => { root.search-prio(2); } }
-                Button { text: "P3"; width: 45px; clicked => { root.search-prio(3); } }
+                Button { text: root.searching ? "..." : "P1"; width: 45px; clicked => { root.status-msg = "Laddar Prio 1..."; root.search-prio(1); } }
+                Button { text: root.searching ? "..." : "P2"; width: 45px; clicked => { root.status-msg = "Laddar Prio 2..."; root.search-prio(2); } }
+                Button { text: root.searching ? "..." : "P3"; width: 45px; clicked => { root.search-prio(3); } }
                 Rectangle { width: 10px; } // Spacer
                 IconButton { icon: @image-url("../assets/icons/bookmark-star-fill.svg"); active: root.active-filter == 2; clicked => { root.active-filter = (root.active-filter == 2 ? 0 : 2); } }
                 IconButton { icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); active: root.active-filter == 3; clicked => { root.active-filter = (root.active-filter == 3 ? 0 : 3); } }
@@ -314,6 +314,8 @@ component JobDetailPane inherits Rectangle {
 component SettingsPage inherits Rectangle {
     in-out property <AppSettings> settings;
     in property <string> system-logs;
+    in property <string> log_file_path;
+    in property <string> last_api_request;
     callback save-settings(AppSettings);
     callback clear-logs;
     callback copy-text(string);
@@ -341,6 +343,12 @@ component SettingsPage inherits Rectangle {
 
                 Text { text: "AI PROFIL"; color: #ffd700; font-weight: 700; font-size: 11px; }
                 profile-input := TextEdit { text: root.settings.my_profile; height: 100px; }
+
+                // Visible log file path and last API request for easier troubleshooting
+                Text { text: "Loggfil:"; color: #999999; font-size: 11px; }
+                Text { text: root.log_file_path; color: #999999; font-size: 11px; }
+                Text { text: "Senaste API-request:"; color: #999999; font-size: 11px; }
+                Text { text: root.last_api_request; color: #999999; font-family: "monospace"; font-size: 10px; }
 
                 Rectangle {
                     background: #000;
@@ -384,6 +392,8 @@ export component App inherits Window {
     in-out property <string> active-month: "2026-01";
     in-out property <string> active-month-display: "Januari 2026";
     in-out property <string> system-logs: "";
+    in-out property <string> log_file_path: "";
+    in-out property <string> last_api_request: "";
     in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1" };
 
     callback search-pressed(string);
@@ -446,9 +456,10 @@ export component App inherits Window {
                 }
             }
 
-            if current-tab == 1 : SettingsPage {
+            if root.current-tab == 2 : SettingsPage {
                 settings: root.settings;
-                system-logs: root.system-logs;
+                log_file_path: root.log_file_path;
+                last_api_request: root.last_api_request;
                 save-settings(s) => { root.save-settings(s); }
             }
         }
