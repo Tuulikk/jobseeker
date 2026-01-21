@@ -164,6 +164,7 @@ fn normalize_locations(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::JobSearchClient;
 
     #[test]
     fn normalize_locations_resolves_codes_and_titlecases_names() {
@@ -183,6 +184,12 @@ mod tests {
     #[test]
     fn normalize_locations_empty_input_returns_empty_string() {
         assert_eq!(normalize_locations(""), "");
+    }
+
+    #[test]
+    fn parse_locations_resolves_malmo_lund() {
+        let parsed = JobSearchClient::parse_locations("malmö, lund");
+        assert_eq!(parsed, vec!["1280".to_string(), "1281".to_string()]);
     }
 }
 
@@ -342,6 +349,8 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let db = db_c.clone();
         let ui_weak = ui_weak_c.clone();
 
+        tracing::info!("search_prio triggered: P{}", prio);
+
         if let Some(ui) = ui_weak.upgrade() {
             ui.set_searching(true);
             ui.set_status_msg(format!("Laddar Prio {}...", prio).into());
@@ -349,6 +358,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
 
         rt_handle.spawn(async move {
             let settings = db.load_settings().await.unwrap_or(Some(Default::default())).unwrap_or_default();
+            tracing::info!("Loaded settings for prio {}: p1='{}' p2='{}' p3='{}'", prio, settings.locations_p1, settings.locations_p2, settings.locations_p3);
             perform_search(api_client, db, ui_weak, Some(prio), None, settings).await;
         });
     });
@@ -645,7 +655,7 @@ async fn perform_search(
     let municipalities = JobSearchClient::parse_locations(&locations_str);
 
     // LOGG: Här ser vi om parse_locations faktiskt lyckas skapa ID-koder
-    println!("INFO: Tolkade {} st kommun-ID:n", municipalities.len());
+    tracing::info!("Tolkade {} st kommun-ID:n: {:?}", municipalities.len(), municipalities);
 
     // 3. API-anropet (här sker .await, så ingen 'ui' får finnas i scope)
     let result = api_client.search(&query_for_api, &municipalities, 100).await;
