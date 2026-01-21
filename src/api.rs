@@ -18,7 +18,7 @@ const MUNICIPALITIES: &[(&str, &str)] = &[
     ("hässleholm", "1293"), ("lomma", "1262"), ("staffanstorp", "1230"), ("svedala", "1263"),
     ("skurup", "1264"), ("sjöbo", "1265"), ("höör", "1267"), ("hörby", "1266"),
     ("tomelilla", "1270"), ("simrishamn", "1291"), ("osby", "1272"), ("östra göinge", "1273"),
-    ("bromölla", "1271"), 
+    ("bromölla", "1271"),
 
     // Stor-Stockholm & Mälardalen
     ("stockholm", "0180"), ("huddinge", "0126"), ("nacka", "0182"), ("botkyrka", "0127"),
@@ -89,7 +89,7 @@ impl JobSearchClient {
             ("q", query.to_string()),
             ("limit", limit.to_string()),
         ];
-        
+
         for m in municipalities {
             if !m.is_empty() {
                 params.push(("municipality", m.to_string()));
@@ -98,7 +98,7 @@ impl JobSearchClient {
 
         let url = format!("{}/search", self.base_url);
         tracing::debug!("API Call: {} with params {:?}", url, params);
-        
+
         let response = self.client.get(&url)
             .header("accept", "application/json")
             .query(&params)
@@ -116,7 +116,7 @@ impl JobSearchClient {
         }
 
         let json: Value = response.json().await.context("Failed to parse JSON response")?;
-        
+
         let hits = json["hits"].as_array()
             .context("No 'hits' array found in response")?;
 
@@ -125,14 +125,14 @@ impl JobSearchClient {
         let mut ads = Vec::new();
         for hit in hits {
             let ad_val = hit.clone();
-            
+
             // Extract webpage_url from root if not present in nested structs
             let webpage_url = hit["webpage_url"].as_str().map(|s| s.to_string());
-            
+
             match serde_json::from_value::<JobAd>(ad_val.clone()) {
                 Ok(mut ad) => {
                     ad.webpage_url = webpage_url;
-                    
+
                     // Extrahera working_hours_type om det saknas i automatisk deserialisering
                     if ad.working_hours_type.is_none() {
                         if let Some(label) = hit["working_hours_type"]["label"].as_str() {
@@ -141,7 +141,7 @@ impl JobSearchClient {
                             });
                         }
                     }
-                    
+
                     ads.push(ad);
                 },
                 Err(e) => {
@@ -157,5 +157,24 @@ impl JobSearchClient {
 impl Default for JobSearchClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_locations_numeric_and_name() {
+        // numeric codes should be preserved, names should be resolved to codes
+        let parsed = JobSearchClient::parse_locations("1283, malmö");
+        assert_eq!(parsed, vec!["1283".to_string(), "1280".to_string()]);
+    }
+
+    #[test]
+    fn parse_locations_ignores_empty_and_trims() {
+        // empty entries and whitespace should be ignored
+        let parsed = JobSearchClient::parse_locations(" , 1283,  malmö  , ");
+        assert_eq!(parsed, vec!["1283".to_string(), "1280".to_string()]);
     }
 }
