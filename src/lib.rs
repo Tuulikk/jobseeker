@@ -236,16 +236,6 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             }
         });
 
-        // Initial priority search (as before)
-        perform_search(
-            api_client_clone.clone(),
-            db_clone.clone(),
-            ui_weak_clone.clone(),
-            Some(1),
-            None,
-            settings_for_callback.clone()
-        ).await;
-
         // Set initial active month to current month and load jobs from DB for that month
         let now = chrono::Utc::now();
         let month_str = format!("{:04}-{:02}", now.year(), now.month());
@@ -306,6 +296,16 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 });
             }
         }
+
+        // Initial priority search (as before)
+        perform_search(
+            api_client_clone.clone(),
+            db_clone.clone(),
+            ui_weak_clone.clone(),
+            Some(1),
+            None,
+            settings_for_callback.clone()
+        ).await;
     });
 
     // Callback: Free Search
