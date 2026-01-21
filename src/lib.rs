@@ -161,6 +161,31 @@ fn normalize_locations(input: &str) -> String {
         .join(", ")
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_locations_resolves_codes_and_titlecases_names() {
+        // Numeric code should be resolved to a municipality name if available,
+        // and plain names should be title-cased.
+        let out = normalize_locations("1283, malmö");
+        assert_eq!(out, "Helsingborg, Malmö");
+    }
+
+    #[test]
+    fn normalize_locations_trims_and_ignores_empty_entries() {
+        // Leading/trailing commas and whitespace should be ignored.
+        let out = normalize_locations(" , 1283, ,  malmö , ");
+        assert_eq!(out, "Helsingborg, Malmö");
+    }
+
+    #[test]
+    fn normalize_locations_empty_input_returns_empty_string() {
+        assert_eq!(normalize_locations(""), "");
+    }
+}
+
 fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<String>) {
     let ui_weak = ui.as_weak();
 
