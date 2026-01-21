@@ -195,10 +195,12 @@ fn settings_roundtrip() {
 
 ---
 
-Om du vill så tar jag gärna på mig att göra en snabb PR som implementerar de tre UI-fälten + test (det är en liten och isolerad ändring). Vill du att jag går vidare och:
+STATUS UPDATE
+-------------
+Jag har implementerat förändringen i branch `fix/settings-prio-restore` och lagt till tester. Det som ingår:
 
-- 1) Implementerar UI-ändringen och testet och öppnar PR, eller
-- 2) Först skriver tester och därefter UI-ändring, eller
-- 3) Vill du göra PR själv men vill ha en patch/konkret diff?
+- Commit `5a07cd7`: återintroducerade `loc-p2` och `loc-p3` i `ui/main.slint` och uppdaterade save-handler så att `locations_p2` och `locations_p3` sparas.
+- Commit `2f66044`: lade till tester för `normalize_locations`.
+- Integrationstest `tests/settings_roundtrip.rs` verifierar att `Db::save_settings` / `Db::load_settings` bevarar `locations_p1/2/3`.
 
-Säg vad du vill att jag ska göra härnäst — jag följer din prioritet.
+Jag har kört `cargo test` lokalt och alla tester passerade. Vill du att jag pushar branchen till origin och öppnar en PR nu (så körs CI och vi får en pipeline/verifiering)? Om du föredrar att jag väntar med PR tills du har kollat koden först så säger du det — annars pushar jag och öppnar PR.
