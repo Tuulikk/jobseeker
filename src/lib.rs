@@ -662,7 +662,7 @@ async fn perform_search(
 
     match result {
         Ok(ads) => {
-            println!("INFO: API hittade {} råa annonser", ads.len());
+            tracing::info!("API hittade {} råa annonser (query='{}', municipalities={:?})", ads.len(), query_for_api, municipalities);
 
             let blacklist: Vec<String> = settings.blacklist_keywords
                 .split(',')
