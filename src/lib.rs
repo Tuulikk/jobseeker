@@ -546,6 +546,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     let rt_clone_month = rt.clone();
     let ui_weak_month = ui.as_weak();
     ui.on_month_offset(move |offset| {
+        tracing::info!("Month offset requested: {}", offset);
         let db = db_clone_month.clone();
         let ui_weak_inner = ui_weak_month.clone();
         let rt_handle = rt_clone_month.handle().clone();
@@ -622,7 +623,8 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     let ui_for_invoke = ui_weak_inner.clone();
                     let entries_copy = entries.clone();
                     let count = entries_copy.len();
-                    let month_copy = new_month_display.clone();
+                    let month_copy = new_month_str.clone();
+                    tracing::info!("DB get_filtered_jobs returned {} ads for month {}", count, month_copy);
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_for_invoke.upgrade() {
                             let model = Rc::new(slint::VecModel::from(entries_copy));
