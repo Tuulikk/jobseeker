@@ -8,6 +8,31 @@ license = "MPL-2.0"
 repository = "https://github.com/Gnaw-Software/Jobseeker"
 keywords = ["jobsearch", "rust", "ai", "ollama", "slint", "productivity", "redb"]
 categories = ["command-line-utilities", "productivity", "gui"]
+default-run = "Jobseeker"
+
+[[bin]]
+name = "Jobseeker"
+path = "src/main.rs"
+
+[[bin]]
+name = "test_api"
+path = "src/bin/test_api.rs"
+
+[[bin]]
+name = "test_api_mini"
+path = "test_api_mini.rs"
+
+[[bin]]
+name = "test_multi_municipalities"
+path = "test_multi_municipalities.rs"
+
+[[bin]]
+name = "test_query_logic"
+path = "test_query_logic.rs"
+
+[[bin]]
+name = "reset_settings"
+path = "src/bin/reset_settings.rs"
 
 [package.metadata.android]
 package = "com.gnawsoftware.jobseeker"

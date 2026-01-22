@@ -20,6 +20,9 @@ export struct AppSettings {
     locations_p3: string,
     my_profile: string,
     ollama_url: string,
+    app_min_count: int,
+    app_goal_count: int,
+    show_motivation: bool,
 }
 
 component IconButton inherits Rectangle {
@@ -133,6 +136,9 @@ component InboxPane inherits VerticalLayout {
     in-out property <int> active-filter: 0;
     in-out property <string> active-month: "2026-01";
     in-out property <string> active-month-display: "Januari 2026";
+    in-out property <int> applied-count: 0;
+    in property <int> app-min-count: 6;
+    in property <int> app-goal-count: 12;
 
     callback search-pressed(string);
     callback search-prio(int);
@@ -141,6 +147,29 @@ component InboxPane inherits VerticalLayout {
 
     padding: 10px;
     spacing: 5px;
+
+    // Progress Section
+    Rectangle {
+        height: 20px;
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: root.applied-count < root.app-min-count 
+                    ? (root.app-min-count - root.applied-count) + " kvar till minimum"
+                    : (root.applied-count < root.app-goal-count 
+                        ? (root.app-goal-count - root.applied-count) + " kvar till målet"
+                        : "Målet är nått! 🎉");
+                color: root.applied-count < root.app-min-count ? #ff6666 : (root.applied-count < root.app-goal-count ? #ffd700 : #00ff00);
+                font-size: 11px;
+                font-weight: 700;
+            }
+            Text {
+                text: "Totalt sökta: " + root.applied-count;
+                color: #888888;
+                font-size: 11px;
+            }
+        }
+    }
 
     // Search & Filter Section
     Rectangle {
@@ -170,9 +199,9 @@ component InboxPane inherits VerticalLayout {
             HorizontalLayout {
                 spacing: 4px;
                 alignment: space-between;
-                Button { text: root.searching ? "..." : "P1"; width: 45px; clicked => { root.status-msg = "Laddar Prio 1..."; root.search-prio(1); } }
-                Button { text: root.searching ? "..." : "P2"; width: 45px; clicked => { root.status-msg = "Laddar Prio 2..."; root.search-prio(2); } }
-                Button { text: root.searching ? "..." : "P3"; width: 45px; clicked => { root.search-prio(3); } }
+                Button { text: root.searching ? "..." : "P1"; width: 45px; enabled: !root.searching; clicked => { root.status-msg = "Laddar Prio 1..."; root.search-prio(1); } }
+                Button { text: root.searching ? "..." : "P2"; width: 45px; enabled: !root.searching; clicked => { root.status-msg = "Laddar Prio 2..."; root.search-prio(2); } }
+                Button { text: root.searching ? "..." : "P3"; width: 45px; enabled: !root.searching; clicked => { root.status-msg = "Laddar Prio 3..."; root.search-prio(3); } }
                 Rectangle { width: 10px; } // Spacer
                 IconButton { icon: @image-url("../assets/icons/bookmark-star-fill.svg"); active: root.active-filter == 2; clicked => { root.active-filter = (root.active-filter == 2 ? 0 : 2); } }
                 IconButton { icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); active: root.active-filter == 3; clicked => { root.active-filter = (root.active-filter == 3 ? 0 : 3); } }
@@ -344,6 +373,24 @@ component SettingsPage inherits Rectangle {
                 Text { text: "AI PROFIL"; color: #ffd700; font-weight: 700; font-size: 11px; }
                 profile-input := TextEdit { text: root.settings.my_profile; height: 100px; }
 
+                Text { text: "ANSÖKNINGSMÅL"; color: #00ff00; font-weight: 700; font-size: 11px; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout {
+                        Text { text: "Minimum"; color: #888; font-size: 10px; }
+                        min-input := LineEdit { text: root.settings.app_min_count; placeholder-text: "6"; input-type: number; }
+                    }
+                    VerticalLayout {
+                        Text { text: "Mål"; color: #888; font-size: 10px; }
+                        goal-input := LineEdit { text: root.settings.app_goal_count; placeholder-text: "12"; input-type: number; }
+                    }
+                }
+                CheckBox {
+                    text: "Visa sporrande meddelanden";
+                    checked: root.settings.show_motivation;
+                    toggled => { root.settings.show_motivation = self.checked; }
+                }
+
                 // Visible log file path and last API request for easier troubleshooting
                 Text { text: "Loggfil:"; color: #999999; font-size: 11px; }
                 Text { text: root.log_file_path; color: #999999; font-size: 11px; }
@@ -368,6 +415,8 @@ component SettingsPage inherits Rectangle {
                         root.settings.locations_p2 = loc-p2.text;
                         root.settings.locations_p3 = loc-p3.text;
                         root.settings.my_profile = profile-input.text;
+                        root.settings.app_min_count = min-input.text.to-float();
+                        root.settings.app_goal_count = goal-input.text.to-float();
                         root.save-settings(root.settings);
                     }
                 }
@@ -394,7 +443,8 @@ export component App inherits Window {
     in-out property <string> system-logs: "";
     in-out property <string> log_file_path: "";
     in-out property <string> last_api_request: "";
-    in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1" };
+    in-out property <int> applied-count: 0;
+    in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1", app_min_count: 6, app_goal_count: 12, show_motivation: true };
 
     callback search-pressed(string);
     callback search-prio(int);
@@ -420,6 +470,9 @@ export component App inherits Window {
                         selected-index: root.selected-index;
                         active-month: root.active-month;
                         active-month-display: root.active-month-display;
+                        applied-count: root.applied-count;
+                        app-min-count: root.settings.app_min_count;
+                        app-goal-count: root.settings.app_goal_count;
                         job-selected(id, idx) => { root.selected-index = idx; root.job-selected(id, idx); }
                         month-offset(off) => { root.month-offset(off); }
                         search-pressed(q) => { root.search-pressed(q); }
@@ -442,6 +495,9 @@ export component App inherits Window {
                         status-msg: root.status-msg;
                         active-month: root.active-month;
                         active-month-display: root.active-month-display;
+                        applied-count: root.applied-count;
+                        app-min-count: root.settings.app_min_count;
+                        app-goal-count: root.settings.app_goal_count;
                         job-selected(id, idx) => { root.selected-index = idx; root.job-selected(id, idx); }
                         month-offset(off) => { root.month-offset(off); }
                         search-pressed(q) => { root.search-pressed(q); }
@@ -456,7 +512,7 @@ export component App inherits Window {
                 }
             }
 
-            if root.current-tab == 2 : SettingsPage {
+            if root.current-tab == 1 : SettingsPage {
                 settings: root.settings;
                 log_file_path: root.log_file_path;
                 last_api_request: root.last_api_request;

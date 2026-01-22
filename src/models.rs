@@ -114,6 +114,9 @@ pub struct AppSettings {
     pub locations_p3: String,
     pub my_profile: String,
     pub ollama_url: String,
+    pub app_min_count: i32,
+    pub app_goal_count: i32,
+    pub show_motivation: bool,
 }
 
 impl AppSettings {
@@ -141,6 +144,9 @@ impl Default for AppSettings {
             locations_p3: "".to_string(),
             my_profile: "Jag är en serviceinriktad person med erfarenhet inom IT-support och kundservice.".to_string(),
             ollama_url: "http://localhost:11434/v1".to_string(),
+            app_min_count: 6,
+            app_goal_count: 12,
+            show_motivation: true,
         }
     }
 }

@@ -272,6 +272,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     locations_p3: normalize_locations(&settings_for_ui.locations_p3).into(),
                     my_profile: settings_for_ui.my_profile.clone().into(),
                     ollama_url: settings_for_ui.ollama_url.clone().into(),
+                    app_min_count: settings_for_ui.app_min_count,
+                    app_goal_count: settings_for_ui.app_goal_count,
+                    show_motivation: settings_for_ui.show_motivation,
                 });
                 tracing::info!("Loaded settings from DB");
             }
@@ -285,6 +288,19 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             ui.set_active_month(month_str.clone().into());
             ui.set_active_month_display(month_display.clone().into());
             ui.set_status_msg(format!("Laddar {}...", month_display).into());
+        }
+
+        match db_clone.get_filtered_jobs(&[AdStatus::Applied], Some(now.year()), Some(now.month())).await {
+            Ok(applied) => {
+                let count = applied.len() as i32;
+                let ui_weak = ui_weak_clone.clone();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_applied_count(count);
+                    }
+                });
+            }
+            _ => {}
         }
 
         match db_clone.get_filtered_jobs(&[], Some(now.year()), Some(now.month())).await {
@@ -476,6 +492,39 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                                 vec[pos] = entry;
                             }
                             ui.set_jobs(Rc::new(slint::VecModel::from(vec)).into());
+
+                            // Uppdatera räknaren och visa motivation om det var en "Apply"-action
+                            if action_str == "apply" && status_int == 4 {
+                                let mut current_count = ui.get_applied_count();
+                                current_count += 1;
+                                ui.set_applied_count(current_count);
+
+                                let settings = ui.get_settings();
+                                if settings.show_motivation {
+                                    let min = settings.app_min_count;
+                                    let goal = settings.app_goal_count;
+                                    
+                                    let msg = if current_count < min {
+                                        format!("Bra jobbat! {} kvar till minimum-målet.", min - current_count)
+                                    } else if current_count == min {
+                                        "MINIMUM NÅTT! Grymt jobbat. Nu siktar vi mot målet! 🎯".to_string()
+                                    } else if current_count < goal {
+                                        format!("Snyggt! Bara {} kvar till ditt personliga mål. 🚀", goal - current_count)
+                                    } else if current_count == goal {
+                                        "MÅLET NÅTT! Du är en maskin! 🏆".to_string()
+                                    } else {
+                                        "Överleverans! Du gör ett fantastiskt jobb. ⭐".to_string()
+                                    };
+                                    ui.set_status_msg(msg.into());
+                                }
+                            } else if action_str == "apply" && status_int == 0 {
+                                // Om man ångrar en ansökan (toggle off)
+                                let mut current_count = ui.get_applied_count();
+                                if current_count > 0 {
+                                    current_count -= 1;
+                                    ui.set_applied_count(current_count);
+                                }
+                            }
                         }
                     }
                 });
@@ -522,6 +571,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             locations_p3: ui_settings.locations_p3.to_string(),
             my_profile: ui_settings.my_profile.to_string(),
             ollama_url: ui_settings.ollama_url.to_string(),
+            app_min_count: ui_settings.app_min_count,
+            app_goal_count: ui_settings.app_goal_count,
+            show_motivation: ui_settings.show_motivation,
         };
 
         let rt_handle = rt_clone.handle().clone();
@@ -598,6 +650,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         rt_handle.spawn(async move {
             match db.get_filtered_jobs(&[], Some(new_year), Some(new_month as u32)).await {
                 Ok(ads) => {
+                    // Räkna sökta jobb för den nya månaden
+                    let applied_count = ads.iter().filter(|ad| ad.status == Some(AdStatus::Applied)).count() as i32;
+
                     let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
                     let entries: Vec<JobEntry> = ads.into_iter().map(|ad| {
                         let desc_text = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
@@ -631,6 +686,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                         if let Some(ui) = ui_for_invoke.upgrade() {
                             let model = Rc::new(slint::VecModel::from(entries_copy));
                             ui.set_jobs(model.into());
+                            ui.set_applied_count(applied_count);
                             ui.set_status_msg(format!("Laddade {} annonser för {}", count, month_copy).into());
                         }
                     });
@@ -650,7 +706,10 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
 }
 
 // Helper function to handle search logic
-// Tool Definition Header: API Mapping Fix for perform_search
+// ⚠️ GUARDED LOGIC: This function handles critical API formatting.
+// - Multiple keywords MUST be wrapped in parentheses with " OR " (e.g., "(it OR support)").
+// - Municipality codes MUST be used, not names.
+// - Logic is verified in `test_query_logic.rs`. Run it before/after changes!
 async fn perform_search(
     api_client: Arc<JobSearchClient>,
     db: Arc<Db>,
@@ -687,7 +746,17 @@ async fn perform_search(
         _ => (String::new(), String::new()),
     };
 
-    let query_for_api = raw_query.replace(',', " ");
+    let query_parts: Vec<_> = raw_query.split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+        
+    let query_for_api = if query_parts.len() > 1 {
+        format!("({})", query_parts.join(" OR "))
+    } else {
+        query_parts.get(0).cloned().unwrap_or_default().to_string()
+    };
+        
     let municipalities = JobSearchClient::parse_locations(&locations_str);
 
     // LOGG: Här ser vi om parse_locations faktiskt lyckas skapa ID-koder
@@ -732,6 +801,14 @@ async fn perform_search(
                 });
 
                 if !is_blacklisted {
+                    // 💾 AUTO-SAVE: Spara annonsen i databasen för offline-åtkomst
+                    // Vi kollar om den redan finns för att inte skriva över manuella ändringar (status etc)
+                    if let Ok(None) = db.get_job_ad(&ad.id).await {
+                        if let Err(e) = db.save_job_ad(&ad).await {
+                            tracing::error!("Failed to auto-save ad {}: {}", ad.id, e);
+                        }
+                    }
+
                     // Kontrollera status i databasen (också asynkront)
                     let db_status = if let Ok(Some(existing)) = db.get_job_ad(&ad.id).await {
                         // Mappa AdStatus enum till i32 för Slint

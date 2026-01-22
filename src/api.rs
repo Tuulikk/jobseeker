@@ -84,7 +84,16 @@ impl JobSearchClient {
             .collect()
     }
 
+    /// ⚠️ GUARDED: JobTech API requires numeric municipality codes for filtering.
+    /// Do not change this to send names directly. Use JobSearchClient::get_municipality_code
+    /// to resolve names before calling search.
     pub async fn search(&self, query: &str, municipalities: &[String], limit: u32) -> Result<Vec<JobAd>> {
+        if municipalities.len() > 1 {
+            // Multiple municipalities: do separate API calls per municipality and merge results
+            return self.search_multi_municipalities(query, municipalities, limit).await;
+        }
+        
+        // Single municipality (or empty): use original logic
         let mut params = vec![
             ("q", query.to_string()),
             ("limit", limit.to_string()),
@@ -97,11 +106,18 @@ impl JobSearchClient {
         }
 
         let url = format!("{}/search", self.base_url);
-        tracing::debug!("API Call: {} with params {:?}", url, params);
-
-        let response = self.client.get(&url)
+        let request = self.client.get(&url)
             .header("accept", "application/json")
-            .query(&params)
+            .query(&params);
+        
+        // Log the full URL for debugging (with parameters)
+        if let Some(req_builder) = request.try_clone() {
+            if let Ok(req) = req_builder.build() {
+                tracing::info!("Full API URL: {}", req.url());
+            }
+        }
+
+        let response = request
             .send()
             .await
             .context("Failed to send request to JobSearch API")?;
@@ -151,6 +167,70 @@ impl JobSearchClient {
         }
 
         Ok(ads)
+    }
+
+    async fn search_multi_municipalities(&self, query: &str, municipalities: &[String], limit_per_municipality: u32) -> Result<Vec<JobAd>> {
+        use std::collections::HashSet;
+        
+        tracing::info!("Searching across {} municipalities (separate API calls)", municipalities.len());
+        let mut all_ads = Vec::new();
+        let mut seen_ids = HashSet::new();
+        
+        for m in municipalities {
+            if m.is_empty() { continue; }
+            
+            let params = vec![
+                ("q", query.to_string()),
+                ("limit", limit_per_municipality.to_string()),
+                ("municipality", m.to_string()),
+            ];
+            
+            let url = format!("{}/search", self.base_url);
+            tracing::info!("Fetching for municipality {}: {}", m, url);
+            
+            let response = self.client.get(&url)
+                .header("accept", "application/json")
+                .query(&params)
+                .send()
+                .await
+                .with_context(|| format!("Failed to fetch for municipality {}", m))?;
+            
+            if !response.status().is_success() {
+                tracing::warn!("Skipping municipality {} due to HTTP {}", m, response.status());
+                continue;
+            }
+            
+            if let Ok(json) = response.json::<Value>().await {
+                if let Some(hits) = json["hits"].as_array() {
+                    tracing::info!("Municipality {}: {} hits", m, hits.len());
+                    
+                    for hit in hits {
+                        let ad_val = hit.clone();
+                        let webpage_url = hit["webpage_url"].as_str().map(|s| s.to_string());
+                        
+                        if let Ok(mut ad) = serde_json::from_value::<JobAd>(ad_val.clone()) {
+                            ad.webpage_url = webpage_url;
+                            
+                            if ad.working_hours_type.is_none() {
+                                if let Some(label) = hit["working_hours_type"]["label"].as_str() {
+                                    ad.working_hours_type = Some(crate::models::WorkingHours {
+                                        label: Some(label.to_string()),
+                                    });
+                                }
+                            }
+                            
+                            // Deduplicate by ad ID
+                            if seen_ids.insert(ad.id.clone()) {
+                                all_ads.push(ad);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        tracing::info!("Total unique ads after merging {} municipalities: {}", municipalities.len(), all_ads.len());
+        Ok(all_ads)
     }
 }
 
