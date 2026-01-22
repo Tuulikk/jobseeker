@@ -138,7 +138,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             keywords: "it, Supporttekniker, helpdesk, kundtjänst, kundsupport".to_string(),
-            blacklist_keywords: "databas, barnvakt, körkort, barnflicka, nanny, myNanny, undersköterska, parkarbetare".to_string(),
+            blacklist_keywords: "barnvakt, körkort, barnflicka, nanny, myNanny, undersköterska, parkarbetare".to_string(),
             locations_p1: "1283, 1277, 1260, 1292, 1284, 1276, 1231, 1282, 1261".to_string(),
             locations_p2: "1280, 1281".to_string(),
             locations_p3: "".to_string(),

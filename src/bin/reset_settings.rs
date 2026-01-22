@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Default settings (from models.rs)
         let default_settings = r#"{
             "keywords": "it",
-            "blacklist_keywords": "databas, barnvakt, barnflicka, nanny, myNanny, undersköterska, parkarbetare",
+            "blacklist_keywords": "barnvakt, körkort, barnflicka, nanny, myNanny, undersköterska, parkarbetare",
             "locations_p1": "1283, 1277, 1260, 1292, 1284, 1276, 1231, 1282, 1261",
             "locations_p2": "1280, 1281",
             "locations_p3": "",

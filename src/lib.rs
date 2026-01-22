@@ -785,7 +785,7 @@ async fn perform_search(
                 .collect();
 
             let mut final_jobs = Vec::new();
-            for ad in ads {
+            for ad in &ads {
                 let raw_desc = ad.description.as_ref().and_then(|d| d.text.as_deref()).unwrap_or("");
                 let clean_description = re_html.replace_all(raw_desc, "").into_owned();
 
@@ -804,7 +804,7 @@ async fn perform_search(
                     // 💾 AUTO-SAVE: Spara annonsen i databasen för offline-åtkomst
                     // Vi kollar om den redan finns för att inte skriva över manuella ändringar (status etc)
                     if let Ok(None) = db.get_job_ad(&ad.id).await {
-                        if let Err(e) = db.save_job_ad(&ad).await {
+                        if let Err(e) = db.save_job_ad(ad).await {
                             tracing::error!("Failed to auto-save ad {}: {}", ad.id, e);
                         }
                     }
@@ -825,8 +825,8 @@ async fn perform_search(
                     };
 
                     final_jobs.push(JobEntry {
-                        id: ad.id.into(),
-                        title: ad.headline.into(),
+                        id: ad.id.clone().into(),
+                        title: ad.headline.clone().into(),
                         employer: employer_name.to_string().into(),
                         location: city.to_string().into(),
                         description: clean_description.into(),
@@ -838,17 +838,72 @@ async fn perform_search(
                 }
             }
 
-            // 4. Skicka tillbaka resultatet till UI-tråden
-            let ui_final = ui_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_final.upgrade() {
-                    let count = final_jobs.len();
-                    let job_model = std::rc::Rc::new(slint::VecModel::from(final_jobs));
-                    ui.set_jobs(job_model.into());
-                    ui.set_status_msg(format!("Hittade {} annonser", count).into());
-                    ui.set_searching(false);
+    // 4. Ladda om HELA månaden från DB för att visa den uppdaterade "Inboxen"
+            let now = chrono::Utc::now();
+            let current_year = now.year();
+            let current_month = now.month();
+            
+            // Vi försöker hämta år/månad från UI om möjligt, annars nuvarande
+            let (y, m) = if let Some(ui) = ui_weak.upgrade() {
+                let month_str = ui.get_active_month().to_string(); // YYYY-MM
+                let parts: Vec<&str> = month_str.split('-').collect();
+                if parts.len() == 2 {
+                    (parts[0].parse().unwrap_or(current_year), parts[1].parse().unwrap_or(current_month))
+                } else {
+                    (current_year, current_month)
                 }
-            });
+            } else {
+                (current_year, current_month)
+            };
+
+            match db.get_filtered_jobs(&[], Some(y), Some(m)).await {
+                Ok(all_ads) => {
+                    let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
+                    let entries: Vec<JobEntry> = all_ads.into_iter().map(|ad| {
+                        let desc_text = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
+                        let clean_desc = re_html.replace_all(desc_text, "").to_string();
+                        let status_int = match ad.status {
+                            Some(crate::models::AdStatus::Rejected) => 1,
+                            Some(crate::models::AdStatus::Bookmarked) => 2,
+                            Some(crate::models::AdStatus::ThumbsUp) => 3,
+                            Some(crate::models::AdStatus::Applied) => 4,
+                            _ => 0,
+                        };
+                        JobEntry {
+                            id: ad.id.into(),
+                            title: ad.headline.into(),
+                            employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
+                            location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
+                            description: clean_desc.into(),
+                            date: ad.publication_date.split('T').next().unwrap_or("").into(),
+                            rating: ad.rating.unwrap_or(0) as i32,
+                            status: status_int,
+                            status_text: "".into(),
+                        }
+                    }).collect();
+
+                    let ui_final = ui_weak.clone();
+                    let api_count = ads.len();
+                    let total_count = entries.len();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_final.upgrade() {
+                            let job_model = std::rc::Rc::new(slint::VecModel::from(entries));
+                            ui.set_jobs(job_model.into());
+                            ui.set_status_msg(format!("Sökning klar: {} nya, {} totalt i inkorg", api_count, total_count).into());
+                            ui.set_searching(false);
+                        }
+                    });
+                }
+                Err(_) => {
+                    // Fallback om DB-läsning misslyckas efter sökning
+                    let ui_final = ui_weak.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_final.upgrade() {
+                            ui.set_searching(false);
+                        }
+                    });
+                }
+            }
         },
         Err(e) => {
             println!("ERROR: API-anrop misslyckades: {:?}", e);
