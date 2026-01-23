@@ -239,6 +239,7 @@ component InboxPane inherits VerticalLayout {
                 alignment: start;
                 spacing: 4px;
                 padding: 4px;
+                padding-right: 16px; // Space for scrollbar
 
                 for job[idx] in jobs : JobListItem {
                     visible: root.active-filter == 0 || job.status == root.active-filter;
@@ -274,12 +275,15 @@ component JobDetailPane inherits Rectangle {
     callback copy(string);
 
     background: #1e1e1e;
+    clip: true;
 
     VerticalLayout {
+        width: 100%;
+        height: 100%;
         padding: 20px;
         spacing: 15px;
 
-        HorizontalLayout {
+        header_row := HorizontalLayout {
             height: 32px;
             IconButton {
                 icon: @image-url("../assets/icons/chevron-left.svg");
@@ -289,7 +293,7 @@ component JobDetailPane inherits Rectangle {
             Rectangle { } // Spacer
         }
 
-        Text {
+        title_text := Text {
             text: job.title;
             font-size: 20px;
             font-weight: 700;
@@ -318,9 +322,10 @@ component JobDetailPane inherits Rectangle {
         }
 
         // Action Bar
-        HorizontalLayout {
+        action_bar := HorizontalLayout {
             spacing: 10px;
             alignment: center;
+            height: 40px;
             IconButton { icon: @image-url("../assets/icons/hand-thumbs-down-fill.svg"); icon-size: 20px; danger: true; clicked => { root.action("reject"); } }
             IconButton { icon: @image-url("../assets/icons/bookmark-star-fill.svg"); icon-size: 20px; active: job.status == 2; clicked => { root.action("save"); } }
             IconButton { icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); icon-size: 20px; active: job.status == 3; clicked => { root.action("thumbsup"); } }
@@ -328,15 +333,20 @@ component JobDetailPane inherits Rectangle {
             IconButton { icon: @image-url("../assets/icons/globe.svg"); icon-size: 20px; clicked => { root.action("open"); } }
         }
 
-        scroll := ScrollView {
+        // Beskrivningen tar upp allt kvarvarande utrymme och tvingar därmed fram scroll om den är för stor.
+        Rectangle {
             vertical-stretch: 1;
-            horizontal-stretch: 1;
-            Text {
-                text: job.description;
-                color: #dddddd;
-                font-size: 14px;
-                wrap: word-wrap;
-                width: scroll.viewport-width;
+            ScrollView {
+                VerticalLayout {
+                    padding-right: 25px; // Rejält med plats för scrollisten
+                    Text {
+                        text: job.description;
+                        color: #dddddd;
+                        font-size: 14px;
+                        wrap: word-wrap;
+                        horizontal-alignment: left;
+                    }
+                }
             }
         }
     }

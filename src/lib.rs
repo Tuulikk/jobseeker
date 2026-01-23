@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use regex::Regex;
-use chrono::{Utc, Datelike};
+use chrono::Datelike;
 
 fn swedish_month_name(month: u32) -> &'static str {
     match month {
@@ -65,7 +65,7 @@ fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc
     let _ = LOG_SENDER.set(tx.clone());
 
     let slint_writer = SlintLogWriter { sender: tx };
-    let mut registry = tracing_subscriber::registry()
+    let registry = tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout).with_ansi(true))
         .with(tracing_subscriber::fmt::layer().with_writer(move || slint_writer.sender.clone().into_writer()).with_ansi(false));
 
