@@ -421,15 +421,18 @@ component SettingsPage inherits Rectangle {
                     text: "Spara Inställningar";
                     primary: true;
                     clicked => {
-                        root.settings.keywords = keywords-input.text;
-                        root.settings.blacklist_keywords = blacklist-input.text;
-                        root.settings.locations_p1 = loc-p1.text;
-                        root.settings.locations_p2 = loc-p2.text;
-                        root.settings.locations_p3 = loc-p3.text;
-                        root.settings.my_profile = profile-input.text;
-                        root.settings.app_min_count = min-input.text.to-float();
-                        root.settings.app_goal_count = goal-input.text.to-float();
-                        root.save-settings(root.settings);
+                        root.save-settings({
+                            keywords: keywords-input.text,
+                            blacklist_keywords: blacklist-input.text,
+                            locations_p1: loc-p1.text,
+                            locations_p2: loc-p2.text,
+                            locations_p3: loc-p3.text,
+                            my_profile: profile-input.text,
+                            ollama_url: root.settings.ollama_url,
+                            app_min_count: min-input.text.to-float(),
+                            app_goal_count: goal-input.text.to-float(),
+                            show_motivation: root.settings.show_motivation
+                        });
                     }
                 }
             }

@@ -41,6 +41,7 @@ use crate::models::AdStatus;
 
 use std::sync::mpsc;
 use tracing_subscriber::prelude::*;
+use tracing_subscriber::EnvFilter;
 
 // Log buffer to keep track of recent logs for the UI
 static LOG_SENDER: std::sync::OnceLock<mpsc::Sender<String>> = std::sync::OnceLock::new();
@@ -65,7 +66,12 @@ fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc
     let _ = LOG_SENDER.set(tx.clone());
 
     let slint_writer = SlintLogWriter { sender: tx };
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,winit=warn,calloop=warn,slint=warn,i_slint_backend_winit=warn"));
+
     let registry = tracing_subscriber::registry()
+        .with(filter)
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout).with_ansi(true))
         .with(tracing_subscriber::fmt::layer().with_writer(move || slint_writer.sender.clone().into_writer()).with_ansi(false));
 
@@ -576,12 +582,15 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             show_motivation: ui_settings.show_motivation,
         };
 
+        tracing::info!("Saving settings: P1={}, keywords={}, min={}, goal={}, motivation={}", 
+            settings.locations_p1, settings.keywords, settings.app_min_count, settings.app_goal_count, settings.show_motivation);
+
         let rt_handle = rt_clone.handle().clone();
         rt_handle.spawn(async move {
             if let Err(e) = db.save_settings(&settings).await {
                 tracing::error!("Failed to save settings: {}", e);
             } else {
-                tracing::info!("Settings saved successfully");
+                tracing::info!("Settings saved successfully to database");
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         let mut s = ui.get_settings();
@@ -589,6 +598,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                         s.locations_p2 = normalize_locations(&s.locations_p2).into();
                         s.locations_p3 = normalize_locations(&s.locations_p3).into();
                         ui.set_settings(s);
+                        ui.set_status_msg("Inställningar sparade".into());
                     }
                 });
             }
@@ -746,9 +756,14 @@ async fn perform_search(
         _ => (String::new(), String::new()),
     };
 
+    // ⚠️ CRITICAL API LOGIC: DO NOT CHANGE WITHOUT VERIFICATION
+    // JobTech API behaves unpredictably with complex OR-queries unless keywords are explicitly quoted.
+    // Without quotes, it attempts "concept extraction" which often leads to 0 hits for valid terms.
+    // We also strip existing quotes from user input to avoid double-quoting issues.
     let query_parts: Vec<_> = raw_query.split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
+        .map(|s| format!("\"{}\"", s.replace("\"", "").trim()))
         .collect();
         
     let query_for_api = if query_parts.len() > 1 {
@@ -784,16 +799,9 @@ async fn perform_search(
                 .filter(|s| !s.is_empty())
                 .collect();
 
-            let mut final_jobs = Vec::new();
             for ad in &ads {
                 let raw_desc = ad.description.as_ref().and_then(|d| d.text.as_deref()).unwrap_or("");
-                let clean_description = re_html.replace_all(raw_desc, "").into_owned();
-
-                let employer_name = ad.employer.as_ref().and_then(|e| e.name.as_deref()).unwrap_or("Ospecificerad");
-                let city = ad.workplace_address.as_ref().and_then(|a| a.city.as_deref()).unwrap_or("Ospecificerad");
-                let pub_date = ad.publication_date.clone();
-
-                let desc_lc = clean_description.to_lowercase();
+                let desc_lc = raw_desc.to_lowercase();
                 let title_lc = ad.headline.to_lowercase();
 
                 let is_blacklisted = blacklist.iter().any(|word| {
@@ -802,50 +810,21 @@ async fn perform_search(
 
                 if !is_blacklisted {
                     // 💾 AUTO-SAVE: Spara annonsen i databasen för offline-åtkomst
-                    // Vi kollar om den redan finns för att inte skriva över manuella ändringar (status etc)
                     if let Ok(None) = db.get_job_ad(&ad.id).await {
                         if let Err(e) = db.save_job_ad(ad).await {
                             tracing::error!("Failed to auto-save ad {}: {}", ad.id, e);
                         }
                     }
-
-                    // Kontrollera status i databasen (också asynkront)
-                    let db_status = if let Ok(Some(existing)) = db.get_job_ad(&ad.id).await {
-                        // Mappa AdStatus enum till i32 för Slint
-                        match existing.status {
-                            Some(crate::models::AdStatus::New) => 0,
-                            Some(crate::models::AdStatus::Rejected) => 1,
-                            Some(crate::models::AdStatus::Bookmarked) => 2,
-                            Some(crate::models::AdStatus::ThumbsUp) => 3,
-                            Some(crate::models::AdStatus::Applied) => 4,
-                            None => 0,
-                        }
-                    } else {
-                        0
-                    };
-
-                    final_jobs.push(JobEntry {
-                        id: ad.id.clone().into(),
-                        title: ad.headline.clone().into(),
-                        employer: employer_name.to_string().into(),
-                        location: city.to_string().into(),
-                        description: clean_description.into(),
-                        date: pub_date.into(),
-                        status: db_status, // Nu matchar typerna (i32)
-                        status_text: "Ny".into(),
-                        rating: 0,
-                    });
                 }
             }
 
-    // 4. Ladda om HELA månaden från DB för att visa den uppdaterade "Inboxen"
+            // 4. Ladda om månaden från DB men FILTRERA på den aktiva prioritetens kommuner
             let now = chrono::Utc::now();
             let current_year = now.year();
             let current_month = now.month();
             
-            // Vi försöker hämta år/månad från UI om möjligt, annars nuvarande
             let (y, m) = if let Some(ui) = ui_weak.upgrade() {
-                let month_str = ui.get_active_month().to_string(); // YYYY-MM
+                let month_str = ui.get_active_month().to_string();
                 let parts: Vec<&str> = month_str.split('-').collect();
                 if parts.len() == 2 {
                     (parts[0].parse().unwrap_or(current_year), parts[1].parse().unwrap_or(current_month))
@@ -859,28 +838,52 @@ async fn perform_search(
             match db.get_filtered_jobs(&[], Some(y), Some(m)).await {
                 Ok(all_ads) => {
                     let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
-                    let entries: Vec<JobEntry> = all_ads.into_iter().map(|ad| {
-                        let desc_text = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
-                        let clean_desc = re_html.replace_all(desc_text, "").to_string();
-                        let status_int = match ad.status {
-                            Some(crate::models::AdStatus::Rejected) => 1,
-                            Some(crate::models::AdStatus::Bookmarked) => 2,
-                            Some(crate::models::AdStatus::ThumbsUp) => 3,
-                            Some(crate::models::AdStatus::Applied) => 4,
-                            _ => 0,
-                        };
-                        JobEntry {
-                            id: ad.id.into(),
-                            title: ad.headline.into(),
-                            employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
-                            location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
-                            description: clean_desc.into(),
-                            date: ad.publication_date.split('T').next().unwrap_or("").into(),
-                            rating: ad.rating.unwrap_or(0) as i32,
-                            status: status_int,
-                            status_text: "".into(),
-                        }
-                    }).collect();
+                    
+                    // Om vi har en specifik prioritet, hämta namnen på kommunerna för att kunna filtrera
+                    let prio_municipality_names: Vec<String> = if prio.is_some() {
+                        municipalities.iter()
+                            .filter_map(|code| JobSearchClient::get_municipality_name(code))
+                            .map(|s| s.to_lowercase())
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+
+                    let entries: Vec<JobEntry> = all_ads.into_iter()
+                        .filter(|ad| {
+                            // Om vi har en prio-filtrering aktiv, kolla om jobbet ligger i rätt kommun
+                            if !prio_municipality_names.is_empty() {
+                                if let Some(ref addr) = ad.workplace_address {
+                                    if let Some(ref mun) = addr.municipality {
+                                        return prio_municipality_names.contains(&mun.to_lowercase());
+                                    }
+                                }
+                                return false; // Inget kommun-match i prio-läge
+                            }
+                            true // Visa allt i frisöknings-läge
+                        })
+                        .map(|ad| {
+                            let desc_text = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
+                            let clean_desc = re_html.replace_all(desc_text, "").to_string();
+                            let status_int = match ad.status {
+                                Some(crate::models::AdStatus::Rejected) => 1,
+                                Some(crate::models::AdStatus::Bookmarked) => 2,
+                                Some(crate::models::AdStatus::ThumbsUp) => 3,
+                                Some(crate::models::AdStatus::Applied) => 4,
+                                _ => 0,
+                            };
+                            JobEntry {
+                                id: ad.id.into(),
+                                title: ad.headline.into(),
+                                employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
+                                location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
+                                description: clean_desc.into(),
+                                date: ad.publication_date.split('T').next().unwrap_or("").into(),
+                                rating: ad.rating.unwrap_or(0) as i32,
+                                status: status_int,
+                                status_text: "".into(),
+                            }
+                        }).collect();
 
                     let ui_final = ui_weak.clone();
                     let api_count = ads.len();
@@ -889,13 +892,12 @@ async fn perform_search(
                         if let Some(ui) = ui_final.upgrade() {
                             let job_model = std::rc::Rc::new(slint::VecModel::from(entries));
                             ui.set_jobs(job_model.into());
-                            ui.set_status_msg(format!("Sökning klar: {} nya, {} totalt i inkorg", api_count, total_count).into());
+                            ui.set_status_msg(format!("Prio {}: {} totalt i inkorg ({} nya från API)", prio.unwrap_or(0), total_count, api_count).into());
                             ui.set_searching(false);
                         }
                     });
                 }
                 Err(_) => {
-                    // Fallback om DB-läsning misslyckas efter sökning
                     let ui_final = ui_weak.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_final.upgrade() {
