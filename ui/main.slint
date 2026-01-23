@@ -47,7 +47,7 @@ component IconButton inherits Rectangle {
         source: icon;
         width: icon-size;
         height: icon-size;
-        colorize: active ? #ffffff : (danger ? #ff6666 : #cccccc);
+        colorize: active ? (danger ? #ff6666 : #ffffff) : #ffffff;
     }
 
     touch := TouchArea {
@@ -328,13 +328,15 @@ component JobDetailPane inherits Rectangle {
             IconButton { icon: @image-url("../assets/icons/globe.svg"); icon-size: 20px; clicked => { root.action("open"); } }
         }
 
-        ScrollView {
+        scroll := ScrollView {
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
             Text {
                 text: job.description;
                 color: #dddddd;
                 font-size: 14px;
                 wrap: word-wrap;
-                width: parent.width;
+                width: scroll.viewport-width;
             }
         }
     }
