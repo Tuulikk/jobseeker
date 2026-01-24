@@ -226,177 +226,133 @@ mod tests {
 fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<String>) {
     let ui_weak = ui.as_weak();
 
-    // Hjälpfunktion för att uppdatera statistik (kan anropas från flera ställen)
+    // Log receiver task
+    spawn_log_task(ui_weak.clone(), log_rx);
+
+    // Hjälpfunktion för att uppdatera statistik (trådsäker)
     let db_for_stats = db.clone();
     let ui_for_stats = ui.as_weak();
+    let rt_for_stats = rt.clone();
     let refresh_stats = move || {
         let db = db_for_stats.clone();
         let ui_weak = ui_for_stats.clone();
+        let rt = rt_for_stats.clone();
         
-        tokio::spawn(async move {
-            if let Some(ui) = ui_weak.upgrade() {
-                let month_str = ui.get_active_month().to_string(); // YYYY-MM
-                let parts: Vec<&str> = month_str.split('-').collect();
-                if parts.len() == 2 {
-                    let year = parts[0].parse().unwrap_or(2026);
-                    let month = parts[1].parse().unwrap_or(1);
+        // 1. Hämta data från UI på huvudtråden
+        let month_info = if let Some(ui) = ui_weak.upgrade() {
+            let month_str = ui.get_active_month().to_string();
+            let parts: Vec<&str> = month_str.split('-').collect();
+            if parts.len() == 2 {
+                Some((parts[0].parse().unwrap_or(2026), parts[1].parse().unwrap_or(1)))
+            } else { None }
+        } else { None };
+
+        // 2. Om vi har data, kör databasjobbet i bakgrunden via rts spawn
+        if let Some((year, month)) = month_info {
+            rt.spawn(async move {
+                if let Ok(ads) = db.get_filtered_jobs(&[], Some(year), Some(month)).await {
+                    let total_count = ads.len() as i32;
+                    let mut applied = 0;
+                    let mut bookmarked = 0;
+                    let mut thumbsup = 0;
+                    let mut rejected = 0;
                     
-                    if let Ok(ads) = db.get_filtered_jobs(&[], Some(year), Some(month)).await {
-                        let total_count = ads.len() as i32;
-                        
-                        // Räkna sökord
-                        let mut counts = std::collections::HashMap::new();
-                        for ad in ads {
-                            if let Some(kw) = ad.search_keyword {
-                                *counts.entry(kw).or_insert(0) += 1;
-                            }
+                    let mut counts = std::collections::HashMap::new();
+                    for ad in ads {
+                        // Räkna statusar
+                        match ad.status {
+                            Some(AdStatus::Applied) => applied += 1,
+                            Some(AdStatus::Bookmarked) => bookmarked += 1,
+                            Some(AdStatus::ThumbsUp) => thumbsup += 1,
+                            Some(AdStatus::Rejected) => rejected += 1,
+                            _ => {}
                         }
-                        
-                        let mut stats_vec: Vec<KeywordStat> = counts.into_iter()
-                            .map(|(name, count)| KeywordStat { name: name.into(), count })
-                            .collect();
-                        
-                        // Sortera: mest populära först
-                        stats_vec.sort_by(|a, b| b.count.cmp(&a.count));
-                        // Ta bara topp 10
-                        stats_vec.truncate(10);
-                        
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_total_ads_count(total_count);
-                                ui.set_top_keywords(Rc::new(slint::VecModel::from(stats_vec)).into());
-                            }
-                        });
+
+                        // Räkna sökord
+                        if let Some(kw) = ad.search_keyword {
+                            *counts.entry(kw).or_insert(0) += 1;
+                        }
                     }
-                }
-            }
-        });
-    };
-
-    // Anropa statistikuppdatering när man byter till statistik-fliken
-    let refresh_stats_on_tab = refresh_stats.clone();
-    ui.window().on_close_requested(|| slint::CloseRequestResponse::Continue); // Dummy för att få tillgång till timer/events om det behövs
-    
-    // Vi behöver fånga när fliken ändras. Vi lägger till en timer eller kollar i setup_ui.
-    // Men enklast är att köra den varje gång vi trycker på statistik-knappen i botten.
-    // Jag lägger till det i main.slint under clicked på TabButton.
-    
-    // Log receiver task
-    let ui_weak_log = ui.as_weak();
-    std::thread::spawn(move || {
-        let mut log_lines: Vec<String> = Vec::new();
-        while let Ok(msg) = log_rx.recv() {
-            log_lines.push(msg.trim().to_string());
-            if log_lines.len() > 100 { log_lines.remove(0); }
-
-            let lines_to_show = log_lines.join("\n");
-            let ui_weak = ui_weak_log.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_system_logs(lines_to_show.into());
+                    
+                    let mut stats_vec: Vec<KeywordStat> = counts.into_iter()
+                        .map(|(name, count)| KeywordStat { name: name.into(), count })
+                        .collect();
+                    stats_vec.sort_by(|a, b| b.count.cmp(&a.count));
+                    stats_vec.truncate(10);
+                    
+                    // 3. Skicka tillbaka resultatet till UI-tråden
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_total_ads_count(total_count);
+                            ui.set_applied_count(applied);
+                            ui.set_bookmarked_count(bookmarked);
+                            ui.set_thumbsup_count(thumbsup);
+                            ui.set_rejected_count(rejected);
+                            ui.set_top_keywords(Rc::new(slint::VecModel::from(stats_vec)).into());
+                        }
+                    });
                 }
             });
         }
+    };
+
+    let refresh_stats_cmd = refresh_stats.clone();
+    ui.on_stats_requested(move || {
+        refresh_stats_cmd();
     });
 
-    let api_client = Arc::new(JobSearchClient::new());
+    // Förbered variabler för alla callbacks
+    let db_c = db.clone();
+    let rt_c = rt.clone();
+    let ui_c = ui.as_weak();
+    let refresh_stats_c = refresh_stats.clone();
 
-    // Expose the local log file path (./logs/jobseeker.log) in the UI so it's easy to open/fetch logs.
-    let local_path = std::path::PathBuf::from("logs").join("jobseeker.log");
-    let local_path_str = local_path.to_string_lossy().to_string();
-    let ui_weak_for_log = ui_weak.clone();
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(ui) = ui_weak_for_log.upgrade() {
-            ui.set_log_file_path(local_path_str.into());
-        }
-    });
+    // Callback: Month Offset
+    ui.on_month_offset(move |offset| {
+        let db = db_c.clone();
+        let rt = rt_c.clone();
+        let ui_weak = ui_c.clone();
+        let refresh_stats = refresh_stats_c.clone();
 
-    // Load settings initially, trigger P1 search and load current month from DB
-    let db_clone = db.clone();
-    let ui_weak_clone = ui_weak.clone();
-    let api_client_clone = api_client.clone();
+        tracing::info!("Month offset requested: {}", offset);
+        refresh_stats();
 
-    rt.spawn(async move {
-        let settings = db_clone.load_settings().await.unwrap_or(Some(Default::default())).unwrap_or_default();
+        let current_month = if let Some(ui) = ui_weak.upgrade() {
+            ui.get_active_month().to_string()
+        } else {
+            format!("{:04}-{:02}", chrono::Utc::now().year(), chrono::Utc::now().month())
+        };
 
-        let ui_weak_for_callback = ui_weak_clone.clone();
-        let settings_for_callback = settings.clone();
-        let settings_for_ui = settings_for_callback.clone();
+        let mut parts = current_month.split('-');
+        let year = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(2026);
+        let month = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(1);
+        let mut new_month = month + offset as i32;
+        let mut new_year = year;
+        while new_month <= 0 { new_month += 12; new_year -= 1; }
+        while new_month > 12 { new_month -= 12; new_year += 1; }
+        
+        let new_month_str = format!("{:04}-{:02}", new_year, new_month as u32);
+        let new_month_display = format!("{} {}", swedish_month_name(new_month as u32), new_year);
 
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(ui) = ui_weak_for_callback.upgrade() {
-                ui.set_settings(AppSettings {
-                    keywords: settings_for_ui.keywords.clone().into(),
-                    blacklist_keywords: settings_for_ui.blacklist_keywords.clone().into(),
-                    locations_p1: normalize_locations(&settings_for_ui.locations_p1).into(),
-                    locations_p2: normalize_locations(&settings_for_ui.locations_p2).into(),
-                    locations_p3: normalize_locations(&settings_for_ui.locations_p3).into(),
-                    my_profile: settings_for_ui.my_profile.clone().into(),
-                    ollama_url: settings_for_ui.ollama_url.clone().into(),
-                    app_min_count: settings_for_ui.app_min_count,
-                    app_goal_count: settings_for_ui.app_goal_count,
-                    show_motivation: settings_for_ui.show_motivation,
-                });
-                tracing::info!("Loaded settings from DB");
-            }
-        });
-
-        // Set initial active month to current month and load jobs from DB for that month
-        let now = chrono::Utc::now();
-        let month_str = format!("{:04}-{:02}", now.year(), now.month());
-        let month_display = format!("{} {}", swedish_month_name(now.month()), now.year());
-        if let Some(ui) = ui_weak_clone.upgrade() {
-            ui.set_active_month(month_str.clone().into());
-            ui.set_active_month_display(month_display.clone().into());
-            ui.set_status_msg(format!("Laddar {}...", month_display).into());
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_active_month(new_month_str.clone().into());
+            ui.set_active_month_display(new_month_display.clone().into());
+            ui.set_status_msg(format!("Laddar {}...", new_month_display).into());
         }
 
-        match db_clone.get_filtered_jobs(&[AdStatus::Applied], Some(now.year()), Some(now.month())).await {
-            Ok(applied) => {
-                let count = applied.len() as i32;
-                let ui_weak = ui_weak_clone.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak.upgrade() {
-                        ui.set_applied_count(count);
-                    }
-                });
-            }
-            _ => {}
-        }
-
-        match db_clone.get_filtered_jobs(&[], Some(now.year()), Some(now.month())).await {
-            Ok(ads) => {
+        let ui_final = ui_weak.clone();
+        rt.spawn(async move {
+            if let Ok(ads) = db.get_filtered_jobs(&[], Some(new_year), Some(new_month as u32)).await {
+                let applied_count = ads.iter().filter(|ad| ad.status == Some(AdStatus::Applied)).count() as i32;
                 let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
                 let entries: Vec<JobEntry> = ads.into_iter().map(|ad| {
-                    let raw_desc = ad.description.as_ref()
-                        .and_then(|d| d.text.as_ref())
-                        .map(|s| s.as_str()).unwrap_or("");
-                    
-                    // Step 1: Pre-clean specific HTML tags for better readability
-                    let formatted_desc = raw_desc
-                        .replace("<li>", "\n • ")
-                        .replace("</li>", "")
-                        .replace("<ul>", "\n")
-                        .replace("</ul>", "\n")
-                        .replace("<br>", "\n")
-                        .replace("<br/>", "\n")
-                        .replace("<br />", "\n")
-                        .replace("<p>", "\n\n")
-                        .replace("</p>", "")
-                        .replace("<strong>", "") // Slint plain text doesn't support bold tags, just remove
-                        .replace("</strong>", "")
-                        .replace("<b>", "")
-                        .replace("</b>", "");
-
+                    let raw_desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
+                    let formatted_desc = raw_desc.replace("<li>", "\n • ").replace("</li>", "").replace("<ul>", "\n").replace("</ul>", "\n")
+                        .replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n").replace("<p>", "\n\n").replace("</p>", "")
+                        .replace("<strong>", "").replace("</strong>", "").replace("<b>", "").replace("</b>", "");
                     let mut clean_desc = re_html.replace_all(&formatted_desc, "").to_string();
-                    
-                    // Step 2: Append structured requirements
                     let mut extra_info = String::new();
-                    
-                    if ad.driving_license_required {
-                        extra_info.push_str("\n\nKÖRKORT:\n • Krav på körkort\n");
-                    }
-
+                    if ad.driving_license_required { extra_info.push_str("\n\nKÖRKORT:\n • Krav på körkort\n"); }
                     if let Some(req) = &ad.must_have {
                         if !req.skills.is_empty() || !req.languages.is_empty() || !req.work_experiences.is_empty() {
                             extra_info.push_str("\n\nKRAV:\n");
@@ -405,7 +361,6 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                             for w in &req.work_experiences { extra_info.push_str(&format!(" • {} (Erfarenhet)\n", w.label)); }
                         }
                     }
-
                     if let Some(nice) = &ad.nice_to_have {
                         if !nice.skills.is_empty() || !nice.languages.is_empty() || !nice.work_experiences.is_empty() {
                             extra_info.push_str("\n\nMERITERANDE:\n");
@@ -414,240 +369,93 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                             for w in &nice.work_experiences { extra_info.push_str(&format!(" • {} (Erfarenhet)\n", w.label)); }
                         }
                     }
-                    
                     clean_desc.push_str(&extra_info);
-
-                    let status_int = match ad.status {
-                        Some(AdStatus::Rejected) => 1,
-                        Some(AdStatus::Bookmarked) => 2,
-                        Some(AdStatus::ThumbsUp) => 3,
-                        Some(AdStatus::Applied) => 4,
-                        Some(AdStatus::New) | None => 0,
-                    };
                     JobEntry {
-                        id: ad.id.into(),
-                        title: ad.headline.into(),
-                        employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
-                        location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
-                        description: clean_desc.into(),
-                        date: ad.publication_date.split('T').next().unwrap_or("").into(),
+                        id: ad.id.into(), title: ad.headline.into(), employer: ad.employer.and_then(|e| e.name).unwrap_or_default().into(),
+                        location: ad.workplace_address.and_then(|a| a.city).unwrap_or_default().into(),
+                        description: clean_desc.into(), date: ad.publication_date.split('T').next().unwrap_or("").into(),
                         apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(),
                         rating: ad.rating.unwrap_or(0) as i32,
-                        status: status_int,
+                        status: match ad.status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 },
                         status_text: "".into(),
                     }
                 }).collect();
 
-                let ui_weak_for_invoke = ui_weak_clone.clone();
-                let entries_copy = entries.clone();
-                let count = entries_copy.len();
-                let month_copy = month_str.clone();
                 let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak_for_invoke.upgrade() {
-                        let model = Rc::new(slint::VecModel::from(entries_copy));
-                        ui.set_jobs(model.into());
-                        ui.set_status_msg(format!("Laddade {} annonser för {}", count, month_copy).into());
+                    if let Some(ui) = ui_final.upgrade() {
+                        ui.set_jobs(Rc::new(slint::VecModel::from(entries)).into());
+                        ui.set_applied_count(applied_count);
+                        ui.set_status_msg(format!("Laddade annonser för {}", new_month_display).into());
                     }
                 });
             }
-            Err(e) => {
-                tracing::error!("Failed to load jobs for initial month: {}", e);
-                let ui_weak_for_err = ui_weak_clone.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak_for_err.upgrade() {
-                        ui.set_status_msg("Fel vid laddning av annonser för månaden".into());
-                    }
-                });
-            }
-        }
-
-        // Initial priority search (as before)
-        perform_search(
-            api_client_clone.clone(),
-            db_clone.clone(),
-            ui_weak_clone.clone(),
-            Some(1),
-            None,
-            settings_for_callback.clone()
-        ).await;
-    });
-
-    ui.on_stats_requested(move || {
-        refresh_stats();
+        });
     });
 
     // Callback: Free Search
-    let api_client_c = api_client.clone();
-    let db_c = db.clone();
-    let ui_weak_c = ui_weak.clone();
-    let rt_handle = rt.handle().clone();
-
+    let api_search = Arc::new(JobSearchClient::new());
+    let db_search = db.clone();
+    let ui_search = ui.as_weak();
+    let rt_search = rt.clone();
     ui.on_search_pressed(move |query| {
-        let api_client = api_client_c.clone();
-        let db = db_c.clone();
-        let ui_weak = ui_weak_c.clone();
-        let query = query.to_string();
-
-        if let Some(ui) = ui_weak.upgrade() {
-            ui.set_searching(true);
-            ui.set_status_msg("Söker fritt...".into());
-        }
-
-        rt_handle.spawn(async move {
-            let settings = db.load_settings().await.unwrap_or(Some(Default::default())).unwrap_or_default();
-            perform_search(api_client, db, ui_weak, None, Some(query), settings).await;
+        let api = api_search.clone();
+        let db = db_search.clone();
+        let ui_weak = ui_search.clone();
+        let q = query.to_string();
+        rt_search.spawn(async move {
+            let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
+            perform_search(api, db, ui_weak, None, Some(q), settings).await;
         });
     });
 
     // Callback: Prio Search
-    let api_client_c = api_client.clone();
-    let db_c = db.clone();
-    let ui_weak_c = ui_weak.clone();
-    let rt_handle = rt.handle().clone();
-
+    let api_prio = Arc::new(JobSearchClient::new());
+    let db_prio = db.clone();
+    let ui_prio = ui.as_weak();
+    let rt_prio = rt.clone();
     ui.on_search_prio(move |prio| {
-        let api_client = api_client_c.clone();
-        let db = db_c.clone();
-        let ui_weak = ui_weak_c.clone();
-
-        tracing::info!("search_prio triggered: P{}", prio);
-
-        if let Some(ui) = ui_weak.upgrade() {
-            ui.set_searching(true);
-            ui.set_status_msg(format!("Laddar Prio {}...", prio).into());
-        }
-
-        rt_handle.spawn(async move {
-            let settings = db.load_settings().await.unwrap_or(Some(Default::default())).unwrap_or_default();
-            tracing::info!("Loaded settings for prio {}: p1='{}' p2='{}' p3='{}'", prio, settings.locations_p1, settings.locations_p2, settings.locations_p3);
-            perform_search(api_client, db, ui_weak, Some(prio), None, settings).await;
+        let api = api_prio.clone();
+        let db = db_prio.clone();
+        let ui_weak = ui_prio.clone();
+        rt_prio.spawn(async move {
+            let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
+            perform_search(api, db, ui_weak, Some(prio), None, settings).await;
         });
     });
 
     // Callback: Job Selected
-    let ui_weak_sel = ui.as_weak();
-    ui.on_job_selected(move |id, idx| {
-        if let Some(_ui) = ui_weak_sel.upgrade() {
-            tracing::info!("Valt jobb: {} (idx={})", id, idx);
-        }
-    });
+    ui.on_job_selected(|_id, _idx| {});
 
     // Callback: Job Action
-    let db_clone = db.clone();
-    let rt_clone = rt.clone();
-    let ui_weak_action = ui.as_weak();
-
+    let db_action = db.clone();
+    let ui_action = ui.as_weak();
+    let rt_action = rt.clone();
     ui.on_job_action(move |id, action| {
-        let db = db_clone.clone();
+        let db = db_action.clone();
+        let ui_weak = ui_action.clone();
         let id_str = id.to_string();
-        let action_str = action.to_string();
-        let ui_weak = ui_weak_action.clone();
-
-        let rt_handle = rt_clone.handle().clone();
-        rt_handle.spawn(async move {
-            if action_str == "open" {
+        let act = action.to_string();
+        rt_action.spawn(async move {
+            if act == "open" || act == "apply_direct" {
                 if let Ok(Some(ad)) = db.get_job_ad(&id_str).await {
-                    if let Some(url) = ad.webpage_url {
-                        tracing::info!("Opening browser for job {}: {}", id_str, url);
-                        let _ = webbrowser::open(&url);
-                    }
+                    let url = if act == "open" { ad.webpage_url } else { ad.application_details.and_then(|d| d.url) };
+                    if let Some(u) = url { let _ = webbrowser::open(&u); }
                 }
                 return;
             }
-
-            if action_str == "apply_direct" {
-                if let Ok(Some(ad)) = db.get_job_ad(&id_str).await {
-                    if let Some(details) = ad.application_details {
-                        if let Some(url) = details.url {
-                            tracing::info!("Opening external apply URL for job {}: {}", id_str, url);
-                            let _ = webbrowser::open(&url);
-                        }
-                    }
-                }
-                return;
-            }
-
-            let target_status = match action_str.as_str() {
-                "reject" => AdStatus::Rejected,
-                "save" => AdStatus::Bookmarked,
-                "thumbsup" => AdStatus::ThumbsUp,
-                "apply" => AdStatus::Applied,
-                _ => return,
-            };
-
-            // Toggle logic
-            let current_ad = db.get_job_ad(&id_str).await.ok().flatten();
-            let current_status = current_ad.and_then(|ad| ad.status);
-
-            let new_status = if current_status == Some(target_status) {
-                tracing::info!("Toggling status OFF for job {} (was {:?})", id_str, target_status);
-                None
-            } else {
-                tracing::info!("Setting status for job {} to {:?}", id_str, target_status);
-                Some(target_status)
-            };
-
-            if let Err(e) = db.update_ad_status(&id_str, new_status).await {
-                tracing::error!("Failed to update status for {}: {}", id_str, e);
-            } else {
-                let status_int = match new_status {
-                    Some(AdStatus::Rejected) => 1,
-                    Some(AdStatus::Bookmarked) => 2,
-                    Some(AdStatus::ThumbsUp) => 3,
-                    Some(AdStatus::Applied) => 4,
-                    Some(AdStatus::New) | None => 0,
-                };
-
+            let target = match act.as_str() { "reject" => AdStatus::Rejected, "save" => AdStatus::Bookmarked, "thumbsup" => AdStatus::ThumbsUp, "apply" => AdStatus::Applied, _ => return };
+            let current = db.get_job_ad(&id_str).await.ok().flatten().and_then(|ad| ad.status);
+            let new_status = if current == Some(target) { None } else { Some(target) };
+            if db.update_ad_status(&id_str, new_status).await.is_ok() {
+                let status_int = match new_status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 };
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         let jobs = ui.get_jobs();
                         let mut vec: Vec<JobEntry> = jobs.iter().collect();
-
                         if let Some(pos) = vec.iter().position(|j| j.id == id_str) {
-                            let mut entry = vec[pos].clone();
-                            entry.status = status_int;
-
-                            // If rejected, remove from list if not in a special view
-                            if status_int == 1 {
-                                vec.remove(pos);
-                                tracing::info!("Removed rejected job {} from view", id_str);
-                            } else {
-                                vec[pos] = entry;
-                            }
+                            if status_int == 1 { vec.remove(pos); }
+                            else { vec[pos].status = status_int; }
                             ui.set_jobs(Rc::new(slint::VecModel::from(vec)).into());
-
-                            // Uppdatera räknaren och visa motivation om det var en "Apply"-action
-                            if action_str == "apply" && status_int == 4 {
-                                let mut current_count = ui.get_applied_count();
-                                current_count += 1;
-                                ui.set_applied_count(current_count);
-
-                                let settings = ui.get_settings();
-                                if settings.show_motivation {
-                                    let min = settings.app_min_count;
-                                    let goal = settings.app_goal_count;
-                                    
-                                    let msg = if current_count < min {
-                                        format!("Bra jobbat! {} kvar till minimum-målet.", min - current_count)
-                                    } else if current_count == min {
-                                        "MINIMUM NÅTT! Grymt jobbat. Nu siktar vi mot målet! 🎯".to_string()
-                                    } else if current_count < goal {
-                                        format!("Snyggt! Bara {} kvar till ditt personliga mål. 🚀", goal - current_count)
-                                    } else if current_count == goal {
-                                        "MÅLET NÅTT! Du är en maskin! 🏆".to_string()
-                                    } else {
-                                        "Överleverans! Du gör ett fantastiskt jobb. ⭐".to_string()
-                                    };
-                                    ui.set_status_msg(msg.into());
-                                }
-                            } else if action_str == "apply" && status_int == 0 {
-                                // Om man ångrar en ansökan (toggle off)
-                                let mut current_count = ui.get_applied_count();
-                                if current_count > 0 {
-                                    current_count -= 1;
-                                    ui.set_applied_count(current_count);
-                                }
-                            }
                         }
                     }
                 });
@@ -655,76 +463,38 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         });
     });
 
-    // Callback: Copy Text to Clipboard
-    ui.on_copy_text(move |text| {
-        let text_str = text.to_string();
+    // Callback: Copy Text
+    ui.on_copy_text(|text| {
         #[cfg(not(target_os = "android"))]
-        {
-            use arboard::Clipboard;
-            match Clipboard::new() {
-                Ok(mut clipboard) => {
-                    if let Err(e) = clipboard.set_text(text_str) {
-                        tracing::error!("Failed to copy to clipboard: {}", e);
-                    } else {
-                        tracing::info!("Copied to clipboard");
-                    }
-                }
-                Err(e) => tracing::error!("Failed to initialize clipboard: {}", e),
-            }
-        }
-        #[cfg(target_os = "android")]
-        {
-            tracing::info!("Copy requested on Android (Not yet implemented via JNI): {}", text_str);
-        }
+        if let Ok(mut cb) = arboard::Clipboard::new() { let _ = cb.set_text(text.to_string()); }
     });
 
     // Callback: Save Settings
-    let db_clone = db.clone();
-    let rt_clone = rt.clone();
-    let ui_weak_save = ui.as_weak();
-    ui.on_save_settings(move |ui_settings| {
-        let db = db_clone.clone();
-        let ui_weak = ui_weak_save.clone();
-
+    let db_save = db.clone();
+    let ui_save = ui.as_weak();
+    let rt_save = rt.clone();
+    ui.on_save_settings(move |s| {
+        let db = db_save.clone();
+        let ui_weak = ui_save.clone();
         let settings = crate::models::AppSettings {
-            keywords: ui_settings.keywords.to_string(),
-            blacklist_keywords: ui_settings.blacklist_keywords.to_string(),
-            locations_p1: ui_settings.locations_p1.to_string(),
-            locations_p2: ui_settings.locations_p2.to_string(),
-            locations_p3: ui_settings.locations_p3.to_string(),
-            my_profile: ui_settings.my_profile.to_string(),
-            ollama_url: ui_settings.ollama_url.to_string(),
-            app_min_count: ui_settings.app_min_count,
-            app_goal_count: ui_settings.app_goal_count,
-            show_motivation: ui_settings.show_motivation,
+            keywords: s.keywords.to_string(), blacklist_keywords: s.blacklist_keywords.to_string(),
+            locations_p1: s.locations_p1.to_string(), locations_p2: s.locations_p2.to_string(),
+            locations_p3: s.locations_p3.to_string(), my_profile: s.my_profile.to_string(),
+            ollama_url: s.ollama_url.to_string(), app_min_count: s.app_min_count,
+            app_goal_count: s.app_goal_count, show_motivation: s.show_motivation,
         };
-
-        tracing::info!("Saving settings: P1={}, keywords={}, min={}, goal={}, motivation={}", 
-            settings.locations_p1, settings.keywords, settings.app_min_count, settings.app_goal_count, settings.show_motivation);
-
-        let settings_for_ui = settings.clone();
-
-        let rt_handle = rt_clone.handle().clone();
-        rt_handle.spawn(async move {
-            if let Err(e) = db.save_settings(&settings).await {
-                tracing::error!("Failed to save settings: {}", e);
-            } else {
-                tracing::info!("Settings saved successfully to database");
+        let s_ui = settings.clone();
+        rt_save.spawn(async move {
+            if db.save_settings(&settings).await.is_ok() {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
-                        let s = AppSettings {
-                            keywords: settings_for_ui.keywords.clone().into(),
-                            blacklist_keywords: settings_for_ui.blacklist_keywords.clone().into(),
-                            locations_p1: normalize_locations(&settings_for_ui.locations_p1).into(),
-                            locations_p2: normalize_locations(&settings_for_ui.locations_p2).into(),
-                            locations_p3: normalize_locations(&settings_for_ui.locations_p3).into(),
-                            my_profile: settings_for_ui.my_profile.clone().into(),
-                            ollama_url: settings_for_ui.ollama_url.clone().into(),
-                            app_min_count: settings_for_ui.app_min_count,
-                            app_goal_count: settings_for_ui.app_goal_count,
-                            show_motivation: settings_for_ui.show_motivation,
-                        };
-                        ui.set_settings(s);
+                        ui.set_settings(AppSettings {
+                            keywords: s_ui.keywords.into(), blacklist_keywords: s_ui.blacklist_keywords.into(),
+                            locations_p1: normalize_locations(&s_ui.locations_p1).into(), locations_p2: normalize_locations(&s_ui.locations_p2).into(),
+                            locations_p3: normalize_locations(&s_ui.locations_p3).into(), my_profile: s_ui.my_profile.into(),
+                            ollama_url: s_ui.ollama_url.into(), app_min_count: s_ui.app_min_count,
+                            app_goal_count: s_ui.app_goal_count, show_motivation: s_ui.show_motivation,
+                        });
                         ui.set_status_msg("Inställningar sparade".into());
                     }
                 });
@@ -732,160 +502,66 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         });
     });
 
-    // Callback: Month Offset
-    let refresh_stats_on_month = refresh_stats.clone();
-    ui.on_month_offset(move |offset| {
-        refresh_stats_on_month(); // Uppdatera statistik för den nya månaden
-        tracing::info!("Month offset requested: {}", offset);
-        let db = db_clone_month.clone();
-        let ui_weak_inner = ui_weak_month.clone();
-        let rt_handle = rt_clone_month.handle().clone();
-
-        // Read current month on UI thread and compute new month string
-        let current_month = if let Some(ui) = ui_weak_inner.upgrade() {
-            ui.get_active_month().to_string()
-        } else {
-            // fallback to current date
-            let now = chrono::Utc::now();
-            format!("{:04}-{:02}", now.year(), now.month())
-        };
-
-        // compute new year/month
-        let mut parts = current_month.split('-');
-        let year = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or_else(|| chrono::Utc::now().year());
-        let month = parts.next().and_then(|s| s.parse::<i32>().ok()).unwrap_or(1);
-        let mut new_month = month + offset as i32;
-        let mut new_year = year;
-        while new_month <= 0 {
-            new_month += 12;
-            new_year -= 1;
-        }
-        while new_month > 12 {
-            new_month -= 12;
-            new_year += 1;
-        }
-        let new_month_str = format!("{:04}-{:02}", new_year, new_month as u32);
-        let new_month_display = format!("{} {}", swedish_month_name(new_month as u32), new_year);
-
-        // Clone explicitly so each closure gets its own copy (avoid move-after-use)
-        let new_month_str_ui = new_month_str.clone();
-        let new_month_display_ui = new_month_display.clone();
-        let new_month_str_err = new_month_str.clone();
-
-        // Update UI immediately
-        let ui_for_update = ui_weak_inner.clone();
+    // Initial laddning
+    let db_init = db.clone();
+    let ui_init = ui.as_weak();
+    rt.spawn(async move {
+        let settings = db_init.load_settings().await.unwrap_or_default().unwrap_or_default();
+        let s = settings.clone();
+        
+        let ui_for_settings = ui_init.clone();
         let _ = slint::invoke_from_event_loop(move || {
-            if let Some(ui) = ui_for_update.upgrade() {
-                ui.set_active_month(new_month_str_ui.clone().into());
-                ui.set_active_month_display(new_month_display_ui.clone().into());
-                ui.set_status_msg(format!("Laddar {}...", new_month_display_ui).into());
-            }
-        });
-
-        // Spawn async job to fetch data for the month from DB
-        rt_handle.spawn(async move {
-            match db.get_filtered_jobs(&[], Some(new_year), Some(new_month as u32)).await {
-                Ok(ads) => {
-                    // Räkna sökta jobb för den nya månaden
-                    let applied_count = ads.iter().filter(|ad| ad.status == Some(AdStatus::Applied)).count() as i32;
-
-                    let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
-                    let entries: Vec<JobEntry> = ads.into_iter().map(|ad| {
-                        let raw_desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
-                        
-                        let formatted_desc = raw_desc
-                            .replace("<li>", "\n • ")
-                            .replace("</li>", "")
-                            .replace("<ul>", "\n")
-                            .replace("</ul>", "\n")
-                            .replace("<br>", "\n")
-                            .replace("<br/>", "\n")
-                            .replace("<br />", "\n")
-                            .replace("<p>", "\n\n")
-                            .replace("</p>", "")
-                            .replace("<strong>", "")
-                            .replace("</strong>", "")
-                            .replace("<b>", "")
-                            .replace("</b>", "");
-
-                        let mut clean_desc = re_html.replace_all(&formatted_desc, "").to_string();
-                        
-                        let mut extra_info = String::new();
-                        if ad.driving_license_required {
-                            extra_info.push_str("\n\nKÖRKORT:\n • Krav på körkort\n");
-                        }
-                        if let Some(req) = &ad.must_have {
-                            if !req.skills.is_empty() || !req.languages.is_empty() || !req.work_experiences.is_empty() {
-                                extra_info.push_str("\n\nKRAV:\n");
-                                for s in &req.skills { extra_info.push_str(&format!(" • {}\n", s.label)); }
-                                for l in &req.languages { extra_info.push_str(&format!(" • {} (Språk)\n", l.label)); }
-                                for w in &req.work_experiences { extra_info.push_str(&format!(" • {} (Erfarenhet)\n", w.label)); }
-                            }
-                        }
-                        if let Some(nice) = &ad.nice_to_have {
-                            if !nice.skills.is_empty() || !nice.languages.is_empty() || !nice.work_experiences.is_empty() {
-                                extra_info.push_str("\n\nMERITERANDE:\n");
-                                for s in &nice.skills { extra_info.push_str(&format!(" • {}\n", s.label)); }
-                                for l in &nice.languages { extra_info.push_str(&format!(" • {} (Språk)\n", l.label)); }
-                                for w in &nice.work_experiences { extra_info.push_str(&format!(" • {} (Erfarenhet)\n", w.label)); }
-                            }
-                        }
-                        clean_desc.push_str(&extra_info);
-
-                        let status_int = match ad.status {
-                            Some(AdStatus::Rejected) => 1,
-                            Some(AdStatus::Bookmarked) => 2,
-                            Some(AdStatus::ThumbsUp) => 3,
-                            Some(AdStatus::Applied) => 4,
-                            Some(AdStatus::New) | None => 0,
-                        };
-                        JobEntry {
-                            id: ad.id.into(),
-                            title: ad.headline.into(),
-                            employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
-                            location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
-                            description: clean_desc.into(),
-                            date: ad.publication_date.split('T').next().unwrap_or("").into(),
-                            apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(),
-                            rating: ad.rating.unwrap_or(0) as i32,
-                            status: status_int,
-                            status_text: "".into(),
-                        }
-                    }).collect();
-
-                    let ui_for_invoke = ui_weak_inner.clone();
-                    let entries_copy = entries.clone();
-                    let count = entries_copy.len();
-                    let month_copy = new_month_str.clone();
-                    tracing::info!("DB get_filtered_jobs returned {} ads for month {}", count, month_copy);
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = ui_for_invoke.upgrade() {
-                            let model = Rc::new(slint::VecModel::from(entries_copy));
-                            ui.set_jobs(model.into());
-                            ui.set_applied_count(applied_count);
-                            ui.set_status_msg(format!("Laddade {} annonser för {}", count, month_copy).into());
-                        }
-                    });
-                }
-                Err(e) => {
-                tracing::error!("Failed to load jobs for month {}: {}", new_month_str_err, e);
-                let ui_for_err = ui_weak_inner.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_for_err.upgrade() {
-                        ui.set_status_msg("Fel vid laddning av annonser för månaden".into());
-                    }
+            if let Some(ui) = ui_for_settings.upgrade() {
+                ui.set_settings(AppSettings {
+                    keywords: s.keywords.into(), blacklist_keywords: s.blacklist_keywords.into(),
+                    locations_p1: normalize_locations(&s.locations_p1).into(), locations_p2: normalize_locations(&s.locations_p2).into(),
+                    locations_p3: normalize_locations(&s.locations_p3).into(), my_profile: s.my_profile.into(),
+                    ollama_url: s.ollama_url.into(), app_min_count: s.app_min_count,
+                    app_goal_count: s.app_goal_count, show_motivation: s.show_motivation,
                 });
             }
+        });
+        
+        let now = chrono::Utc::now();
+        let month_str = format!("{:04}-{:02}", now.year(), now.month());
+        let month_display = format!("{} {}", swedish_month_name(now.month()), now.year());
+        
+        let ui_for_month = ui_init.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_for_month.upgrade() {
+                ui.set_active_month(month_str.into());
+                ui.set_active_month_display(month_display.into());
             }
         });
+
+        perform_search(Arc::new(JobSearchClient::new()), db_init, ui_init, Some(1), None, settings).await;
+    });
+}
+
+// Log receiver task
+fn spawn_log_task(ui_weak: slint::Weak<App>, log_rx: mpsc::Receiver<String>) {
+    std::thread::spawn(move || {
+        let mut log_lines: Vec<String> = Vec::new();
+        while let Ok(msg) = log_rx.recv() {
+            log_lines.push(msg.trim().to_string());
+            if log_lines.len() > 100 { log_lines.remove(0); }
+            let lines = log_lines.join("\n");
+            let ui = ui_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui.upgrade() { ui.set_system_logs(lines.into()); }
+            });
+        }
     });
 }
 
 // Helper function to handle search logic
-// ⚠️ GUARDED LOGIC: This function handles critical API formatting.
-// - Multiple keywords MUST be wrapped in parentheses with " OR " (e.g., "(it OR support)").
-// - Municipality codes MUST be used, not names.
-// - Logic is verified in `test_query_logic.rs`. Run it before/after changes!
+// 🛑 STOP! CRITICAL ARCHITECTURAL DECISION - DO NOT "OPTIMIZE" THIS!
+// Why are we searching keywords individually? 
+// 1. The JobTech API's "concept extraction" is unstable with complex OR-queries.
+// 2. Combining terms like "it" and "butik" in one OR-chain often results in 0 hits.
+// 3. Batched searching (groups of 5) also proved unreliable in production tests.
+// 4. Individual searching is the ONLY way to guarantee 100% hit rate across all terms.
+// Performance cost is negligible compared to the value of not missing job opportunities.
 async fn perform_search(
     api_client: Arc<JobSearchClient>,
     db: Arc<Db>,
@@ -926,13 +602,6 @@ async fn perform_search(
     };
 
     let municipalities = JobSearchClient::parse_locations(&locations_str);
-    // 🛑 STOP! CRITICAL ARCHITECTURAL DECISION - DO NOT "OPTIMIZE" THIS!
-    // Why are we searching keywords individually? 
-    // 1. The JobTech API's "concept extraction" is unstable with complex OR-queries.
-    // 2. Combining terms like "it" and "butik" in one OR-chain often results in 0 hits.
-    // 3. Batched searching (groups of 5) also proved unreliable in production tests.
-    // 4. Individual searching is the ONLY way to guarantee 100% hit rate across all terms.
-    // Performance cost is negligible compared to the value of not missing job opportunities.
     let query_parts: Vec<_> = raw_query.split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
@@ -1091,33 +760,6 @@ async fn perform_search(
             if let Some(ui) = ui_weak.upgrade() { ui.set_searching(false); }
         });
     }
-}
-
-#[cfg(target_os = "android")]
-#[unsafe(no_mangle)]
-pub extern "Rust" fn android_main(app: slint::android::AndroidApp) {
-    android_logger::init_once(
-        android_logger::Config::default().with_max_level(log::LevelFilter::Info),
-    );
-    tracing::info!("Starting Jobseeker on Android");
-    slint::android::init(app).expect("Failed to initialize Slint on Android");
-
-    let (guard, log_rx) = setup_logging();
-    let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
-
-    let db_path = get_db_path();
-    tracing::info!("Using database path: {:?}", db_path);
-    let db = rt.block_on(async {
-        Db::new(db_path.to_str().unwrap()).await
-    }).expect("Failed to initialize database");
-    let db = Arc::new(db);
-
-    let ui = App::new().expect("Failed to create Slint UI");
-
-    setup_ui(&ui, rt, db, log_rx);
-
-    let _log_guard = guard;
-    ui.run().expect("Failed to run Slint UI");
 }
 
 pub fn desktop_main() {

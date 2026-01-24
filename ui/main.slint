@@ -402,6 +402,9 @@ component TabButton inherits Rectangle {
 
 component StatisticsPage inherits Rectangle {
     in property <int> applied-count;
+    in property <int> bookmarked-count;
+    in property <int> thumbsup-count;
+    in property <int> rejected-count;
     in property <int> total-ads-count;
     in property <string> active-month-display;
     in property <[KeywordStat]> top-keywords;
@@ -421,24 +424,47 @@ component StatisticsPage inherits Rectangle {
             border-radius: 8px;
             VerticalLayout {
                 padding: 15px;
-                spacing: 10px;
-                Text { text: root.active-month-display; color: #4a90e2; font-weight: 700; }
+                spacing: 8px;
+                Text { text: root.active-month-display; color: #4a90e2; font-weight: 700; padding-bottom: 5px; }
+                
                 HorizontalLayout {
-                    Text { text: "Sökta jobb (denna månad):"; color: #999; }
+                    Text { text: "✅ Sökta jobb:"; color: #999; }
                     Rectangle { }
                     Text { text: root.applied-count; color: #00ff00; font-weight: 700; }
                 }
                 HorizontalLayout {
-                    Text { text: "Totalt antal annonser i inkorg:"; color: #999; }
+                    Text { text: "⭐ Bokmärkta:"; color: #999; }
+                    Rectangle { }
+                    Text { text: root.bookmarked-count; color: #ffd700; }
+                }
+                HorizontalLayout {
+                    Text { text: "👍 Intressanta (Tumme upp):"; color: #999; }
+                    Rectangle { }
+                    Text { text: root.thumbsup-count; color: #00ffff; }
+                }
+                HorizontalLayout {
+                    Text { text: "👎 Avvisade:"; color: #999; }
+                    Rectangle { }
+                    Text { text: root.rejected-count; color: #ff6666; }
+                }
+                
+                Rectangle { height: 1px; background: #333; }
+
+                HorizontalLayout {
+                    Text { text: "📦 Totalt i inkorg:"; color: #999; }
                     Rectangle { }
                     Text { text: root.total-ads-count; color: #ffffff; }
                 }
 
-                if root.top-keywords.length > 0 : Text { text: "POPULÄRA SÖKORD"; color: #888; font-size: 10px; padding-top: 10px; }
-                for kw in root.top-keywords : HorizontalLayout {
-                    Text { text: " • " + kw.name; color: #dddddd; font-size: 12px; }
-                    Rectangle { }
-                    Text { text: kw.count + " st"; color: #4a90e2; font-size: 12px; }
+                if root.top-keywords.length > 0 : VerticalLayout {
+                    spacing: 5px;
+                    padding-top: 10px;
+                    Text { text: "TOPP SÖKORD (NAPP)"; color: #888; font-size: 10px; }
+                    for kw in root.top-keywords : HorizontalLayout {
+                        Text { text: " • " + kw.name; color: #dddddd; font-size: 12px; }
+                        Rectangle { }
+                        Text { text: kw.count + " st"; color: #4a90e2; font-size: 12px; }
+                    }
                 }
             }
         }
@@ -618,6 +644,9 @@ export component App inherits Window {
     in-out property <int> applied-count: 0;
     in-out property <int> last_tab: 0;
     in-out property <int> total-ads-count: 0;
+    in-out property <int> bookmarked-count: 0;
+    in-out property <int> thumbsup-count: 0;
+    in-out property <int> rejected-count: 0;
     in-out property <[KeywordStat]> top-keywords: [];
     in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1", app_min_count: 6, app_goal_count: 12, show_motivation: true };
 
@@ -690,6 +719,9 @@ export component App inherits Window {
 
             if current_tab == 1 : StatisticsPage {
                 applied-count: root.applied-count;
+                bookmarked-count: root.bookmarked-count;
+                thumbsup-count: root.thumbsup-count;
+                rejected-count: root.rejected-count;
                 total-ads-count: root.total-ads-count;
                 active-month-display: root.active-month-display;
                 top-keywords: root.top-keywords;
