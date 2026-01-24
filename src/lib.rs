@@ -313,10 +313,55 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             Ok(ads) => {
                 let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
                 let entries: Vec<JobEntry> = ads.into_iter().map(|ad| {
-                    let desc_text = ad.description.as_ref()
+                    let raw_desc = ad.description.as_ref()
                         .and_then(|d| d.text.as_ref())
                         .map(|s| s.as_str()).unwrap_or("");
-                    let clean_desc = re_html.replace_all(desc_text, "").to_string();
+                    
+                    // Step 1: Pre-clean specific HTML tags for better readability
+                    let formatted_desc = raw_desc
+                        .replace("<li>", "\n • ")
+                        .replace("</li>", "")
+                        .replace("<ul>", "\n")
+                        .replace("</ul>", "\n")
+                        .replace("<br>", "\n")
+                        .replace("<br/>", "\n")
+                        .replace("<br />", "\n")
+                        .replace("<p>", "\n\n")
+                        .replace("</p>", "")
+                        .replace("<strong>", "") // Slint plain text doesn't support bold tags, just remove
+                        .replace("</strong>", "")
+                        .replace("<b>", "")
+                        .replace("</b>", "");
+
+                    let mut clean_desc = re_html.replace_all(&formatted_desc, "").to_string();
+                    
+                    // Step 2: Append structured requirements
+                    let mut extra_info = String::new();
+                    
+                    if ad.driving_license_required {
+                        extra_info.push_str("\n\nKÖRKORT:\n • Krav på körkort\n");
+                    }
+
+                    if let Some(req) = &ad.must_have {
+                        if !req.skills.is_empty() || !req.languages.is_empty() || !req.work_experiences.is_empty() {
+                            extra_info.push_str("\n\nKRAV:\n");
+                            for s in &req.skills { extra_info.push_str(&format!(" • {}\n", s.label)); }
+                            for l in &req.languages { extra_info.push_str(&format!(" • {} (Språk)\n", l.label)); }
+                            for w in &req.work_experiences { extra_info.push_str(&format!(" • {} (Erfarenhet)\n", w.label)); }
+                        }
+                    }
+
+                    if let Some(nice) = &ad.nice_to_have {
+                        if !nice.skills.is_empty() || !nice.languages.is_empty() || !nice.work_experiences.is_empty() {
+                            extra_info.push_str("\n\nMERITERANDE:\n");
+                            for s in &nice.skills { extra_info.push_str(&format!(" • {}\n", s.label)); }
+                            for l in &nice.languages { extra_info.push_str(&format!(" • {} (Språk)\n", l.label)); }
+                            for w in &nice.work_experiences { extra_info.push_str(&format!(" • {} (Erfarenhet)\n", w.label)); }
+                        }
+                    }
+                    
+                    clean_desc.push_str(&extra_info);
+
                     let status_int = match ad.status {
                         Some(AdStatus::Rejected) => 1,
                         Some(AdStatus::Bookmarked) => 2,
@@ -585,6 +630,8 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         tracing::info!("Saving settings: P1={}, keywords={}, min={}, goal={}, motivation={}", 
             settings.locations_p1, settings.keywords, settings.app_min_count, settings.app_goal_count, settings.show_motivation);
 
+        let settings_for_ui = settings.clone();
+
         let rt_handle = rt_clone.handle().clone();
         rt_handle.spawn(async move {
             if let Err(e) = db.save_settings(&settings).await {
@@ -593,10 +640,18 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 tracing::info!("Settings saved successfully to database");
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
-                        let mut s = ui.get_settings();
-                        s.locations_p1 = normalize_locations(&s.locations_p1).into();
-                        s.locations_p2 = normalize_locations(&s.locations_p2).into();
-                        s.locations_p3 = normalize_locations(&s.locations_p3).into();
+                        let s = AppSettings {
+                            keywords: settings_for_ui.keywords.clone().into(),
+                            blacklist_keywords: settings_for_ui.blacklist_keywords.clone().into(),
+                            locations_p1: normalize_locations(&settings_for_ui.locations_p1).into(),
+                            locations_p2: normalize_locations(&settings_for_ui.locations_p2).into(),
+                            locations_p3: normalize_locations(&settings_for_ui.locations_p3).into(),
+                            my_profile: settings_for_ui.my_profile.clone().into(),
+                            ollama_url: settings_for_ui.ollama_url.clone().into(),
+                            app_min_count: settings_for_ui.app_min_count,
+                            app_goal_count: settings_for_ui.app_goal_count,
+                            show_motivation: settings_for_ui.show_motivation,
+                        };
                         ui.set_settings(s);
                         ui.set_status_msg("Inställningar sparade".into());
                     }
@@ -665,8 +720,47 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
 
                     let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
                     let entries: Vec<JobEntry> = ads.into_iter().map(|ad| {
-                        let desc_text = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
-                        let clean_desc = re_html.replace_all(desc_text, "").to_string();
+                        let raw_desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
+                        
+                        let formatted_desc = raw_desc
+                            .replace("<li>", "\n • ")
+                            .replace("</li>", "")
+                            .replace("<ul>", "\n")
+                            .replace("</ul>", "\n")
+                            .replace("<br>", "\n")
+                            .replace("<br/>", "\n")
+                            .replace("<br />", "\n")
+                            .replace("<p>", "\n\n")
+                            .replace("</p>", "")
+                            .replace("<strong>", "")
+                            .replace("</strong>", "")
+                            .replace("<b>", "")
+                            .replace("</b>", "");
+
+                        let mut clean_desc = re_html.replace_all(&formatted_desc, "").to_string();
+                        
+                        let mut extra_info = String::new();
+                        if ad.driving_license_required {
+                            extra_info.push_str("\n\nKÖRKORT:\n • Krav på körkort\n");
+                        }
+                        if let Some(req) = &ad.must_have {
+                            if !req.skills.is_empty() || !req.languages.is_empty() || !req.work_experiences.is_empty() {
+                                extra_info.push_str("\n\nKRAV:\n");
+                                for s in &req.skills { extra_info.push_str(&format!(" • {}\n", s.label)); }
+                                for l in &req.languages { extra_info.push_str(&format!(" • {} (Språk)\n", l.label)); }
+                                for w in &req.work_experiences { extra_info.push_str(&format!(" • {} (Erfarenhet)\n", w.label)); }
+                            }
+                        }
+                        if let Some(nice) = &ad.nice_to_have {
+                            if !nice.skills.is_empty() || !nice.languages.is_empty() || !nice.work_experiences.is_empty() {
+                                extra_info.push_str("\n\nMERITERANDE:\n");
+                                for s in &nice.skills { extra_info.push_str(&format!(" • {}\n", s.label)); }
+                                for l in &nice.languages { extra_info.push_str(&format!(" • {} (Språk)\n", l.label)); }
+                                for w in &nice.work_experiences { extra_info.push_str(&format!(" • {} (Erfarenhet)\n", w.label)); }
+                            }
+                        }
+                        clean_desc.push_str(&extra_info);
+
                         let status_int = match ad.status {
                             Some(AdStatus::Rejected) => 1,
                             Some(AdStatus::Bookmarked) => 2,
@@ -728,19 +822,24 @@ async fn perform_search(
     free_query: Option<String>,
     settings: crate::models::AppSettings
 ) {
-    // 1. Uppdatera UI initialt (trådsäkert utan att hålla 'ui' över await)
-    let ui_start = ui_weak.clone();
-    let _ = slint::invoke_from_event_loop(move || {
-        if let Some(ui) = ui_start.upgrade() {
-            ui.set_searching(true);
-            ui.set_status_msg("Söker...".into());
+    // 1. Förbered parametrar
+    let now = chrono::Utc::now();
+    let current_year = now.year();
+    let current_month = now.month();
+    
+    let (y, m) = if let Some(ui) = ui_weak.upgrade() {
+        let month_str = ui.get_active_month().to_string();
+        let parts: Vec<&str> = month_str.split('-').collect();
+        if parts.len() == 2 {
+            (parts[0].parse().unwrap_or(current_year), parts[1].parse().unwrap_or(current_month))
+        } else {
+            (current_year, current_month)
         }
-    });
+    } else {
+        (current_year, current_month)
+    };
 
-    let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
-
-    // 2. Bestäm sökparametrar baserat på dina PRIO-zoner
-    let (raw_query, locations_str) = match (free_query, prio) {
+    let (raw_query, locations_str) = match (free_query.clone(), prio) {
         (Some(q), _) => (q, String::new()),
         (None, Some(p)) => {
             let locs = match p {
@@ -749,175 +848,165 @@ async fn perform_search(
                 3 => &settings.locations_p3,
                 _ => &settings.locations_p1,
             };
-            // LOGG: Här ser vi om agenten har tömt dina inställningar
-            println!("INFO: Söker med Prio P{}. Platser: '{}'", p, locs);
             (settings.keywords.clone(), locs.clone())
         },
         _ => (String::new(), String::new()),
     };
 
-    // ⚠️ CRITICAL API LOGIC: DO NOT CHANGE WITHOUT VERIFICATION
-    // JobTech API behaves unpredictably with complex OR-queries unless keywords are explicitly quoted.
-    // Without quotes, it attempts "concept extraction" which often leads to 0 hits for valid terms.
-    // We also strip existing quotes from user input to avoid double-quoting issues.
+    let municipalities = JobSearchClient::parse_locations(&locations_str);
     let query_parts: Vec<_> = raw_query.split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| format!("\"{}\"", s.replace("\"", "").trim()))
+        .map(|s| s.replace("\"", "")) // Rensa ev. citattecken, vi skickar orden råa
         .collect();
-        
-    let query_for_api = if query_parts.len() > 1 {
-        format!("({})", query_parts.join(" OR "))
-    } else {
-        query_parts.get(0).cloned().unwrap_or_default().to_string()
-    };
-        
-    let municipalities = JobSearchClient::parse_locations(&locations_str);
 
-    // LOGG: Här ser vi om parse_locations faktiskt lyckas skapa ID-koder
-    tracing::info!("Tolkade {} st kommun-ID:n: {:?}", municipalities.len(), municipalities);
-
-    // Visa enkel sammanfattning av vad som skickas i UI (senaste API‑request)
-    let ui_for_req = ui_weak.clone();
-    let request_info = format!("query='{}' municipalities={:?}", query_for_api, municipalities);
+    // 2. LADDA FRÅN DB DIREKT (Visa cache för användaren direkt)
+    let ui_early = ui_weak.clone();
+    let prio_early = prio;
+    
     let _ = slint::invoke_from_event_loop(move || {
-        if let Some(ui) = ui_for_req.upgrade() {
-            ui.set_last_api_request(request_info.into());
+        if let Some(ui) = ui_early.upgrade() {
+            ui.set_searching(true);
+            ui.set_status_msg(format!("Söker efter nytt... (Visar sparade jobb för P{})", prio_early.unwrap_or(0)).into());
         }
     });
 
-    // 3. API-anropet (här sker .await, så ingen 'ui' får finnas i scope)
-    let result = api_client.search(&query_for_api, &municipalities, 100).await;
+    // Hjälpfunktion för att ladda och visa från DB
+    let refresh_ui_from_db = |ui: &App, ads: Vec<crate::models::JobAd>, p: Option<i32>, muns: Vec<String>, msg: String| {
+        let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
+        let prio_municipality_names: Vec<String> = if p.is_some() {
+            muns.iter().filter_map(|code| JobSearchClient::get_municipality_name(code)).map(|s| s.to_lowercase()).collect()
+        } else {
+            Vec::new()
+        };
 
-    match result {
-        Ok(ads) => {
-            tracing::info!("API hittade {} råa annonser (query='{}', municipalities={:?})", ads.len(), query_for_api, municipalities);
+        let mut entries: Vec<JobEntry> = ads.into_iter()
+            .filter(|ad| {
+                if !prio_municipality_names.is_empty() {
+                    if let Some(ref addr) = ad.workplace_address {
+                        if let Some(ref mun) = addr.municipality {
+                            return prio_municipality_names.contains(&mun.to_lowercase());
+                        }
+                    }
+                    return false;
+                }
+                true
+            })
+            .map(|ad| {
+                let raw_desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
+                let formatted_desc = raw_desc.replace("<li>", "\n • ").replace("</li>", "").replace("<ul>", "\n").replace("</ul>", "\n")
+                    .replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n").replace("<p>", "\n\n").replace("</p>", "")
+                    .replace("<strong>", "").replace("</strong>", "").replace("<b>", "").replace("</b>", "");
+                let mut clean_desc = re_html.replace_all(&formatted_desc, "").to_string();
+                let mut extra_info = String::new();
+                if ad.driving_license_required { extra_info.push_str("\n\nKÖRKORT:\n • Krav på körkort\n"); }
+                if let Some(req) = &ad.must_have {
+                    if !req.skills.is_empty() || !req.languages.is_empty() || !req.work_experiences.is_empty() {
+                        extra_info.push_str("\n\nKRAV:\n");
+                        for s in &req.skills { extra_info.push_str(&format!(" • {}\n", s.label)); }
+                        for l in &req.languages { extra_info.push_str(&format!(" • {} (Språk)\n", l.label)); }
+                        for w in &req.work_experiences { extra_info.push_str(&format!(" • {} (Erfarenhet)\n", w.label)); }
+                    }
+                }
+                if let Some(nice) = &ad.nice_to_have {
+                    if !nice.skills.is_empty() || !nice.languages.is_empty() || !nice.work_experiences.is_empty() {
+                        extra_info.push_str("\n\nMERITERANDE:\n");
+                        for s in &nice.skills { extra_info.push_str(&format!(" • {}\n", s.label)); }
+                        for l in &nice.languages { extra_info.push_str(&format!(" • {} (Språk)\n", l.label)); }
+                        for w in &nice.work_experiences { extra_info.push_str(&format!(" • {} (Erfarenhet)\n", w.label)); }
+                    }
+                }
+                clean_desc.push_str(&extra_info);
+                let status_int = match ad.status {
+                    Some(crate::models::AdStatus::Rejected) => 1,
+                    Some(crate::models::AdStatus::Bookmarked) => 2,
+                    Some(crate::models::AdStatus::ThumbsUp) => 3,
+                    Some(crate::models::AdStatus::Applied) => 4,
+                    _ => 0,
+                };
+                JobEntry {
+                    id: ad.id.into(),
+                    title: ad.headline.into(),
+                    employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
+                    location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
+                    description: clean_desc.into(),
+                    date: ad.publication_date.split('T').next().unwrap_or("").into(),
+                    rating: ad.rating.unwrap_or(0) as i32,
+                    status: status_int,
+                    status_text: "".into(),
+                }
+            }).collect();
 
-            let blacklist: Vec<String> = settings.blacklist_keywords
-                .split(',')
-                .map(|s| s.trim().to_lowercase())
-                .filter(|s| !s.is_empty())
-                .collect();
+        // Sortering (nyast först)
+        entries.sort_by(|a, b| b.date.cmp(&a.date));
 
-            for ad in &ads {
-                let raw_desc = ad.description.as_ref().and_then(|d| d.text.as_deref()).unwrap_or("");
-                let desc_lc = raw_desc.to_lowercase();
-                let title_lc = ad.headline.to_lowercase();
+        let model = std::rc::Rc::new(slint::VecModel::from(entries));
+        ui.set_jobs(model.into());
+        ui.set_status_msg(msg.into());
+    };
 
-                let is_blacklisted = blacklist.iter().any(|word| {
-                    title_lc.contains(word) || desc_lc.contains(word)
-                });
+    // Kör första laddningen från DB
+    if let Ok(existing_ads) = db.get_filtered_jobs(&[], Some(y), Some(m)).await {
+        let ui_early_2 = ui_weak.clone();
+        let muns_early_2 = municipalities.clone();
+        let loc_display = locations_str.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_early_2.upgrade() {
+                let msg = format!("Visar sparade jobb för {}. Söker efter nytt...", loc_display);
+                refresh_ui_from_db(&ui, existing_ads, prio, muns_early_2, msg);
+            }
+        });
+    }
 
-                if !is_blacklisted {
-                    // 💾 AUTO-SAVE: Spara annonsen i databasen för offline-åtkomst
-                    if let Ok(None) = db.get_job_ad(&ad.id).await {
-                        if let Err(e) = db.save_job_ad(ad).await {
-                            tracing::error!("Failed to auto-save ad {}: {}", ad.id, e);
+    // 3. API-ANROP (Ett per sökord för maximal pålitlighet)
+    let mut new_count = 0;
+    let blacklist: Vec<String> = settings.blacklist_keywords.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect();
+
+    for keyword in &query_parts {
+        match api_client.search(keyword, &municipalities, 100).await {
+            Ok(ads) => {
+                for ad in ads {
+                    let is_blacklisted = blacklist.iter().any(|word| {
+                        ad.headline.to_lowercase().contains(word) || 
+                        ad.description.as_ref().and_then(|d| d.text.as_deref()).map(|t| t.to_lowercase().contains(word)).unwrap_or(false)
+                    });
+
+                    if !is_blacklisted {
+                        if let Ok(None) = db.get_job_ad(&ad.id).await {
+                            if let Err(e) = db.save_job_ad(&ad).await {
+                                tracing::error!("Failed to auto-save ad {}: {}", ad.id, e);
+                            } else {
+                                new_count += 1;
+                            }
                         }
                     }
                 }
+            },
+            Err(e) => {
+                tracing::error!("Sökning på '{}' misslyckades: {:?}", keyword, e);
             }
-
-            // 4. Ladda om månaden från DB men FILTRERA på den aktiva prioritetens kommuner
-            let now = chrono::Utc::now();
-            let current_year = now.year();
-            let current_month = now.month();
-            
-            let (y, m) = if let Some(ui) = ui_weak.upgrade() {
-                let month_str = ui.get_active_month().to_string();
-                let parts: Vec<&str> = month_str.split('-').collect();
-                if parts.len() == 2 {
-                    (parts[0].parse().unwrap_or(current_year), parts[1].parse().unwrap_or(current_month))
-                } else {
-                    (current_year, current_month)
-                }
-            } else {
-                (current_year, current_month)
-            };
-
-            match db.get_filtered_jobs(&[], Some(y), Some(m)).await {
-                Ok(all_ads) => {
-                    let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
-                    
-                    // Om vi har en specifik prioritet, hämta namnen på kommunerna för att kunna filtrera
-                    let prio_municipality_names: Vec<String> = if prio.is_some() {
-                        municipalities.iter()
-                            .filter_map(|code| JobSearchClient::get_municipality_name(code))
-                            .map(|s| s.to_lowercase())
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-
-                    let entries: Vec<JobEntry> = all_ads.into_iter()
-                        .filter(|ad| {
-                            // Om vi har en prio-filtrering aktiv, kolla om jobbet ligger i rätt kommun
-                            if !prio_municipality_names.is_empty() {
-                                if let Some(ref addr) = ad.workplace_address {
-                                    if let Some(ref mun) = addr.municipality {
-                                        return prio_municipality_names.contains(&mun.to_lowercase());
-                                    }
-                                }
-                                return false; // Inget kommun-match i prio-läge
-                            }
-                            true // Visa allt i frisöknings-läge
-                        })
-                        .map(|ad| {
-                            let desc_text = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
-                            let clean_desc = re_html.replace_all(desc_text, "").to_string();
-                            let status_int = match ad.status {
-                                Some(crate::models::AdStatus::Rejected) => 1,
-                                Some(crate::models::AdStatus::Bookmarked) => 2,
-                                Some(crate::models::AdStatus::ThumbsUp) => 3,
-                                Some(crate::models::AdStatus::Applied) => 4,
-                                _ => 0,
-                            };
-                            JobEntry {
-                                id: ad.id.into(),
-                                title: ad.headline.into(),
-                                employer: ad.employer.and_then(|e| e.name).unwrap_or_else(|| "Okänd".to_string()).into(),
-                                location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
-                                description: clean_desc.into(),
-                                date: ad.publication_date.split('T').next().unwrap_or("").into(),
-                                rating: ad.rating.unwrap_or(0) as i32,
-                                status: status_int,
-                                status_text: "".into(),
-                            }
-                        }).collect();
-
-                    let ui_final = ui_weak.clone();
-                    let api_count = ads.len();
-                    let total_count = entries.len();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = ui_final.upgrade() {
-                            let job_model = std::rc::Rc::new(slint::VecModel::from(entries));
-                            ui.set_jobs(job_model.into());
-                            ui.set_status_msg(format!("Prio {}: {} totalt i inkorg ({} nya från API)", prio.unwrap_or(0), total_count, api_count).into());
-                            ui.set_searching(false);
-                        }
-                    });
-                }
-                Err(_) => {
-                    let ui_final = ui_weak.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = ui_final.upgrade() {
-                            ui.set_searching(false);
-                        }
-                    });
-                }
-            }
-        },
-        Err(e) => {
-            println!("ERROR: API-anrop misslyckades: {:?}", e);
-            let ui_err = ui_weak.clone();
-            let err_msg = e.to_string();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_err.upgrade() {
-                    ui.set_status_msg(format!("Fel: {}", err_msg).into());
-                    ui.set_searching(false);
-                }
-            });
         }
+    }
+
+    // 4. Slutlig uppdatering av UI med allt från DB
+    if let Ok(final_ads) = db.get_filtered_jobs(&[], Some(y), Some(m)).await {
+        let ui_final = ui_weak.clone();
+        let muns_final = municipalities.clone();
+        let msg = if new_count > 0 {
+            format!("Klar! Hittade {} nya annonser.", new_count)
+        } else {
+            "Inga nya annonser hittades just nu.".to_string()
+        };
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_final.upgrade() {
+                refresh_ui_from_db(&ui, final_ads, prio, muns_final, msg);
+                ui.set_searching(false);
+            }
+        });
+    } else {
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak.upgrade() { ui.set_searching(false); }
+        });
     }
 }
 

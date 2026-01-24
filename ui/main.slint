@@ -371,19 +371,50 @@ component SettingsPage inherits Rectangle {
 
         ScrollView {
             VerticalLayout {
+                width: 100%; // Tvinga layouten att hålla sig inom ScrollView:ns bredd
                 spacing: 15px;
+                padding-right: 25px; // Extra plats för att slippa horisontell scroll helt
 
                 Text { text: "SÖKORD"; color: #4a90e2; font-weight: 700; font-size: 11px; }
-                keywords-input := LineEdit { text: root.settings.keywords; placeholder-text: "Inkludera sökord..."; }
-                blacklist-input := LineEdit { text: root.settings.blacklist_keywords; placeholder-text: "Blockera ord..."; }
+                keywords-input := TextEdit { 
+                    text: root.settings.keywords; 
+                    font-size: 12px; 
+                    height: 80px;
+                    wrap: word-wrap;
+                }
+                blacklist-input := TextEdit { 
+                    text: root.settings.blacklist_keywords; 
+                    font-size: 12px; 
+                    height: 60px;
+                    wrap: word-wrap;
+                }
 
                 Text { text: "PRIORITERADE OMRÅDEN"; color: #4a90e2; font-weight: 700; font-size: 11px; }
-                loc-p1 := LineEdit { text: root.settings.locations_p1; placeholder-text: "Prio 1 (Kommuner)..."; }
-                loc-p2 := LineEdit { text: root.settings.locations_p2; placeholder-text: "Prio 2 (Kommuner)..."; }
-                loc-p3 := LineEdit { text: root.settings.locations_p3; placeholder-text: "Prio 3 (Kommuner)..."; }
+                loc-p1 := TextEdit { 
+                    text: root.settings.locations_p1; 
+                    font-size: 12px; 
+                    height: 60px;
+                    wrap: word-wrap;
+                }
+                loc-p2 := TextEdit { 
+                    text: root.settings.locations_p2; 
+                    font-size: 12px; 
+                    height: 60px;
+                    wrap: word-wrap;
+                }
+                loc-p3 := TextEdit { 
+                    text: root.settings.locations_p3; 
+                    font-size: 12px; 
+                    height: 60px;
+                    wrap: word-wrap;
+                }
 
                 Text { text: "AI PROFIL"; color: #ffd700; font-weight: 700; font-size: 11px; }
-                profile-input := TextEdit { text: root.settings.my_profile; height: 100px; }
+                profile-input := TextEdit { 
+                    text: root.settings.my_profile; 
+                    height: 100px; 
+                    wrap: word-wrap;
+                }
 
                 Text { text: "ANSÖKNINGSMÅL"; color: #00ff00; font-weight: 700; font-size: 11px; }
                 HorizontalLayout {

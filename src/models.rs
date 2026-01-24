@@ -56,6 +56,12 @@ pub struct JobAd {
     pub occupation: Option<Occupation>,
     pub workplace_address: Option<WorkplaceAddress>,
     pub working_hours_type: Option<WorkingHours>,
+    #[serde(default)]
+    pub must_have: Option<Requirements>,
+    #[serde(default)]
+    pub nice_to_have: Option<Requirements>,
+    #[serde(default)]
+    pub driving_license_required: bool,
     
     #[serde(default)]
     pub is_read: bool,
@@ -103,6 +109,31 @@ pub struct Occupation {
 pub struct WorkplaceAddress {
     pub city: Option<String>,
     pub municipality: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Requirements {
+    #[serde(default)]
+    pub skills: Vec<Skill>,
+    #[serde(default)]
+    pub languages: Vec<Language>,
+    #[serde(default)]
+    pub work_experiences: Vec<WorkExperience>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Skill {
+    pub label: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Language {
+    pub label: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WorkExperience {
+    pub label: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
