@@ -495,6 +495,18 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 return;
             }
 
+            if action_str == "apply_direct" {
+                if let Ok(Some(ad)) = db.get_job_ad(&id_str).await {
+                    if let Some(details) = ad.application_details {
+                        if let Some(url) = details.url {
+                            tracing::info!("Opening external apply URL for job {}: {}", id_str, url);
+                            let _ = webbrowser::open(&url);
+                        }
+                    }
+                }
+                return;
+            }
+
             let target_status = match action_str.as_str() {
                 "reject" => AdStatus::Rejected,
                 "save" => AdStatus::Bookmarked,
@@ -938,6 +950,7 @@ async fn perform_search(
                     location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
                     description: clean_desc.into(),
                     date: ad.publication_date.split('T').next().unwrap_or("").into(),
+                    apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(),
                     rating: ad.rating.unwrap_or(0) as i32,
                     status: status_int,
                     status_text: "".into(),

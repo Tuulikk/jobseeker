@@ -7,6 +7,7 @@ export struct JobEntry {
     location: string,
     description: string,
     date: string,
+    apply_url: string,
     rating: int,
     status: int, // 0=New, 1=Rejected, 2=Saved, 3=ThumbsUp, 4=Applied
     status_text: string,
@@ -330,6 +331,12 @@ component JobDetailPane inherits Rectangle {
             IconButton { icon: @image-url("../assets/icons/bookmark-star-fill.svg"); icon-size: 20px; active: job.status == 2; clicked => { root.action("save"); } }
             IconButton { icon: @image-url("../assets/icons/hand-thumbs-up-fill.svg"); icon-size: 20px; active: job.status == 3; clicked => { root.action("thumbsup"); } }
             IconButton { icon: @image-url("../assets/icons/check-circle-fill.svg"); icon-size: 20px; active: job.status == 4; clicked => { root.action("apply"); } }
+            IconButton { 
+                icon: @image-url("../assets/icons/clipboard-plus-fill.svg"); 
+                icon-size: 20px; 
+                active: job.apply_url != ""; 
+                clicked => { if (job.apply_url != "") { root.action("apply_direct"); } } 
+            }
             IconButton { icon: @image-url("../assets/icons/globe.svg"); icon-size: 20px; clicked => { root.action("open"); } }
         }
 
