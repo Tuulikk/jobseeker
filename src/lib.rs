@@ -376,6 +376,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                         location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
                         description: clean_desc.into(),
                         date: ad.publication_date.split('T').next().unwrap_or("").into(),
+                        apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(),
                         rating: ad.rating.unwrap_or(0) as i32,
                         status: status_int,
                         status_text: "".into(),
@@ -787,6 +788,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                             location: ad.workplace_address.and_then(|a| a.city).unwrap_or_else(|| "Okänd".to_string()).into(),
                             description: clean_desc.into(),
                             date: ad.publication_date.split('T').next().unwrap_or("").into(),
+                            apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(),
                             rating: ad.rating.unwrap_or(0) as i32,
                             status: status_int,
                             status_text: "".into(),
@@ -985,7 +987,10 @@ async fn perform_search(
     for keyword in &query_parts {
         match api_client.search(keyword, &municipalities, 100).await {
             Ok(ads) => {
-                for ad in ads {
+                for mut ad in ads {
+                    // Spara vilket sökord som hittade annonsen för statistik
+                    ad.search_keyword = Some(keyword.clone());
+
                     let is_blacklisted = blacklist.iter().any(|word| {
                         ad.headline.to_lowercase().contains(word) || 
                         ad.description.as_ref().and_then(|d| d.text.as_deref()).map(|t| t.to_lowercase().contains(word)).unwrap_or(false)

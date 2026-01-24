@@ -359,6 +359,107 @@ component JobDetailPane inherits Rectangle {
     }
 }
 
+component TabButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> text;
+    in property <bool> active;
+    callback clicked;
+
+    height: 40px;
+    background: active ? #2d2d3a : touch.has-hover ? #252525 : transparent;
+    border-radius: 4px;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 10px;
+        alignment: start;
+        Image {
+            source: root.icon;
+            width: 24px;
+            height: 24px;
+            colorize: root.active ? #4a90e2 : #888888;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.text;
+            color: root.active ? #ffffff : #888888;
+            font-size: 14px;
+            font-weight: root.active ? 700 : 400;
+            vertical-alignment: center;
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+component StatisticsPage inherits Rectangle {
+    in property <int> applied-count;
+    in property <string> active-month-display;
+    callback export(string, string); // type, format
+
+    background: #121212;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 20px;
+        alignment: start;
+
+        Text { text: "Statistik & Redovisning"; font-size: 24px; font-weight: 700; color: #ffffff; }
+        
+        Rectangle {
+            background: #1a1a1a;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 15px;
+                spacing: 10px;
+                Text { text: root.active-month-display; color: #4a90e2; font-weight: 700; }
+                HorizontalLayout {
+                    Text { text: "Totalt sökta jobb:"; color: #999; }
+                    Rectangle { } // Spacer
+                    Text { text: root.applied-count; color: #00ff00; font-weight: 700; }
+                }
+                // Här fyller vi på med sökordsanalys senare
+            }
+        }
+
+        Text { text: "EXPORT & RAPPORT"; color: #4a90e2; font-weight: 700; font-size: 11px; }
+        
+        Rectangle {
+            background: #1a1a1a;
+            border-radius: 8px;
+            VerticalLayout {
+                padding: 15px;
+                spacing: 15px;
+                
+                Text { text: "Välj vad som ska ingå:"; color: #888; font-size: 12px; }
+                
+                HorizontalLayout {
+                    spacing: 10px;
+                    CheckBox { text: "Sökta jobb & info"; checked: true; }
+                    CheckBox { text: "Sökparametrar (Prio/Ord)"; checked: true; }
+                }
+                HorizontalLayout {
+                    spacing: 10px;
+                    CheckBox { text: "Aktivitetsanalys"; checked: false; }
+                }
+
+                Rectangle { height: 10px; } // Spacer
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Button { text: "Urklipp"; clicked => { root.export("clipboard", "text"); } }
+                    Button { text: "Spara Fil"; clicked => { root.export("file", "pdf"); } }
+                    Button { text: "E-post"; clicked => { root.export("email", "text"); } }
+                }
+            }
+        }
+        Rectangle { vertical-stretch: 1; } // Push everything up
+    }
+}
+
 component SettingsPage inherits Rectangle {
     in-out property <AppSettings> settings;
     in property <string> system-logs;
@@ -565,7 +666,13 @@ export component App inherits Window {
                 }
             }
 
-            if root.current-tab == 1 : SettingsPage {
+            if root.current-tab == 1 : StatisticsPage {
+                applied-count: root.applied-count;
+                active-month-display: root.active-month-display;
+                export(type, format) => { /* To be implemented in lib.rs */ }
+            }
+
+            if root.current-tab == 2 : SettingsPage {
                 settings: root.settings;
                 log_file_path: root.log_file_path;
                 last_api_request: root.last_api_request;
@@ -576,33 +683,31 @@ export component App inherits Window {
         // Bottom Bar
         Rectangle {
             height: 60px;
-            background: #1e1e1e;
+            background: #1a1a1a;
             HorizontalLayout {
-                alignment: space-around;
-                padding-top: 5px;
+                alignment: start;
+                padding: 10px;
+                spacing: 15px;
 
-                // Tab 0: Inkorg
-                VerticalLayout {
-                    spacing: 4px;
-                    alignment: center;
-                    IconButton {
-                        icon: @image-url("../assets/icons/inbox-fill.svg");
-                        active: root.current-tab == 0;
-                        clicked => { root.current-tab = 0; }
-                    }
-                    Text { text: "Jobb"; font-size: 10px; color: root.current-tab == 0 ? #4a90e2 : #666; horizontal-alignment: center; }
+                TabButton {
+                    icon: @image-url("../assets/icons/inbox-fill.svg");
+                    text: "Jobb";
+                    active: root.current-tab == 0;
+                    clicked => { root.current-tab = 0; }
                 }
 
-                // Tab 1: Inställningar
-                VerticalLayout {
-                    spacing: 4px;
-                    alignment: center;
-                    IconButton {
-                        icon: @image-url("../assets/icons/gear-fill.svg");
-                        active: root.current-tab == 1;
-                        clicked => { root.current-tab = 1; }
-                    }
-                    Text { text: "Inställningar"; font-size: 10px; color: root.current-tab == 1 ? #4a90e2 : #666; horizontal-alignment: center; }
+                TabButton {
+                    icon: @image-url("../assets/icons/justify.svg");
+                    text: "Statistik";
+                    active: root.current-tab == 1;
+                    clicked => { root.current-tab = 1; }
+                }
+
+                TabButton {
+                    icon: @image-url("../assets/icons/gear-fill.svg");
+                    text: "Inställningar";
+                    active: root.current-tab == 2;
+                    clicked => { root.current-tab = 2; }
                 }
             }
         }
