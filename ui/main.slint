@@ -264,14 +264,6 @@ component InboxPane inherits VerticalLayout {
             horizontal-alignment: center;
         }
     }
-
-    // Status message at the very bottom
-    Text {
-        text: root.status-msg;
-        color: #666666;
-        font-size: 10px;
-        horizontal-alignment: right;
-    }
 }
 
 component JobDetailPane inherits Rectangle {
@@ -408,7 +400,12 @@ component StatisticsPage inherits Rectangle {
     in property <int> total-ads-count;
     in property <string> active-month-display;
     in property <[KeywordStat]> top-keywords;
-    callback export(string, string); // type, format
+    
+    in-out property <bool> include-jobs: true;
+    in-out property <bool> include-params: true;
+    in-out property <bool> include-analysis: false;
+
+    callback export(string, string, bool, bool, bool); // method, format, jobs, params, analysis
 
     background: #121212;
 
@@ -425,7 +422,7 @@ component StatisticsPage inherits Rectangle {
             VerticalLayout {
                 padding: 15px;
                 spacing: 8px;
-                Text { text: root.active-month-display; color: #4a90e2; font-weight: 700; padding-bottom: 5px; }
+                Text { text: root.active-month-display; color: #4a90e2; font-weight: 700; }
                 
                 HorizontalLayout {
                     Text { text: "✅ Sökta jobb:"; color: #999; }
@@ -482,21 +479,21 @@ component StatisticsPage inherits Rectangle {
                 
                 HorizontalLayout {
                     spacing: 10px;
-                    CheckBox { text: "Sökta jobb & info"; checked: true; }
-                    CheckBox { text: "Sökparametrar (Prio/Ord)"; checked: true; }
+                    CheckBox { text: "Sökta jobb & info"; checked: root.include-jobs; toggled => { root.include-jobs = self.checked; } }
+                    CheckBox { text: "Sökparametrar (Prio/Ord)"; checked: root.include-params; toggled => { root.include-params = self.checked; } }
                 }
                 HorizontalLayout {
                     spacing: 10px;
-                    CheckBox { text: "Aktivitetsanalys"; checked: false; }
+                    CheckBox { text: "Aktivitetsanalys"; checked: root.include-analysis; toggled => { root.include-analysis = self.checked; } }
                 }
 
                 Rectangle { height: 10px; } // Spacer
 
                 HorizontalLayout {
                     spacing: 10px;
-                    Button { text: "Urklipp"; clicked => { root.export("clipboard", "text"); } }
-                    Button { text: "Spara Fil"; clicked => { root.export("file", "pdf"); } }
-                    Button { text: "E-post"; clicked => { root.export("email", "text"); } }
+                    Button { text: "Urklipp"; clicked => { root.export("clipboard", "text", root.include-jobs, root.include-params, root.include-analysis); } }
+                    Button { text: "Spara Fil"; clicked => { root.export("file", "pdf", root.include-jobs, root.include-params, root.include-analysis); } }
+                    Button { text: "E-post"; clicked => { root.export("email", "text", root.include-jobs, root.include-params, root.include-analysis); } }
                 }
             }
         }
@@ -658,6 +655,7 @@ export component App inherits Window {
     callback month_offset(int);
     callback save_settings(AppSettings);
     callback stats_requested();
+    callback export_requested(string, string, bool, bool, bool);
 
     VerticalLayout {
         // Main View
@@ -725,7 +723,9 @@ export component App inherits Window {
                 total-ads-count: root.total-ads-count;
                 active-month-display: root.active-month-display;
                 top-keywords: root.top-keywords;
-                export(type, format) => { /* To be implemented in lib.rs */ }
+                export(method, format, jobs, params, analysis) => { 
+                    root.export_requested(method, format, jobs, params, analysis); 
+                }
             }
 
             if root.current-tab == 2 : SettingsPage {
@@ -733,6 +733,23 @@ export component App inherits Window {
                 log_file_path: root.log_file_path;
                 last_api_request: root.last_api_request;
                 save-settings(s) => { root.save-settings(s); }
+            }
+        }
+
+        // Global Status Bar
+        Rectangle {
+            height: 15px;
+            background: #121212;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                Text {
+                    text: root.status-msg;
+                    color: #666666;
+                    font-size: 10px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
             }
         }
 
