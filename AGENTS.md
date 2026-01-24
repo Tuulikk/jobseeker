@@ -42,5 +42,21 @@ If these tests fail, your changes have broken the core business value of the app
 - Use `cargo run --bin reset_settings` to restore known-good defaults.
 - **Blacklist:** Be careful with keywords like "körkort" (driving license). In many regions/roles, this is a requirement and adding it to a blacklist will filter out almost all valid jobs.
 
+## 🛑 Optimization Traps (DO NOT DO THIS)
+
+As an AI agent, you might be tempted to "improve" the code. **Don't.** The following optimizations have been tested and they **BREAK** the application:
+
+1. **DO NOT merge individual keyword searches into one big query.** 
+   - *Temptation:* "I'll use OR to make it faster."
+   - *Reality:* The JobTech API's concept extraction often fails on complex queries, returning 0 hits for perfectly valid jobs. We search term-by-term because job opportunities are more important than 2 seconds of speed.
+
+2. **DO NOT increase the `limit` above 100.**
+   - *Temptation:* "I'll fetch 500 at once."
+   - *Reality:* The server will return a hard HTTP 400 error. 100 is the hard ceiling.
+
+3. **DO NOT add a `sort` parameter to the API request.**
+   - *Temptation:* "I'll let the server sort by date."
+   - *Reality:* The API rejects most sort strings with a 400 error. Sorting is handled locally in Rust.
+
 ---
 *Motto: "Allting är relativt" - Gnaw your way through the problems, don't just patch them.*

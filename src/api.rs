@@ -94,9 +94,10 @@ impl JobSearchClient {
         }
         
         // Single municipality (or empty): use original logic
-        // ⚠️ API CONSTRAINT: 'limit' must be <= 100. Higher values cause 400 Bad Request.
-        // ⚠️ API CONSTRAINT: Do NOT add 'sort' parameter (e.g. "publdate-desc"). It causes 400 Bad Request.
-        // Sorting is handled locally in the application after fetching.
+        // ⚠️ HARD API CONSTRAINTS - DO NOT MODIFY:
+        // 1. 'limit' MUST be <= 100. Values like 200 trigger HTTP 400 Bad Request.
+        // 2. Do NOT add 'sort' parameter. The server rejects most values with HTTP 400.
+        // 3. Keep queries simple. Complex boolean logic is handled by caller via individual calls.
         let mut params = vec![
             ("q", query.to_string()),
             ("limit", limit.to_string()),

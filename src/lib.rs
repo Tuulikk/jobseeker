@@ -854,10 +854,17 @@ async fn perform_search(
     };
 
     let municipalities = JobSearchClient::parse_locations(&locations_str);
+    // 🛑 STOP! CRITICAL ARCHITECTURAL DECISION - DO NOT "OPTIMIZE" THIS!
+    // Why are we searching keywords individually? 
+    // 1. The JobTech API's "concept extraction" is unstable with complex OR-queries.
+    // 2. Combining terms like "it" and "butik" in one OR-chain often results in 0 hits.
+    // 3. Batched searching (groups of 5) also proved unreliable in production tests.
+    // 4. Individual searching is the ONLY way to guarantee 100% hit rate across all terms.
+    // Performance cost is negligible compared to the value of not missing job opportunities.
     let query_parts: Vec<_> = raw_query.split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
-        .map(|s| s.replace("\"", "")) // Rensa ev. citattecken, vi skickar orden råa
+        .map(|s| s.replace("\"", "")) // Send raw terms to avoid API parsing errors
         .collect();
 
     // 2. LADDA FRÅN DB DIREKT (Visa cache för användaren direkt)
