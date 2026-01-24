@@ -226,6 +226,61 @@ mod tests {
 fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<String>) {
     let ui_weak = ui.as_weak();
 
+    // Hjälpfunktion för att uppdatera statistik (kan anropas från flera ställen)
+    let db_for_stats = db.clone();
+    let ui_for_stats = ui.as_weak();
+    let refresh_stats = move || {
+        let db = db_for_stats.clone();
+        let ui_weak = ui_for_stats.clone();
+        
+        tokio::spawn(async move {
+            if let Some(ui) = ui_weak.upgrade() {
+                let month_str = ui.get_active_month().to_string(); // YYYY-MM
+                let parts: Vec<&str> = month_str.split('-').collect();
+                if parts.len() == 2 {
+                    let year = parts[0].parse().unwrap_or(2026);
+                    let month = parts[1].parse().unwrap_or(1);
+                    
+                    if let Ok(ads) = db.get_filtered_jobs(&[], Some(year), Some(month)).await {
+                        let total_count = ads.len() as i32;
+                        
+                        // Räkna sökord
+                        let mut counts = std::collections::HashMap::new();
+                        for ad in ads {
+                            if let Some(kw) = ad.search_keyword {
+                                *counts.entry(kw).or_insert(0) += 1;
+                            }
+                        }
+                        
+                        let mut stats_vec: Vec<KeywordStat> = counts.into_iter()
+                            .map(|(name, count)| KeywordStat { name: name.into(), count })
+                            .collect();
+                        
+                        // Sortera: mest populära först
+                        stats_vec.sort_by(|a, b| b.count.cmp(&a.count));
+                        // Ta bara topp 10
+                        stats_vec.truncate(10);
+                        
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_total_ads_count(total_count);
+                                ui.set_top_keywords(Rc::new(slint::VecModel::from(stats_vec)).into());
+                            }
+                        });
+                    }
+                }
+            }
+        });
+    };
+
+    // Anropa statistikuppdatering när man byter till statistik-fliken
+    let refresh_stats_on_tab = refresh_stats.clone();
+    ui.window().on_close_requested(|| slint::CloseRequestResponse::Continue); // Dummy för att få tillgång till timer/events om det behövs
+    
+    // Vi behöver fånga när fliken ändras. Vi lägger till en timer eller kollar i setup_ui.
+    // Men enklast är att köra den varje gång vi trycker på statistik-knappen i botten.
+    // Jag lägger till det i main.slint under clicked på TabButton.
+    
     // Log receiver task
     let ui_weak_log = ui.as_weak();
     std::thread::spawn(move || {
@@ -415,6 +470,10 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             None,
             settings_for_callback.clone()
         ).await;
+    });
+
+    ui.on_stats_requested(move || {
+        refresh_stats();
     });
 
     // Callback: Free Search
@@ -673,11 +732,10 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         });
     });
 
-    // Callback: Month Offset (previous/next month requested from UI)
-    let db_clone_month = db.clone();
-    let rt_clone_month = rt.clone();
-    let ui_weak_month = ui.as_weak();
+    // Callback: Month Offset
+    let refresh_stats_on_month = refresh_stats.clone();
     ui.on_month_offset(move |offset| {
+        refresh_stats_on_month(); // Uppdatera statistik för den nya månaden
         tracing::info!("Month offset requested: {}", offset);
         let db = db_clone_month.clone();
         let ui_weak_inner = ui_weak_month.clone();

@@ -1,5 +1,10 @@
 import { Button, LineEdit, ScrollView, TextEdit, CheckBox, HorizontalBox, VerticalBox, TabWidget } from "std-widgets.slint";
 
+export struct KeywordStat {
+    name: string,
+    count: int,
+}
+
 export struct JobEntry {
     id: string,
     title: string,
@@ -397,7 +402,9 @@ component TabButton inherits Rectangle {
 
 component StatisticsPage inherits Rectangle {
     in property <int> applied-count;
+    in property <int> total-ads-count;
     in property <string> active-month-display;
+    in property <[KeywordStat]> top-keywords;
     callback export(string, string); // type, format
 
     background: #121212;
@@ -417,11 +424,22 @@ component StatisticsPage inherits Rectangle {
                 spacing: 10px;
                 Text { text: root.active-month-display; color: #4a90e2; font-weight: 700; }
                 HorizontalLayout {
-                    Text { text: "Totalt sökta jobb:"; color: #999; }
-                    Rectangle { } // Spacer
+                    Text { text: "Sökta jobb (denna månad):"; color: #999; }
+                    Rectangle { }
                     Text { text: root.applied-count; color: #00ff00; font-weight: 700; }
                 }
-                // Här fyller vi på med sökordsanalys senare
+                HorizontalLayout {
+                    Text { text: "Totalt antal annonser i inkorg:"; color: #999; }
+                    Rectangle { }
+                    Text { text: root.total-ads-count; color: #ffffff; }
+                }
+
+                if root.top-keywords.length > 0 : Text { text: "POPULÄRA SÖKORD"; color: #888; font-size: 10px; padding-top: 10px; }
+                for kw in root.top-keywords : HorizontalLayout {
+                    Text { text: " • " + kw.name; color: #dddddd; font-size: 12px; }
+                    Rectangle { }
+                    Text { text: kw.count + " st"; color: #4a90e2; font-size: 12px; }
+                }
             }
         }
 
@@ -598,6 +616,9 @@ export component App inherits Window {
     in-out property <string> log_file_path: "";
     in-out property <string> last_api_request: "";
     in-out property <int> applied-count: 0;
+    in-out property <int> last_tab: 0;
+    in-out property <int> total-ads-count: 0;
+    in-out property <[KeywordStat]> top-keywords: [];
     in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1", app_min_count: 6, app_goal_count: 12, show_motivation: true };
 
     callback search-pressed(string);
@@ -605,8 +626,9 @@ export component App inherits Window {
     callback job-selected(string, int);
     callback job-action(string, string);
     callback copy-text(string);
-    callback month-offset(int);
-    callback save-settings(AppSettings);
+    callback month_offset(int);
+    callback save_settings(AppSettings);
+    callback stats_requested();
 
     VerticalLayout {
         // Main View
@@ -666,9 +688,11 @@ export component App inherits Window {
                 }
             }
 
-            if root.current-tab == 1 : StatisticsPage {
+            if current_tab == 1 : StatisticsPage {
                 applied-count: root.applied-count;
+                total-ads-count: root.total-ads-count;
                 active-month-display: root.active-month-display;
+                top-keywords: root.top-keywords;
                 export(type, format) => { /* To be implemented in lib.rs */ }
             }
 
@@ -700,7 +724,7 @@ export component App inherits Window {
                     icon: @image-url("../assets/icons/justify.svg");
                     text: "Statistik";
                     active: root.current-tab == 1;
-                    clicked => { root.current-tab = 1; }
+                    clicked => { root.current-tab = 1; root.stats_requested(); }
                 }
 
                 TabButton {
