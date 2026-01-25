@@ -1,30 +1,31 @@
 # Jobseeker 🕵️‍♂️ - Gnaga sig till drömjobbet
 
 ![License: MPL 2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)
-![Build Status](https://github.com/Gnaw-Software/Jobseeker/actions/workflows/rust.yml/badge.svg)
+![Build Status](https://github.com/Tuulikk/jobseeker/actions/workflows/build.yml/badge.svg)
 
-Jobseeker är ett verktyg under utveckling för att strukturera och förenkla jobbsökandet. Det är byggt enligt **"Gnag"-filosofin**: att gnaga sig igenom tråkiga, repetitiva uppgifter för att spara energi till det som faktiskt betyder något.
+Jobseeker är ett verktyg byggt enligt **"Gnag"-filosofin**: att gnaga sig igenom tråkiga, repetitiva uppgifter för att spara energi till det som faktiskt betyder något. Denna version är helt ombyggd i **Slint** för snabbhet och stabilitet.
 
 > [!IMPORTANT]
-> **Projektstatus:** Detta är en tidig utvecklingsversion (Alpha/v0.1). Det är i första hand ett personligt verktyg som delas öppet för den som är nyfiken. Räkna med buggar, ändringar i gränssnittet och att funktioner kan förändras radikalt. Ingen garanti lämnas för funktionalitet eller datasäkerhet.
+> **Projektstatus:** Detta är V0.2 (Beta). Appen är nu stabil för daglig användning, men funktioner kan fortfarande tillkomma eller finjusteras. All data sparas privat i en lokal RedB-databas.
 
 ![Jobseeker Screenshot](screenshots/First.png)
 
-## Vad är Jobseeker?
+## Varför Jobseeker?
 
-Jobseeker är tänkt som en kognitiv förlängning för att:
-- **Organisera:** Samla annonser från Arbetsförmedlingen på ett ställe.
-- **Automatisera:** Söka i flera områden samtidigt utan att behöva klicka runt manuellt.
-- **Skriva:** Ha en enkel plats att skriva ansökningar och få ut dem i användbara format.
+Jobseeker är din kognitiva förlängning för att dominera jobbsökandet:
+- **📦 Allt-i-ett Inkorg:** Samla annonser från JobTech (Arbetsförmedlingen) i en offline-inkorg. Inget mer klickande på sega webbsidor.
+- **🔍 Smart Sökning:** Sök på dussintals nyckelord och geografiska zoner samtidigt. Appen aggregerar och deduplicerar allt åt dig.
+- **📊 Statistik & Kontroll:** Se exakt hur många jobb du sökt denna månad, vilka sökord som ger napp och exportera rapporter med ett klick.
+- **🔄 Automatisk Synk:** Stöd för kontinuerlig backup till valfri mapp (Dropbox, Syncthing, eller delade mappar på Android).
+- **🔒 Privacy First:** Ingen molntjänst, ingen spårning. Din data bor hos dig.
 
-## Funktioner (Nuvarande & Experimentella)
+## Funktioner
 
-- **📄 Ansökningar:** Enkel editor med exportstöd till **PDF** och **Word (.docx)**. (Fungerar, men enkel).
-- **🔍 Smart Sökning:** Sök i flera geografiska områden samtidigt med prioriteringsnivåer (P1, P2, P3).
-- **🤖 Experimentell AI-Rankning:** Möjlighet att koppla på lokal AI (via Ollama) för att testa automatisk betygssättning av annonser. *Obs: Denna funktion är under utvärdering och kan ge varierande resultat.*
-- **🚫 Svartlistning:** Filtrera bort annonser baserat på nyckelord du vill undvika.
-- **📋 Rapporteringshjälp:** Knappar för att snabbt kopiera data till Arbetsförmedlingens aktivitetsrapport.
-- **🔒 Privat lagring:** All data sparas lokalt i en **RedB**-databas. Ingen molnlagring.
+- **⚡ Blixtsnabbt UI:** Byggt i Rust + Slint. Startar direkt och flyter mjukt.
+- **⭐ Prioritering:** Dela upp dina sökningar i P1 (Högst prio), P2 och P3 zoner.
+- **📋 Export:** Generera aktivitetsrapporter till Urklipp, E-post eller fil på sekunder.
+- **🚫 Svartlistning:** Filtrera automatiskt bort annonser du inte vill se.
+- **🤖 AI-Klar:** Förberedd för integration med lokal AI (Ollama) för ranking av annonser.
 
 ## Kom igång
 
@@ -32,14 +33,14 @@ Jobseeker är tänkt som en kognitiv förlängning för att:
 
 1. **Rust:** Installeras via [rustup.rs](https://rustup.rs/).
 2. **Systembibliotek:**
-   - **Ubuntu/Debian:** `sudo apt install libsoup-3.0-dev libgtk-4-dev libadwaita-1-dev`
-   - **Fedora:** `sudo dnf install libsoup3-devel gtk4-devel libadwaita-devel`
-   - **Windows/MacOS:** Inga extra systembibliotek krävs vanligtvis för att bygga.
+   - **Ubuntu/Debian:** `sudo apt install libsoup-3.0-dev libgtk-4-dev libadwaita-1-dev libxkbcommon-dev libfontconfig1-dev`
+   - **Fedora:** `sudo dnf install libsoup3-devel gtk4-devel libadwaita-devel libxkbcommon-devel fontconfig-devel`
+   - **Windows/MacOS:** Inga extra systembibliotek krävs.
 
 ### Installation & Körning
 
 ```bash
-git clone https://github.com/Gnaw-Software/Jobseeker.git
+git clone https://github.com/Tuulikk/jobseeker.git
 cd Jobseeker
 cargo run --release
 ```

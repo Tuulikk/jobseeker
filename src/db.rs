@@ -8,12 +8,16 @@ const JOB_ADS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("job_ads
 const APPLICATIONS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("job_applications");
 const SETTINGS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("settings");
 
+/// RedB database wrapper. Uses JSON serialization for values to support
+/// complex job advertisement and settings objects while keeping the key-value structure.
 #[derive(Clone, Debug)]
 pub struct Db {
     database: Arc<Database>,
 }
 
 impl Db {
+    /// Opens or creates the RedB database at the given path.
+    /// Tables are automatically initialized if they don't exist.
     pub async fn new(db_path: &str) -> Result<Self> {
         let db = Database::create(db_path)
             .context("Failed to create/open RedB database")?;
@@ -31,6 +35,7 @@ impl Db {
     }
 
     // --- Inställningar ---
+    /// Saves the application settings as a JSON blob.
     pub async fn save_settings(&self, settings: &AppSettings) -> Result<()> {
         let write_txn = self.database.begin_write()?;
         {
@@ -54,6 +59,7 @@ impl Db {
     }
 
     // --- Jobbapplikationer ---
+    /// Drafts are stored indexed by job_id.
     pub async fn save_application_draft(&self, job_id: &str, content: &str) -> Result<()> {
         let write_txn = self.database.begin_write()?;
         {
@@ -71,31 +77,8 @@ impl Db {
         Ok(value.map(|v| v.value().to_string()))
     }
 
-    pub async fn get_all_drafts(&self) -> Result<Vec<(String, String, String)>> {
-        let read_txn = self.database.begin_read()?;
-        let apps_table = read_txn.open_table(APPLICATIONS_TABLE)?;
-        let ads_table = read_txn.open_table(JOB_ADS_TABLE)?;
-
-        let mut drafts = Vec::new();
-        for item in apps_table.iter()? {
-            let (id_handle, _content_handle) = item?;
-            let id = id_handle.value();
-
-            let headline = if let Some(ad_json) = ads_table.get(id)? {
-                match serde_json::from_str::<JobAd>(ad_json.value()) {
-                    Ok(ad) => ad.headline,
-                    Err(_) => "Okänd annons".to_string(),
-                }
-            } else {
-                "Okänd annons".to_string()
-            };
-
-            drafts.push((id.to_string(), headline, "Senast sparad".to_string()));
-        }
-        Ok(drafts)
-    }
-
     // --- Jobbannonser ---
+    /// Primary storage for fetched job ads. Deduplication is handled by job ID.
     pub async fn save_job_ad(&self, ad: &JobAd) -> Result<()> {
         let write_txn = self.database.begin_write()?;
         {
@@ -107,6 +90,8 @@ impl Db {
         Ok(())
     }
 
+    /// Fetches jobs based on status and time (year/month).
+    /// Rejected jobs are excluded by default unless explicitly requested.
     pub async fn get_filtered_jobs(&self, status_filter: &[AdStatus], year: Option<i32>, month: Option<u32>) -> Result<Vec<JobAd>> {
         let read_txn = self.database.begin_read()?;
         let table = read_txn.open_table(JOB_ADS_TABLE)?;
@@ -125,6 +110,7 @@ impl Db {
                     if !status_filter.contains(&status) { continue; }
                 } else { continue; }
             } else if ad.status == Some(AdStatus::Rejected) {
+                // By default, don't show rejected ads in the main inbox
                 continue;
             }
 
@@ -133,17 +119,15 @@ impl Db {
                 let year_str = y.to_string();
                 let month_str = format!("{:02}", m);
 
-                // 1. Testa avancerad parsing (RFC3339)
+                // Try to match publication date against the requested month
                 if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&ad.publication_date) {
                     use chrono::Datelike;
                     if dt.year() == y && dt.month() == m { matched = true; }
                 }
-                // 2. Testa NaiveDate (YYYY-MM-DD)
                 else if let Ok(dt) = chrono::NaiveDate::parse_from_str(&ad.publication_date, "%Y-%m-%d") {
                     use chrono::Datelike;
                     if dt.year() == y && dt.month() == m { matched = true; }
                 }
-                // 3. Fallback: Kolla om strängen börjar med YYYY-MM (enklast och säkrast)
                 else {
                     let prefix = format!("{}-{}", year_str, month_str);
                     if ad.publication_date.starts_with(&prefix) {
@@ -159,7 +143,7 @@ impl Db {
             }
         }
 
-        // Ersätt raden ads.sort_by... med detta:
+        // Sorting: Priority order is Applied > Bookmarked > Created
         ads.sort_by(|a, b| {
             let date_a = a.applied_at.or(a.bookmarked_at).unwrap_or(a.internal_created_at);
             let date_b = b.applied_at.or(b.bookmarked_at).unwrap_or(b.internal_created_at);
@@ -168,7 +152,8 @@ impl Db {
         Ok(ads)
     }
 
-        pub async fn update_ad_status(&self, id: &str, status: Option<AdStatus>) -> Result<()> {
+    /// Updates status and automatically sets the corresponding timestamp (applied_at/bookmarked_at).
+    pub async fn update_ad_status(&self, id: &str, status: Option<AdStatus>) -> Result<()> {
         let mut ad = self.get_job_ad(id).await?.context("Ad not found")?;
         ad.status = status;
 

@@ -55,6 +55,10 @@ impl std::io::Write for SlintLogWriter {
     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
+/// The Clipboard Manager solves a critical issue on Linux where clipboard content
+/// is lost if the application that "owns" the data drops its reference too quickly.
+/// By spawning a long-lived thread that manages a single Clipboard instance,
+/// we ensure that the OS and other applications have enough time to fetch the data.
 fn setup_clipboard_manager() {
     let (tx, rx) = mpsc::channel::<String>();
     let _ = CLIPBOARD_SENDER.set(tx);
@@ -67,8 +71,7 @@ fn setup_clipboard_manager() {
             #[cfg(not(target_os = "android"))]
             if let Some(ref mut cb) = clipboard {
                 let _ = cb.set_text(text);
-                // On Linux, the clipboard content is often lost if the object is dropped too fast.
-                // By keeping this thread running and the 'clipboard' object alive, we solve this.
+                // The thread stays alive, keeping 'clipboard' in scope.
                 tracing::info!("Text copied to clipboard and kept alive.");
             }
         }
@@ -81,6 +84,9 @@ fn copy_to_clipboard(text: String) {
     }
 }
 
+/// Triggers an automatic backup of the database to a user-defined sync folder.
+/// This is designed to work seamlessly with Syncthing, Dropbox, or other 
+/// folder-monitoring sync tools.
 async fn trigger_sync(db: &Db) {
     if let Ok(Some(settings)) = db.load_settings().await {
         if !settings.sync_path.is_empty() {
@@ -88,6 +94,7 @@ async fn trigger_sync(db: &Db) {
             if sync_dir.exists() && sync_dir.is_dir() {
                 let db_path = get_db_path();
                 let target_path = sync_dir.join("jobseeker.redb");
+                // We use atomic-ish copy (overwrite) so sync tools see it as a single update
                 if let Err(e) = std::fs::copy(&db_path, &target_path) {
                     tracing::error!("Automatisk synk misslyckades: {}", e);
                 } else {
