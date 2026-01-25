@@ -1,6 +1,6 @@
 [package]
 name = "Jobseeker"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 authors = ["Svensson <tuulikk@gmail.com>"]
 description = "Ett kraftfullt verktyg för att hitta jobb, ranka annonser med AI och hantera ansökningar direkt till PDF/Word."
