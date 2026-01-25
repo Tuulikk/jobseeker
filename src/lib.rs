@@ -71,7 +71,7 @@ fn setup_clipboard_manager() {
             #[cfg(not(target_os = "android"))]
             if let Some(ref mut cb) = clipboard {
                 let _ = cb.set_text(text);
-                // The thread stays alive, keeping 'clipboard' in scope.
+                // Keep the clipboard object alive in this thread.
                 tracing::info!("Text copied to clipboard and kept alive.");
             }
         }
@@ -94,7 +94,7 @@ async fn trigger_sync(db: &Db) {
             if sync_dir.exists() && sync_dir.is_dir() {
                 let db_path = get_db_path();
                 let target_path = sync_dir.join("jobseeker.redb");
-                // We use atomic-ish copy (overwrite) so sync tools see it as a single update
+                // We use standard copy (overwrite). Sync tools will see the timestamp change.
                 if let Err(e) = std::fs::copy(&db_path, &target_path) {
                     tracing::error!("Automatisk synk misslyckades: {}", e);
                 } else {
@@ -142,9 +142,20 @@ mod mpsc_writer {
 
 fn get_db_path() -> std::path::PathBuf {
     #[cfg(target_os = "android")]
-    { let path = std::path::PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files"); let _ = std::fs::create_dir_all(&path); return path.join("jobseeker.redb"); }
+    {
+        // On Android, use the official internal data directory
+        let path = std::path::PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files"); 
+        let _ = std::fs::create_dir_all(&path); 
+        return path.join("jobseeker.redb"); 
+    }
     #[cfg(not(target_os = "android"))]
-    { directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker").map(|p| { let d = p.data_dir(); let _ = std::fs::create_dir_all(d); d.join("jobseeker.redb") }).unwrap_or_else(|| std::path::PathBuf::from("jobseeker.redb")) }
+    {
+        directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker").map(|p| {
+            let d = p.data_dir();
+            let _ = std::fs::create_dir_all(d);
+            d.join("jobseeker.redb")
+        }).unwrap_or_else(|| std::path::PathBuf::from("jobseeker.redb"))
+    }
 }
 
 fn normalize_locations(input: &str) -> String {
@@ -214,17 +225,17 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 let month = parts[1].parse().unwrap_or(1);
                 let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
                 
-                let mut report = format!("AKTIVITETSRAPPORT - {}\n==========================================\n\n", month_display.to_uppercase());
+                let mut report = format!("AKTIVITETSRAPPORT - {{}}\n==========================================\n\n", month_display.to_uppercase());
                 if include_params {
-                    report.push_str(&format!("SÖKPARAMETRAR:\n• Sökord: {}\n• Prio 1: {}\n• Prio 2: {}\n\n", settings.keywords, normalize_locations(&settings.locations_p1), normalize_locations(&settings.locations_p2)));
+                    report.push_str(&format!("SÖKPARAMETRAR:\n• Sökord: {{}}\n• Prio 1: {{}}\n• Prio 2: {{}}\n\n", settings.keywords, normalize_locations(&settings.locations_p1), normalize_locations(&settings.locations_p2)));
                 }
                 if include_jobs {
                     if let Ok(ads) = db.get_filtered_jobs(&[AdStatus::Applied], Some(year), Some(month)).await {
-                        report.push_str(&format!("SÖKTA JOBB ({} st):\n", ads.len()));
+                        report.push_str(&format!("SÖKTA JOBB ({{}} st):\n", ads.len()));
                         for ad in ads {
                             let date = ad.applied_at.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "Okänt datum".to_string());
-                            report.push_str(&format!("• {}: {}, {} ({})\n", date, ad.employer.and_then(|e| e.name).unwrap_or_default(), ad.headline, ad.workplace_address.and_then(|a| a.city).unwrap_or_default()));
-                            if let Some(url) = ad.webpage_url { report.push_str(&format!("  Länk: {}\n", url)); }
+                            report.push_str(&format!("• {{}}: {{}}, {{}} ({{}})\n", date, ad.employer.and_then(|e| e.name).unwrap_or_default(), ad.headline, ad.workplace_address.and_then(|a| a.city).unwrap_or_default()));
+                            if let Some(url) = ad.webpage_url { report.push_str(&format!("  Länk: {{}}\n", url)); }
                         }
                         report.push_str("\n");
                     }
@@ -233,7 +244,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     if let Ok(ads) = db.get_filtered_jobs(&[], Some(year), Some(month)).await {
                         let app = ads.iter().filter(|a| a.status == Some(AdStatus::Applied)).count();
                         let rej = ads.iter().filter(|a| a.status == Some(AdStatus::Rejected)).count();
-                        report.push_str(&format!("AKTIVITETSANALYS:\n• Totalt granskade: {}\n• Konvertering: {} sökta, {} avvisade\n", ads.len(), app, rej));
+                        report.push_str(&format!("AKTIVITETSANALYS:\n• Totalt granskade: {{}}\n• Konvertering: {{}} sökta, {{}} avvisade\n", ads.len(), app, rej));
                     }
                 }
                 report.push_str("\nGenererad via Jobseeker 2026\n");
@@ -243,24 +254,24 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     if method == "clipboard" {
                         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Rapport kopierad till urklipp!".into()); } });
                     } else {
-                        let subject_text = format!("Aktivitetsrapport - {}", month_display);
+                        let subject_text = format!("Aktivitetsrapport - {{}}", month_display);
                         let subject = urlencoding::encode(&subject_text);
                         let body_text = if report.len() > 1500 { 
-                            format!("Rapporten är kopierad till ditt urklipp - klistra in den här!\n\n(Texten var för lång för direktlänk: {} tecken)", report.len()) 
+                            format!("Rapporten är kopierad till ditt urklipp - klistra in den här!\n\n(Texten var för lång för direktlänk: {{}} tecken)", report.len()) 
                         } else { 
                             report 
                         };
                         let body_encoded = urlencoding::encode(&body_text);
-                        let mailto = format!("mailto:?subject={}&body={}", subject, body_encoded);
+                        let mailto = format!("mailto:?subject={{}}&body={{}}", subject, body_encoded);
                         let _ = webbrowser::open(&mailto);
                         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Öppnar e-post (rapport kopierad till urklipp)".into()); } });
                     }
                 } else if method == "file" {
-                    let file_name = format!("jobb-rapport-{}.txt", month_str);
+                    let file_name = format!("jobb-rapport-{{}}.txt", month_str);
                     let file_path = directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.join(&file_name))).unwrap_or_else(|| std::path::PathBuf::from(&file_name));
                     if std::fs::write(&file_path, report).is_ok() {
-                        tracing::info!("Rapport sparad till: {:?}", file_path);
-                        let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg(format!("Rapport sparad: {}", file_name).into()); } });
+                        tracing::info!("Rapport sparad till: {{}}", file_path);
+                        let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg(format!("Rapport sparad: {{}}", file_name).into()); } });
                     }
                 }
             });
@@ -280,7 +291,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             let mut nm = month + offset as i32; let mut ny = year;
             while nm <= 0 { nm += 12; ny -= 1; } while nm > 12 { nm -= 12; ny += 1; }
             let nms = format!("{:04}-{:02}", ny, nm as u32);
-            let nmd = format!("{} {}", swedish_month_name(nm as u32), ny);
+            let nmd = format!("{} {{}}", swedish_month_name(nm as u32), ny);
             if let Some(ui) = ui_weak.upgrade() { ui.set_active_month(nms.clone().into()); ui.set_active_month_display(nmd.clone().into()); }
             let ui_f = ui_weak.clone();
             rt.spawn(async move {
@@ -359,16 +370,16 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let ui_weak = ui_db.clone();
         if act == "backup" {
             let db_path = get_db_path();
-            let backup_name = format!("jobseeker_backup_{}.redb", chrono::Local::now().format("%Y%m%d_%H%M"));
+            let backup_name = format!("jobseeker_backup_{{}}.redb", chrono::Local::now().format("%Y%m%d_%H%M"));
             let backup_path = directories::UserDirs::new()
                 .and_then(|u| u.download_dir().map(|d| d.join(&backup_name)))
                 .unwrap_or_else(|| std::path::PathBuf::from(&backup_name));
             
             if std::fs::copy(&db_path, &backup_path).is_ok() {
-                tracing::info!("Backup skapad: {:?}", backup_path);
+                tracing::info!("Backup skapad: {{}}", backup_path);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
-                        ui.set_status_msg(format!("Backup sparad: {}", backup_name).into());
+                        ui.set_status_msg(format!("Backup sparad: {{}}", backup_name).into());
                     }
                 });
             } else {
@@ -403,7 +414,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             } 
         });
         let now = chrono::Utc::now();
-        let (ms, md, u_m) = (format!("{:04}-{:02}", now.year(), now.month()), format!("{} {}", swedish_month_name(now.month()), now.year()), ui_i.clone());
+        let (ms, md, u_m) = (format!("{:04}-{:02}", now.year(), now.month()), format!("{{}} {{}}", swedish_month_name(now.month()), now.year()), ui_i.clone());
         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = u_m.upgrade() { ui.set_active_month(ms.into()); ui.set_active_month_display(md.into()); } });
         perform_search(Arc::new(JobSearchClient::new()), db_i, ui_i, Some(1), None, settings).await;
     });
@@ -427,7 +438,7 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
     let municipalities = JobSearchClient::parse_locations(&locations_str);
     let query_parts: Vec<_> = raw_query.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.replace("\"", "")).collect();
     let ui_early = ui_weak.clone(); let p_early = prio;
-    let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_early.upgrade() { ui.set_searching(true); ui.set_status_msg(format!("Söker efter nytt... (Visar sparade jobb för P{})", p_early.unwrap_or(0)).into()); } });
+    let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_early.upgrade() { ui.set_searching(true); ui.set_status_msg(format!("Söker efter nytt... (Visar sparade jobb för P{{}}", p_early.unwrap_or(0)).into()); } });
 
     let refresh_ui_from_db = |ui: &App, ads: Vec<crate::models::JobAd>, p: Option<i32>, muns: Vec<String>, msg: String| {
         let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
@@ -461,21 +472,21 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
 
     if let Ok(existing_ads) = db.get_filtered_jobs(&[], Some(y), Some(m)).await {
         let ui_e2 = ui_weak.clone(); let muns_e2 = municipalities.clone(); let loc_d = locations_str.clone();
-        let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_e2.upgrade() { let msg = format!("Visar sparade jobb för {}. Söker efter nytt...", loc_d); refresh_ui_from_db(&ui, existing_ads, prio, muns_e2, msg); } });
+        let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_e2.upgrade() { let msg = format!("Visar sparade jobb för {{}}. Söker efter nytt...", loc_d); refresh_ui_from_db(&ui, existing_ads, prio, muns_e2, msg); } });
     }
 
     let mut new_count = 0; let blacklist: Vec<String> = settings.blacklist_keywords.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect();
     for keyword in &query_parts {
         match api_client.search(keyword, &municipalities, 100).await {
             Ok(ads) => { for mut ad in ads { ad.search_keyword = Some(keyword.clone()); let is_blacklisted = blacklist.iter().any(|word| ad.headline.to_lowercase().contains(word) || ad.description.as_ref().and_then(|d| d.text.as_deref()).map(|t| t.to_lowercase().contains(word)).unwrap_or(false)); if !is_blacklisted { if let Ok(None) = db.get_job_ad(&ad.id).await { if db.save_job_ad(&ad).await.is_ok() { new_count += 1; } } } } },
-            Err(e) => { tracing::error!("Sökning på '{}' misslyckades: {:?}", keyword, e); }
+            Err(e) => { tracing::error!("Sökning på '{{}}' misslyckades: {{}}", keyword, e); }
         }
     }
 
     if let Ok(final_ads) = db.get_filtered_jobs(&[], Some(y), Some(m)).await {
         trigger_sync(&db).await;
         let ui_f = ui_weak.clone(); let muns_f = municipalities.clone();
-        let msg = if new_count > 0 { format!("Klar! Hittade {} nya annonser.", new_count) } else { "Inga nya annonser hittades just nu.".to_string() };
+        let msg = if new_count > 0 { format!("Klar! Hittade {{}} nya annonser.", new_count) } else { "Inga nya annonser hittades just nu.".to_string() };
         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_f.upgrade() { refresh_ui_from_db(&ui, final_ads, prio, muns_f, msg); ui.set_searching(false); } });
     } else {
         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_searching(false); } });

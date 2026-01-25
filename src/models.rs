@@ -151,21 +151,6 @@ pub struct AppSettings {
     pub show_motivation: bool,
 }
 
-impl AppSettings {
-    pub fn load() -> Self {
-        std::fs::read_to_string("settings.json")
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    }
-
-    pub fn save(&self) {
-        if let Ok(s) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write("settings.json", s);
-        }
-    }
-}
-
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
