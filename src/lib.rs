@@ -81,6 +81,23 @@ fn copy_to_clipboard(text: String) {
     }
 }
 
+async fn trigger_sync(db: &Db) {
+    if let Ok(Some(settings)) = db.load_settings().await {
+        if !settings.sync_path.is_empty() {
+            let sync_dir = std::path::PathBuf::from(&settings.sync_path);
+            if sync_dir.exists() && sync_dir.is_dir() {
+                let db_path = get_db_path();
+                let target_path = sync_dir.join("jobseeker.redb");
+                if let Err(e) = std::fs::copy(&db_path, &target_path) {
+                    tracing::error!("Automatisk synk misslyckades: {}", e);
+                } else {
+                    tracing::info!("Automatisk synk klar: {:?}", target_path);
+                }
+            }
+        }
+    }
+}
+
 fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc::Receiver<String>) {
     let (tx, rx) = mpsc::channel();
     let _ = LOG_SENDER.set(tx.clone());
@@ -294,6 +311,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             let current = db.get_job_ad(&id_str).await.ok().flatten().and_then(|ad| ad.status);
             let new_status = if current == Some(target) { None } else { Some(target) };
             if db.update_ad_status(&id_str, new_status).await.is_ok() {
+                trigger_sync(&db).await;
                 let status_int = match new_status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 };
                 let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { let jobs = ui.get_jobs(); let mut vec: Vec<JobEntry> = jobs.iter().collect(); if let Some(pos) = vec.iter().position(|j| j.id == id_str) { if status_int == 1 { vec.remove(pos); } else { vec[pos].status = status_int; } ui.set_jobs(Rc::new(slint::VecModel::from(vec)).into()); } } });
             }
@@ -306,21 +324,77 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     let (db_set, ui_set, rt_set) = (db.clone(), ui.as_weak(), rt.clone());
     ui.on_save_settings(move |s| {
         let (db, ui_weak) = (db_set.clone(), ui_set.clone());
-        let settings = crate::models::AppSettings { keywords: s.keywords.to_string(), blacklist_keywords: s.blacklist_keywords.to_string(), locations_p1: s.locations_p1.to_string(), locations_p2: s.locations_p2.to_string(), locations_p3: s.locations_p3.to_string(), my_profile: s.my_profile.to_string(), ollama_url: s.ollama_url.to_string(), app_min_count: s.app_min_count, app_goal_count: s.app_goal_count, show_motivation: s.show_motivation };
+        let settings = crate::models::AppSettings { 
+            keywords: s.keywords.to_string(), 
+            blacklist_keywords: s.blacklist_keywords.to_string(), 
+            locations_p1: s.locations_p1.to_string(), 
+            locations_p2: s.locations_p2.to_string(), 
+            locations_p3: s.locations_p3.to_string(), 
+            my_profile: s.my_profile.to_string(), 
+            ollama_url: s.ollama_url.to_string(), 
+            sync_path: s.sync_path.to_string(),
+            app_min_count: s.app_min_count, 
+            app_goal_count: s.app_goal_count, 
+            show_motivation: s.show_motivation 
+        };
         let s_ui = settings.clone();
         rt_set.spawn(async move {
             if db.save_settings(&settings).await.is_ok() {
-                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_settings(AppSettings { keywords: s_ui.keywords.into(), blacklist_keywords: s_ui.blacklist_keywords.into(), locations_p1: normalize_locations(&s_ui.locations_p1).into(), locations_p2: normalize_locations(&s_ui.locations_p2).into(), locations_p3: normalize_locations(&s_ui.locations_p3).into(), my_profile: s_ui.my_profile.into(), ollama_url: s_ui.ollama_url.into(), app_min_count: s_ui.app_min_count, app_goal_count: s_ui.app_goal_count, show_motivation: s_ui.show_motivation }); ui.set_status_msg("Inställningar sparade".into()); } });
+                trigger_sync(&db).await;
+                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_settings(AppSettings { keywords: s_ui.keywords.into(), blacklist_keywords: s_ui.blacklist_keywords.into(), locations_p1: normalize_locations(&s_ui.locations_p1).into(), locations_p2: normalize_locations(&s_ui.locations_p2).into(), locations_p3: normalize_locations(&s_ui.locations_p3).into(), my_profile: s_ui.my_profile.into(), ollama_url: s_ui.ollama_url.into(), sync_path: s_ui.sync_path.into(), app_min_count: s_ui.app_min_count, app_goal_count: s_ui.app_goal_count, show_motivation: s_ui.show_motivation }); ui.set_status_msg("Inställningar sparade".into()); } });
             }
         });
     });
 
+    // Callback: Database Action (Synk/Backup)
+    let ui_db = ui.as_weak();
+    ui.on_db_action(move |act| {
+        let ui_weak = ui_db.clone();
+        if act == "backup" {
+            let db_path = get_db_path();
+            let backup_name = format!("jobseeker_backup_{}.redb", chrono::Local::now().format("%Y%m%d_%H%M"));
+            let backup_path = directories::UserDirs::new()
+                .and_then(|u| u.download_dir().map(|d| d.join(&backup_name)))
+                .unwrap_or_else(|| std::path::PathBuf::from(&backup_name));
+            
+            if std::fs::copy(&db_path, &backup_path).is_ok() {
+                tracing::info!("Backup skapad: {:?}", backup_path);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_status_msg(format!("Backup sparad: {}", backup_name).into());
+                    }
+                });
+            } else {
+                tracing::error!("Misslyckades att skapa backup!");
+            }
+        }
+    });
+
     // Initial laddning
     let (db_i, ui_i, rt_i) = (db.clone(), ui.as_weak(), rt.clone());
+    let db_path_str = get_db_path().to_string_lossy().to_string();
     rt_i.spawn(async move {
         let settings = db_i.load_settings().await.unwrap_or_default().unwrap_or_default();
         let (s, u_s) = (settings.clone(), ui_i.clone());
-        let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = u_s.upgrade() { ui.set_settings(AppSettings { keywords: s.keywords.into(), blacklist_keywords: s.blacklist_keywords.into(), locations_p1: normalize_locations(&s.locations_p1).into(), locations_p2: normalize_locations(&s.locations_p2).into(), locations_p3: normalize_locations(&s.locations_p3).into(), my_profile: s.my_profile.into(), ollama_url: s.ollama_url.into(), app_min_count: s.app_min_count, app_goal_count: s.app_goal_count, show_motivation: s.show_motivation }); } });
+        let d_path = db_path_str.clone();
+        let _ = slint::invoke_from_event_loop(move || { 
+            if let Some(ui) = u_s.upgrade() { 
+                ui.set_database_path(d_path.into());
+                ui.set_settings(AppSettings { 
+                    keywords: s.keywords.into(), 
+                    blacklist_keywords: s.blacklist_keywords.into(), 
+                    locations_p1: normalize_locations(&s.locations_p1).into(), 
+                    locations_p2: normalize_locations(&s.locations_p2).into(), 
+                    locations_p3: normalize_locations(&s.locations_p3).into(), 
+                    my_profile: s.my_profile.into(), 
+                    ollama_url: s.ollama_url.into(), 
+                    sync_path: s.sync_path.into(),
+                    app_min_count: s.app_min_count, 
+                    app_goal_count: s.app_goal_count, 
+                    show_motivation: s.show_motivation 
+                }); 
+            } 
+        });
         let now = chrono::Utc::now();
         let (ms, md, u_m) = (format!("{:04}-{:02}", now.year(), now.month()), format!("{} {}", swedish_month_name(now.month()), now.year()), ui_i.clone());
         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = u_m.upgrade() { ui.set_active_month(ms.into()); ui.set_active_month_display(md.into()); } });
@@ -351,7 +425,19 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
     let refresh_ui_from_db = |ui: &App, ads: Vec<crate::models::JobAd>, p: Option<i32>, muns: Vec<String>, msg: String| {
         let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
         let pmn: Vec<String> = if p.is_some() { muns.iter().filter_map(|code| JobSearchClient::get_municipality_name(code)).map(|s| s.to_lowercase()).collect() } else { Vec::new() };
-        let mut entries: Vec<JobEntry> = ads.into_iter().filter(|ad| { if !pmn.is_empty() { if let Some(ref addr) = ad.workplace_address { if let Some(ref mun) = addr.municipality { return pmn.contains(&mun.to_lowercase()); } } return false; } true }).map(|ad| {
+        
+        // Räkna sökta jobb globalt för månaden innan vi filtrerar listan för visning
+        let applied_count = ads.iter().filter(|ad| ad.status == Some(AdStatus::Applied)).count() as i32;
+
+        let mut entries: Vec<JobEntry> = ads.into_iter().filter(|ad| { 
+            if !pmn.is_empty() { 
+                if let Some(ref addr) = ad.workplace_address { 
+                    if let Some(ref mun) = addr.municipality { return pmn.contains(&mun.to_lowercase()); } 
+                } 
+                return false; 
+            } 
+            true 
+        }).map(|ad| {
             let raw_desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
             let formatted_desc = raw_desc.replace("<li>", "\n • ").replace("</li>", "").replace("<ul>", "\n").replace("</ul>", "\n").replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n").replace("<p>", "\n\n").replace("</p>", "").replace("<strong>", "").replace("</strong>", "").replace("<b>", "").replace("</b>", "");
             let mut clean_desc = re_html.replace_all(&formatted_desc, "").to_string();
@@ -359,7 +445,6 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
             JobEntry { id: ad.id.into(), title: ad.headline.into(), employer: ad.employer.and_then(|e| e.name).unwrap_or_default().into(), location: ad.workplace_address.and_then(|a| a.city).unwrap_or_default().into(), description: clean_desc.into(), date: ad.publication_date.split('T').next().unwrap_or("").into(), apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(), rating: ad.rating.unwrap_or(0) as i32, status: match ad.status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 }, status_text: "".into() }
         }).collect();
         
-        let applied_count = entries.iter().filter(|j| j.status == 4).count() as i32;
         entries.sort_by(|a, b| b.date.cmp(&a.date));
         
         ui.set_jobs(std::rc::Rc::new(slint::VecModel::from(entries)).into()); 
@@ -381,6 +466,7 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
     }
 
     if let Ok(final_ads) = db.get_filtered_jobs(&[], Some(y), Some(m)).await {
+        trigger_sync(&db).await;
         let ui_f = ui_weak.clone(); let muns_f = municipalities.clone();
         let msg = if new_count > 0 { format!("Klar! Hittade {} nya annonser.", new_count) } else { "Inga nya annonser hittades just nu.".to_string() };
         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_f.upgrade() { refresh_ui_from_db(&ui, final_ads, prio, muns_f, msg); ui.set_searching(false); } });

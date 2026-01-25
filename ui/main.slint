@@ -26,6 +26,7 @@ export struct AppSettings {
     locations_p3: string,
     my_profile: string,
     ollama_url: string,
+    sync_path: string,
     app_min_count: int,
     app_goal_count: int,
     show_motivation: bool,
@@ -505,10 +506,12 @@ component SettingsPage inherits Rectangle {
     in-out property <AppSettings> settings;
     in property <string> system-logs;
     in property <string> log_file_path;
+    in property <string> database_path;
     in property <string> last_api_request;
     callback save-settings(AppSettings);
     callback clear-logs;
     callback copy-text(string);
+    callback db-action(string); // backup, restore
 
     background: #121212;
 
@@ -523,6 +526,31 @@ component SettingsPage inherits Rectangle {
                 width: 100%; // Tvinga layouten att hålla sig inom ScrollView:ns bredd
                 spacing: 15px;
                 padding-right: 25px; // Extra plats för att slippa horisontell scroll helt
+
+                Text { text: "DATABASHANTERING (SYNK)"; color: #00ffff; font-weight: 700; font-size: 11px; }
+                Rectangle {
+                    background: #1a1a1a;
+                    border-radius: 4px;
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 8px;
+                        Text { text: "Aktiv databas:"; color: #888; font-size: 12px; }
+                        Text { text: root.database_path; color: #aaa; font-size: 12px; wrap: char-wrap; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Button { text: "Skapa Backup"; clicked => { root.db-action("backup"); } }
+                        }
+                        Rectangle { height: 10px; } // Spacer
+                        Text { text: "SYNKRAPP (Valfri):"; color: #888; font-size: 12px; }
+                        sync-input := TextEdit {
+                            text: root.settings.sync_path;
+                            placeholder-text: "/path/to/sync/folder";
+                            height: 40px;
+                            font-size: 12px;
+                        }
+                        Text { text: "Databasen kopieras hit automatiskt vid ändringar."; color: #666; font-size: 10px; }
+                    }
+                }
 
                 Text { text: "SÖKORD"; color: #4a90e2; font-weight: 700; font-size: 11px; }
                 keywords-input := TextEdit { 
@@ -609,6 +637,7 @@ component SettingsPage inherits Rectangle {
                             locations_p3: loc-p3.text,
                             my_profile: profile-input.text,
                             ollama_url: root.settings.ollama_url,
+                            sync_path: sync-input.text,
                             app_min_count: min-input.text.to-float(),
                             app_goal_count: goal-input.text.to-float(),
                             show_motivation: root.settings.show_motivation
@@ -637,6 +666,7 @@ export component App inherits Window {
     in-out property <string> active-month-display: "Januari 2026";
     in-out property <string> system-logs: "";
     in-out property <string> log_file_path: "";
+    in-out property <string> database_path: "";
     in-out property <string> last_api_request: "";
     in-out property <int> applied-count: 0;
     in-out property <int> last_tab: 0;
@@ -656,6 +686,7 @@ export component App inherits Window {
     callback save_settings(AppSettings);
     callback stats_requested();
     callback export_requested(string, string, bool, bool, bool);
+    callback db_action(string);
 
     VerticalLayout {
         // Main View
@@ -731,8 +762,10 @@ export component App inherits Window {
             if root.current-tab == 2 : SettingsPage {
                 settings: root.settings;
                 log_file_path: root.log_file_path;
+                database_path: root.database_path;
                 last_api_request: root.last_api_request;
                 save-settings(s) => { root.save-settings(s); }
+                db-action(act) => { root.db-action(act); }
             }
         }
 
