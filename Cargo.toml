@@ -1,6 +1,6 @@
 [package]
 name = "Jobseeker"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2024"
 authors = ["Svensson <tuulikk@gmail.com>"]
 description = "Ett kraftfullt verktyg för att hitta jobb, ranka annonser med AI och hantera ansökningar direkt till PDF/Word."
@@ -78,7 +78,7 @@ log = "0.4.29"
 regex = "1.12.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
-slint = { version = "1.14", default-features = false, features = ["backend-android-activity-06", "renderer-skia", "compat-1-2", "i-slint-backend-android-activity"] }
+slint = { version = "1.14", default-features = false, features = ["android", "backend-android-activity-06", "renderer-skia", "compat-1-2", "i-slint-backend-android-activity"] }
 i-slint-backend-android-activity = { version = "1.14", features = ["native-activity"] }
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.14"

@@ -497,6 +497,7 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
 }
 
 pub fn desktop_main() {
+    setup_crash_handler();
     let (guard, log_rx) = setup_logging();
     setup_clipboard_manager();
     tracing::info!("Starting Jobseeker on Desktop");
@@ -506,6 +507,29 @@ pub fn desktop_main() {
     let db = Arc::new(db);
     let ui = App::new().expect("Failed to create Slint UI");
     setup_ui(&ui, rt, db, log_rx);
+    let _log_guard = guard;
+    ui.run().expect("Failed to run Slint UI");
+}
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+fn android_main(app: slint::android::AndroidApp) {
+    setup_crash_handler();
+    android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info));
+    tracing::info!("Starting Jobseeker on Android");
+    
+    slint::android::init(app).expect("Failed to initialize Slint on Android");
+    
+    let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
+    let (guard, log_rx) = setup_logging();
+    
+    let db_path = get_db_path();
+    let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()).await }).expect("Failed to initialize database");
+    let db = Arc::new(db);
+    
+    let ui = App::new().expect("Failed to create Slint UI");
+    setup_ui(&ui, rt, db, log_rx);
+    
     let _log_guard = guard;
     ui.run().expect("Failed to run Slint UI");
 }
