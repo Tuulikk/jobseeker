@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - master
       - slint-conversion
       - fix/settings-prio-restore
     tags:
@@ -121,7 +122,7 @@ jobs:
 
     - name: Upload to Release
       uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+      if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/master'
       with:
         tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest-dev' }}
         name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Latest Development Build' }}
@@ -131,7 +132,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-android:
-    name: Build Android APK
+    name: Build Android APK (Universal)
     runs-on: ubuntu-latest
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
@@ -153,10 +154,9 @@ jobs:
         run: |
           sdkmanager --install "ndk;$NDK_VERSION" "platforms;android-30" "build-tools;30.0.3" "platform-tools"
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
+      - name: Install Rust Targets
+        run: |
+          rustup target add aarch64-linux-android x86_64-linux-android
           
       - name: Install cargo-apk
         run: cargo install cargo-apk
@@ -165,24 +165,25 @@ jobs:
         run: |
           keytool -genkey -v -keystore dummy.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 -storepass password -keypass password -dname "CN=Android Debug,O=Android,C=US"
         
-      - name: Build APK
+      - name: Build APK (Multi-Arch)
         run: |
           cargo apk build --release --lib
         
       - name: Prepare Assets
         run: |
           mkdir -p dist
-          find target -name "*.apk" -exec cp {} dist/jobseeker-android.apk \;
+          # Find the built APK and give it a clear name
+          find target -name "*.apk" -exec cp {} dist/jobseeker-android-universal.apk \;
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: jobseeker-android.apk
-          path: dist/jobseeker-android.apk
+          name: jobseeker-android-universal.apk
+          path: dist/jobseeker-android-universal.apk
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+        if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/master'
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest-dev' }}
           name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'Latest Development Build' }}
