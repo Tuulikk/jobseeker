@@ -531,43 +531,69 @@ pub fn desktop_main() {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
+    // CRITICAL: Log to file FIRST, before anything else
+    let test_path = "/data/data/com.gnawsoftware.jobseeker/files/startup_test.txt";
+    let _ = std::fs::write(test_path, "android_main called! Step 1\n");
+    
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info));
+    let _ = std::fs::write(test_path, "android_main called! Step 2: Logger initialized\n");
+    
     tracing::info!("ANDROID: Logger initialized");
+    let _ = std::fs::write(test_path, "android_main called! Step 3: Tracing works\n");
     
     setup_crash_handler();
-    tracing::info!("ANDROID: Crash handler setup");
+    let _ = std::fs::write(test_path, "android_main called! Step 4: Crash handler done\n");
     
     tracing::info!("Starting Jobseeker on Android");
+    let _ = std::fs::write(test_path, "android_main called! Step 5: About to init Slint\n");
     
     tracing::info!("ANDROID: About to init Slint");
     slint::android::init(app).expect("Failed to initialize Slint on Android");
+    let _ = std::fs::write(test_path, "android_main called! Step 6: Slint initialized!\n");
+    
     tracing::info!("ANDROID: Slint initialized");
+    let _ = std::fs::write(test_path, "android_main called! Step 7: Creating runtime\n");
     
     tracing::info!("ANDROID: Creating Tokio runtime");
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
+    let _ = std::fs::write(test_path, "android_main called! Step 8: Runtime created!\n");
+    
     tracing::info!("ANDROID: Tokio runtime created");
     
     tracing::info!("ANDROID: Setting up logging");
     let (guard, log_rx) = setup_logging();
+    let _ = std::fs::write(test_path, "android_main called! Step 9: Logging setup done\n");
     
     tracing::info!("ANDROID: Getting DB path");
     let db_path = get_db_path();
+    let _ = std::fs::write(test_path, &format!("Step 10: DB path: {:?}\n", db_path));
+    
     tracing::info!("ANDROID: DB path: {:?}", db_path);
     
     tracing::info!("ANDROID: Initializing database");
     let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()).await }).expect("Failed to initialize database");
     let db = Arc::new(db);
+    let _ = std::fs::write(test_path, "android_main called! Step 11: Database initialized!\n");
+    
     tracing::info!("ANDROID: Database initialized");
     
     tracing::info!("ANDROID: Creating Slint UI");
     let ui = App::new().expect("Failed to create Slint UI");
+    let _ = std::fs::write(test_path, "android_main called! Step 12: UI created!\n");
+    
     tracing::info!("ANDROID: UI created");
     
     tracing::info!("ANDROID: Setting up UI");
     setup_ui(&ui, rt, db, log_rx);
+    let _ = std::fs::write(test_path, "android_main called! Step 13: UI setup complete!\n");
+    
     tracing::info!("ANDROID: UI setup complete");
     
     let _log_guard = guard;
+    let _ = std::fs::write(test_path, "android_main called! Step 14: About to run UI!\n");
+    
     tracing::info!("ANDROID: About to run UI");
+    let _ = std::fs::write(test_path, "android_main called! Step 15: Entering UI run loop...\n");
+    
     ui.run().expect("Failed to run Slint UI");
 }
