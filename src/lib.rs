@@ -531,22 +531,43 @@ pub fn desktop_main() {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
-    setup_crash_handler();
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info));
+    tracing::info!("ANDROID: Logger initialized");
+    
+    setup_crash_handler();
+    tracing::info!("ANDROID: Crash handler setup");
+    
     tracing::info!("Starting Jobseeker on Android");
     
+    tracing::info!("ANDROID: About to init Slint");
     slint::android::init(app).expect("Failed to initialize Slint on Android");
+    tracing::info!("ANDROID: Slint initialized");
     
+    tracing::info!("ANDROID: Creating Tokio runtime");
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
+    tracing::info!("ANDROID: Tokio runtime created");
+    
+    tracing::info!("ANDROID: Setting up logging");
     let (guard, log_rx) = setup_logging();
     
+    tracing::info!("ANDROID: Getting DB path");
     let db_path = get_db_path();
+    tracing::info!("ANDROID: DB path: {:?}", db_path);
+    
+    tracing::info!("ANDROID: Initializing database");
     let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()).await }).expect("Failed to initialize database");
     let db = Arc::new(db);
+    tracing::info!("ANDROID: Database initialized");
     
+    tracing::info!("ANDROID: Creating Slint UI");
     let ui = App::new().expect("Failed to create Slint UI");
+    tracing::info!("ANDROID: UI created");
+    
+    tracing::info!("ANDROID: Setting up UI");
     setup_ui(&ui, rt, db, log_rx);
+    tracing::info!("ANDROID: UI setup complete");
     
     let _log_guard = guard;
+    tracing::info!("ANDROID: About to run UI");
     ui.run().expect("Failed to run Slint UI");
 }
