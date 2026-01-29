@@ -57,8 +57,6 @@ impl std::io::Write for SlintLogWriter {
 
 /// The Clipboard Manager solves a critical issue on Linux where clipboard content
 /// is lost if the application that "owns" the data drops its reference too quickly.
-/// By spawning a long-lived thread that manages a single Clipboard instance,
-/// we ensure that the OS and other applications have enough time to fetch the data.
 fn setup_clipboard_manager() {
     let (tx, rx) = mpsc::channel::<String>();
     let _ = CLIPBOARD_SENDER.set(tx);
@@ -74,7 +72,7 @@ fn setup_clipboard_manager() {
                 tracing::info!("Text copied to clipboard and kept alive.");
             }
             #[cfg(target_os = "android")]
-            let _ = text; // Silence unused warning on Android
+            let _ = text;
         }
     });
 }
@@ -85,9 +83,16 @@ fn copy_to_clipboard(text: String) {
     }
 }
 
+/// Capture crashes and save to a file for later viewing in the UI.
+fn setup_crash_handler() {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = info.to_string();
+        let path = get_db_path().with_file_name("crash.log");
+        let _ = std::fs::write(path, msg);
+    }));
+}
+
 /// Triggers an automatic backup of the database to a user-defined sync folder.
-/// This is designed to work seamlessly with Syncthing, Dropbox, or other 
-/// folder-monitoring sync tools.
 async fn trigger_sync(db: &Db) {
     if let Ok(Some(settings)) = db.load_settings().await {
         if !settings.sync_path.is_empty() {
@@ -142,19 +147,13 @@ mod mpsc_writer {
 
 fn get_db_path() -> std::path::PathBuf {
     #[cfg(target_os = "android")]
-    {
+    { 
         let path = std::path::PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files"); 
         let _ = std::fs::create_dir_all(&path); 
         return path.join("jobseeker.redb"); 
     }
     #[cfg(not(target_os = "android"))]
-    {
-        directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker").map(|p| {
-            let d = p.data_dir();
-            let _ = std::fs::create_dir_all(d);
-            d.join("jobseeker.redb")
-        }).unwrap_or_else(|| std::path::PathBuf::from("jobseeker.redb"))
-    }
+    { directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker").map(|p| { let d = p.data_dir(); let _ = std::fs::create_dir_all(d); d.join("jobseeker.redb") }).unwrap_or_else(|| std::path::PathBuf::from("jobseeker.redb")) }
 }
 
 fn normalize_locations(input: &str) -> String {
@@ -167,6 +166,16 @@ fn normalize_locations(input: &str) -> String {
 fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<String>) {
     let ui_weak = ui.as_weak();
     spawn_log_task(ui_weak.clone(), log_rx);
+
+    // Check for previous crash
+    let crash_file = get_db_path().with_file_name("crash.log");
+    if crash_file.exists() {
+        if let Ok(content) = std::fs::read_to_string(&crash_file) {
+            ui.set_system_logs(format!("PREVIOUS CRASH DETECTED:\n\n{}\n\n---\n\n", content).into());
+            ui.set_status_msg("Appen kraschade senast. Se loggar i Inställningar.".into());
+        }
+        let _ = std::fs::remove_file(crash_file);
+    }
 
     let db_for_stats = db.clone();
     let ui_for_stats = ui.as_weak();
@@ -188,7 +197,13 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     let (mut applied, mut bookmarked, mut thumbsup, mut rejected) = (0, 0, 0, 0);
                     let mut counts = std::collections::HashMap::new();
                     for ad in ads {
-                        match ad.status { Some(AdStatus::Applied) => applied += 1, Some(AdStatus::Bookmarked) => bookmarked += 1, Some(AdStatus::ThumbsUp) => thumbsup += 1, Some(AdStatus::Rejected) => rejected += 1, _ => {} }
+                        match ad.status {
+                            Some(AdStatus::Applied) => applied += 1,
+                            Some(AdStatus::Bookmarked) => bookmarked += 1,
+                            Some(AdStatus::ThumbsUp) => thumbsup += 1,
+                            Some(AdStatus::Rejected) => rejected += 1,
+                            _ => {} 
+                        }
                         if let Some(kw) = ad.search_keyword { *counts.entry(kw).or_insert(0) += 1; }
                     }
                     let mut stats_vec: Vec<KeywordStat> = counts.into_iter().map(|(name, count)| KeywordStat { name: name.into(), count }).collect();
@@ -224,13 +239,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 let month = parts[1].parse().unwrap_or(1);
                 let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
                 
-                let mut report = format!("AKTIVITETSRAPPORT - {}
-==========================================\n\n", month_display.to_uppercase());
+                let mut report = format!("AKTIVITETSRAPPORT - {}\n==========================================\n\n", month_display.to_uppercase());
                 if include_params {
-                    report.push_str(&format!("SÖKPARAMETRAR:\n• Sökord: {}
-• Prio 1: {}
-• Prio 2: {}
-\n", settings.keywords, normalize_locations(&settings.locations_p1), normalize_locations(&settings.locations_p2)));
+                    report.push_str(&format!("SÖKPARAMETRAR:\n• Sökord: {}\n• Prio 1: {}\n• Prio 2: {}\n\n", settings.keywords, normalize_locations(&settings.locations_p1), normalize_locations(&settings.locations_p2)));
                 }
                 if include_jobs {
                     if let Ok(ads) = db.get_filtered_jobs(&[AdStatus::Applied], Some(year), Some(month)).await {
@@ -247,8 +258,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     if let Ok(ads) = db.get_filtered_jobs(&[], Some(year), Some(month)).await {
                         let app = ads.iter().filter(|a| a.status == Some(AdStatus::Applied)).count();
                         let rej = ads.iter().filter(|a| a.status == Some(AdStatus::Rejected)).count();
-                        report.push_str(&format!("AKTIVITETSANALYS:\n• Totalt granskade: {}
-• Konvertering: {} sökta, {} avvisade\n", ads.len(), app, rej));
+                        report.push_str(&format!("AKTIVITETSANALYS:\n• Totalt granskade: {}\n• Konvertering: {} sökta, {} avvisade\n", ads.len(), app, rej));
                     }
                 }
                 report.push_str("\nGenererad via Jobseeker 2026\n");
@@ -275,7 +285,13 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     let file_path = directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.join(&file_name))).unwrap_or_else(|| std::path::PathBuf::from(&file_name));
                     if std::fs::write(&file_path, report).is_ok() {
                         tracing::info!("Rapport sparad till: {:?}", file_path);
-                        let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg(format!("Rapport sparad: {}", file_name).into()); } });
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                ui.set_status_msg(format!("Rapport sparad: {}", file_name).into());
+                            }
+                        });
+                    } else {
+                        tracing::error!("Misslyckades att skapa backup!");
                     }
                 }
             });
@@ -309,6 +325,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                         if ad.driving_license_required { clean_desc.push_str("\n\nKÖRKORT:\n • Krav på körkort\n"); }
                         JobEntry { id: ad.id.into(), title: ad.headline.into(), employer: ad.employer.and_then(|e| e.name).unwrap_or_default().into(), location: ad.workplace_address.and_then(|a| a.city).unwrap_or_default().into(), description: clean_desc.into(), date: ad.publication_date.split('T').next().unwrap_or("").into(), apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(), rating: ad.rating.unwrap_or(0) as i32, status: match ad.status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 }, status_text: "".into() }
                     }).collect();
+                    
                     let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_f.upgrade() { ui.set_jobs(Rc::new(slint::VecModel::from(entries)).into()); ui.set_applied_count(app_count); } });
                 }
             });
@@ -442,7 +459,7 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
     let municipalities = JobSearchClient::parse_locations(&locations_str);
     let query_parts: Vec<_> = raw_query.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.replace("\"", "")).collect();
     let ui_early = ui_weak.clone(); let p_early = prio;
-    let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_early.upgrade() { ui.set_searching(true); ui.set_status_msg(format!("Söker efter nytt... (Visar sparade jobb för P{})", p_early.unwrap_or(0)).into()); } });
+    let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_early.upgrade() { ui.set_searching(true); ui.set_status_msg(format!("Söker efter nytt... (Visar sparade jobb för P{}", p_early.unwrap_or(0)).into()); } });
 
     let refresh_ui_from_db = |ui: &App, ads: Vec<crate::models::JobAd>, p: Option<i32>, muns: Vec<String>, msg: String| {
         let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
@@ -482,7 +499,7 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
     for keyword in &query_parts {
         match api_client.search(keyword, &municipalities, 100).await {
             Ok(ads) => { for mut ad in ads { ad.search_keyword = Some(keyword.clone()); let is_blacklisted = blacklist.iter().any(|word| ad.headline.to_lowercase().contains(word) || ad.description.as_ref().and_then(|d| d.text.as_deref()).map(|t| t.to_lowercase().contains(word)).unwrap_or(false)); if !is_blacklisted { if let Ok(None) = db.get_job_ad(&ad.id).await { if db.save_job_ad(&ad).await.is_ok() { new_count += 1; } } } } },
-            Err(e) => { tracing::error!("Sökning på '{}' misslyckades: {:?}", keyword, e); }
+            Err(e) => { tracing::error!("Sökning på '{}' misslyckades: {}", keyword, e); }
         }
     }
 
@@ -512,7 +529,7 @@ pub fn desktop_main() {
 }
 
 #[cfg(target_os = "android")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
     setup_crash_handler();
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info));
