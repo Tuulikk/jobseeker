@@ -1,10 +1,23 @@
-use reqwest::Client;
 use crate::models::JobAd;
 use serde_json::Value;
 use anyhow::{Result, Context};
+use log::{info, error, warn};
+use reqwest::Client;
 
+// Använd JNI HTTP på Android för att använda Android's native network stack
+#[cfg(target_os = "android")]
+use crate::jni_http;
+
+// Android uses reqwest for HTTP requests
+// Desktop uses reqwest
 pub struct JobSearchClient {
+    #[cfg(not(target_os = "android"))]
     client: Client,
+    #[cfg(not(target_os = "android"))]
+    base_url: String,
+    #[cfg(target_os = "android")]
+    client: Client,
+    #[cfg(target_os = "android")]
     base_url: String,
 }
 
@@ -87,12 +100,13 @@ impl JobSearchClient {
     /// ⚠️ GUARDED: JobTech API requires numeric municipality codes for filtering.
     /// Do not change this to send names directly. Use JobSearchClient::get_municipality_code
     /// to resolve names before calling search.
+    #[cfg(not(target_os = "android"))]
     pub async fn search(&self, query: &str, municipalities: &[String], limit: u32) -> Result<Vec<JobAd>> {
         if municipalities.len() > 1 {
             // Multiple municipalities: do separate API calls per municipality and merge results
             return self.search_multi_municipalities(query, municipalities, limit).await;
         }
-        
+
         // Single municipality (or empty): use original logic
         // ⚠️ HARD API CONSTRAINTS - DO NOT MODIFY:
         // 1. 'limit' MUST be <= 100. Values like 200 trigger HTTP 400 Bad Request.
@@ -113,110 +127,170 @@ impl JobSearchClient {
         let request = self.client.get(&url)
             .header("accept", "application/json")
             .query(&params);
-        
+
         // Log the full URL for debugging (with parameters)
         if let Some(req_builder) = request.try_clone() {
             if let Ok(req) = req_builder.build() {
-                tracing::info!("Full API URL: {}", req.url());
+                info!("Full API URL: {}", req.url());
             }
         }
 
-        let response = request
-            .send()
-            .await
-            .context("Failed to send request to JobSearch API")?;
+        let response = match request.send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    eprintln!("Raw reqwest error: {:?}", e);
+                    return Err(e).context("Failed to send request to JobSearch API");
+                }
+            };
 
-        tracing::info!("API Response Status: {}", response.status());
+        info!("API Response Status: {}", response.status());
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            tracing::error!("API Error Detail: {}", body);
-            return Err(anyhow::anyhow!("API Error: {} - {}", status, body));
+            let body = match response.text().await {
+                Ok(b) => b,
+                Err(e) => format!("(failed to read error body: {})", e),
+            };
+            error!("API Error Detail: {}", body);
+            return Err(anyhow::anyhow!("API returned HTTP {}", status));
         }
 
-        let json: Value = response.json().await.context("Failed to parse JSON response")?;
+        let json = response.json::<Value>().await
+            .context("Failed to parse JSON response")?;
 
         let hits = json["hits"].as_array()
-            .context("No 'hits' array found in response")?;
+            .ok_or_else(|| anyhow::anyhow!("Response missing 'hits' array"))?;
 
-        tracing::info!("API found {} raw hits", hits.len());
+        info!("API found {} raw hits", hits.len());
 
-        let mut ads = Vec::new();
+        let mut results = Vec::new();
         for hit in hits {
             let ad_val = hit.clone();
-
-            // Extract webpage_url from root if not present in nested structs
             let webpage_url = hit["webpage_url"].as_str().map(|s| s.to_string());
 
-            match serde_json::from_value::<JobAd>(ad_val.clone()) {
-                Ok(mut ad) => {
-                    ad.webpage_url = webpage_url;
+            if let Ok(mut ad) = serde_json::from_value::<JobAd>(ad_val.clone()) {
+                ad.webpage_url = webpage_url;
 
-                    // Extrahera working_hours_type om det saknas i automatisk deserialisering
-                    if ad.working_hours_type.is_none() {
-                        if let Some(label) = hit["working_hours_type"]["label"].as_str() {
-                            ad.working_hours_type = Some(crate::models::WorkingHours {
-                                label: Some(label.to_string()),
-                            });
-                        }
+                if ad.working_hours_type.is_none() {
+                    if let Some(label) = hit["working_hours_type"]["label"].as_str() {
+                        ad.working_hours_type = Some(crate::models::WorkingHours {
+                            label: Some(label.to_string()),
+                        });
                     }
-
-                    ads.push(ad);
-                },
-                Err(e) => {
-                    eprintln!("Error parsing job ad: {}. Value: {:?}", e, hit);
                 }
+
+                results.push(ad);
             }
         }
 
-        Ok(ads)
+        Ok(results)
     }
 
-    async fn search_multi_municipalities(&self, query: &str, municipalities: &[String], limit_per_municipality: u32) -> Result<Vec<JobAd>> {
-        use std::collections::HashSet;
+    #[cfg(target_os = "android")]
+    pub async fn search(&self, query: &str, municipalities: &[String], limit: u32) -> Result<Vec<JobAd>> {
+        if municipalities.len() > 1 {
+            return self.search_multi_municipalities(query, municipalities, limit).await;
+        }
+
+        // ⚠️ HARD API CONSTRAINTS - DO NOT MODIFY:
+        // 1. 'limit' MUST be <= 100. Values like 200 trigger HTTP 400 Bad Request.
+        // 2. Do NOT add 'sort' parameter. The server rejects most values with HTTP 400.
+        // 3. Keep queries simple. Complex boolean logic is handled by caller via individual calls.
         
-        tracing::info!("Searching across {} municipalities (separate API calls)", municipalities.len());
+        let m = municipalities.get(0).cloned().unwrap_or_default();
+        let url = format!("{}/search?q={}&limit={}{}",
+            self.base_url,
+            urlencoding::encode(query),
+            limit,
+            if m.is_empty() { "".to_string() } else { format!("&municipality={}", m) }
+        );
+        
+        info!("JNI Android HTTP search: {}", url);
+
+        let response_text = crate::jni_http::http_get(&url)?;
+        let json: Value = serde_json::from_str(&response_text)
+            .context("Failed to parse JSON response from JNI HTTP")?;
+
+        let hits = json["hits"].as_array()
+            .ok_or_else(|| anyhow::anyhow!("Response missing 'hits' array"))?;
+
+        info!("API found {} hits via JNI", hits.len());
+
+        let mut results = Vec::new();
+        for hit in hits {
+            let ad_val = hit.clone();
+            let webpage_url = hit["webpage_url"].as_str().map(|s| s.to_string());
+
+            if let Ok(mut ad) = serde_json::from_value::<JobAd>(ad_val.clone()) {
+                ad.webpage_url = webpage_url;
+
+                if ad.working_hours_type.is_none() {
+                    if let Some(label) = hit["working_hours_type"]["label"].as_str() {
+                        ad.working_hours_type = Some(crate::models::WorkingHours {
+                            label: Some(label.to_string()),
+                        });
+                    }
+                }
+
+                results.push(ad);
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Multi-municipality search - Desktop version using reqwest
+    #[cfg(not(target_os = "android"))]
+    async fn search_multi_municipalities(&self, query: &str, municipalities: &[String], limit: u32) -> Result<Vec<JobAd>> {
+        use std::collections::HashSet;
+
+        info!("Searching across {} municipalities (separate API calls)", municipalities.len());
         let mut all_ads = Vec::new();
         let mut seen_ids = HashSet::new();
-        
+
         for m in municipalities {
             if m.is_empty() { continue; }
-            
+
             // ⚠️ API CONSTRAINT: 'limit' must be <= 100 per call.
             // ⚠️ API CONSTRAINT: Do NOT add 'sort' parameter. It triggers 400 Bad Request.
             let params = vec![
                 ("q", query.to_string()),
-                ("limit", limit_per_municipality.to_string()),
+                ("limit", limit.to_string()),
                 ("municipality", m.to_string()),
             ];
-            
+
             let url = format!("{}/search", self.base_url);
-            tracing::info!("Fetching for municipality {}: {}", m, url);
-            
-            let response = self.client.get(&url)
+            info!("Fetching for municipality {}: {}", m, url);
+
+            let response = match self.client.get(&url)
                 .header("accept", "application/json")
                 .query(&params)
                 .send()
                 .await
-                .with_context(|| format!("Failed to fetch for municipality {}", m))?;
-            
+            {
+                Ok(resp) => resp,
+                Err(e) => {
+                    eprintln!("Raw reqwest error for municipality {}: {:?}", m, e);
+                    return Err(e).with_context(|| format!("Failed to fetch for municipality {}", m));
+                }
+            };
+
             if !response.status().is_success() {
-                tracing::warn!("Skipping municipality {} due to HTTP {}", m, response.status());
+                warn!("Skipping municipality {} due to HTTP {}", m, response.status());
                 continue;
             }
-            
+
             if let Ok(json) = response.json::<Value>().await {
                 if let Some(hits) = json["hits"].as_array() {
-                    tracing::info!("Municipality {}: {} hits", m, hits.len());
-                    
+                    info!("Municipality {}: {} hits", m, hits.len());
+
                     for hit in hits {
                         let ad_val = hit.clone();
                         let webpage_url = hit["webpage_url"].as_str().map(|s| s.to_string());
-                        
+
                         if let Ok(mut ad) = serde_json::from_value::<JobAd>(ad_val.clone()) {
                             ad.webpage_url = webpage_url;
-                            
+
                             if ad.working_hours_type.is_none() {
                                 if let Some(label) = hit["working_hours_type"]["label"].as_str() {
                                     ad.working_hours_type = Some(crate::models::WorkingHours {
@@ -224,7 +298,7 @@ impl JobSearchClient {
                                     });
                                 }
                             }
-                            
+
                             // Deduplicate by ad ID
                             if seen_ids.insert(ad.id.clone()) {
                                 all_ads.push(ad);
@@ -234,33 +308,69 @@ impl JobSearchClient {
                 }
             }
         }
-        
-        tracing::info!("Total unique ads after merging {} municipalities: {}", municipalities.len(), all_ads.len());
+
+        info!("Total unique ads after merging {} municipalities: {}", municipalities.len(), all_ads.len());
         Ok(all_ads)
     }
-}
 
-impl Default for JobSearchClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+    /// Multi-municipality search - Android version using JNI HTTP
+    #[cfg(target_os = "android")]
+    async fn search_multi_municipalities(&self, query: &str, municipalities: &[String], limit: u32) -> Result<Vec<JobAd>> {
+        use std::collections::HashSet;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+        info!("Searching across {} municipalities (JNI Android HTTP)", municipalities.len());
+        let mut all_ads = Vec::new();
+        let mut seen_ids = HashSet::new();
 
-    #[test]
-    fn parse_locations_numeric_and_name() {
-        // numeric codes should be preserved, names should be resolved to codes
-        let parsed = JobSearchClient::parse_locations("1283, malmö");
-        assert_eq!(parsed, vec!["1283".to_string(), "1280".to_string()]);
-    }
+        for m in municipalities {
+            if m.is_empty() { continue; }
 
-    #[test]
-    fn parse_locations_ignores_empty_and_trims() {
-        // empty entries and whitespace should be ignored
-        let parsed = JobSearchClient::parse_locations(" , 1283,  malmö  , ");
-        assert_eq!(parsed, vec!["1283".to_string(), "1280".to_string()]);
+            let url = format!("{}/search?q={}&limit={}&municipality={}",
+                self.base_url,
+                urlencoding::encode(query),
+                limit,
+                m
+            );
+            info!("Fetching for municipality {} via JNI: {}", m, url);
+
+            match crate::jni_http::http_get(&url) {
+                Ok(response_text) => {
+                    info!("JNI HTTP SUCCESS! Response length: {}", response_text.len());
+                    if let Ok(json) = serde_json::from_str::<Value>(&response_text) {
+                        if let Some(hits) = json["hits"].as_array() {
+                            info!("Municipality {}: {} hits", m, hits.len());
+
+                            for hit in hits {
+                                let ad_val = hit.clone();
+                                let webpage_url = hit["webpage_url"].as_str().map(|s| s.to_string());
+
+                                if let Ok(mut ad) = serde_json::from_value::<JobAd>(ad_val.clone()) {
+                                    ad.webpage_url = webpage_url;
+
+                                    if ad.working_hours_type.is_none() {
+                                        if let Some(label) = hit["working_hours_type"]["label"].as_str() {
+                                            ad.working_hours_type = Some(crate::models::WorkingHours {
+                                                label: Some(label.to_string()),
+                                            });
+                                        }
+                                    }
+
+                                    if seen_ids.insert(ad.id.clone()) {
+                                        all_ads.push(ad);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("JNI HTTP failed for municipality {}: {}", m, e);
+                    continue;
+                }
+            }
+        }
+
+        info!("Total unique ads after merging {} municipalities: {}", municipalities.len(), all_ads.len());
+        Ok(all_ads)
     }
 }

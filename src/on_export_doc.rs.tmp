@@ -1,0 +1,32 @@
+    let (db_export_doc, ui_export_doc, rt_export_doc) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_export_doc(move |id, format| {
+        let (db, ui_weak, id_str, format_str) = (db_export_doc.clone(), ui_export_doc.clone(), id.to_string(), format.to_string());
+        rt_export_doc.spawn(async move {
+            if let Ok(Some(json)) = db.get_document(&id_str).await {
+                if let Ok(doc) = serde_json::from_str::<crate::models::UserDocument>(&json) {
+                    let name = doc.name.clone();
+                    let content = doc.content.clone();
+                    
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            let file_name = format!("{}.{}", name, format_str);
+                            let download_dir = directories::UserDirs::new()
+                                .and_then(|u| u.download_dir().map(|d| d.join(&file_name)))
+                                .unwrap_or_else(|| std::path::PathBuf::from(&file_name));
+
+                            let res = if format_str == "pdf" {
+                                crate::exporter::export_doc_to_pdf(&name, &content, &download_dir)
+                            } else {
+                                crate::exporter::export_doc_to_md(&content, &download_dir)
+                            };
+
+                            match res {
+                                Ok(_) => ui.set_status_msg(format!("Exporterad till: {:?}", download_dir).into()),
+                                Err(e) => ui.set_status_msg(format!("Export misslyckades: {}", e).into()),
+                            }
+                        }
+                    });
+                }
+            }
+        });
+    });

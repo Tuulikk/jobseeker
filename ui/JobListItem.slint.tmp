@@ -1,0 +1,81 @@
+{
+    in property <JobEntry> job;
+    in property <bool> selected: false;
+    callback clicked;
+    callback toggle-diamond();
+
+    height: 68px;
+    background: selected ? #2d2d3a : touch.pressed ? #2d2d2d : touch.has-hover ? #252525 : transparent;
+    border-radius: 4px;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    // Vi använder en Rectangle som "canvas" istället för layouts
+    // för att kunna låsa positionerna på pixelnivå.
+    container := Rectangle {
+
+        // 1. Status-indikator (Vänster)
+        Rectangle {
+            x: 8px;
+            y: (parent.height - self.height) / 2;
+            width: 4px;
+            height: 40px;
+            background: job.status == 4 ? #00ff00 : (job.status == 3 ? #00ffff : (job.status == 2 ? #ffd700 : #444444));
+            border-radius: 2px;
+        }
+
+        // 2. Titel (Låst till y: 16px)
+        Text {
+            x: 22px;
+            y: 16px;
+            text: job.title;
+            color: #ffffff;
+            font-size: 14px;
+            font-weight: 700;
+            width: parent.width - 120px;
+            overflow: elide;
+        }
+
+        // 3. Info-rad (Låst till y: 36px)
+        Text {
+            x: 22px;
+            y: 36px;
+            text: job.employer + " • " + job.location;
+            color: #999999;
+            font-size: 12px;
+            width: parent.width - 120px;
+            overflow: elide;
+        }
+
+        // 4. Diamant/Mål (Högst upp till höger om titeln)
+        if job.is-diamond : IconButton {
+            x: parent.width - 105px;
+            y: 14px;
+            icon: @image-url("../assets/icons/circle-fill.svg");
+            icon-size: 12px;
+            active: true;
+            clicked => { root.toggle-diamond(); }
+        }
+
+        // 5. Datum (Högst upp till höger)
+        Text {
+            x: parent.width - self.width - 8px;
+            y: 18px;
+            text: job.date;
+            color: #666666;
+            font-size: 12px;
+        }
+
+        // 6. Status-text (Längst ner till höger)
+        if job.status == 4 : Text {
+            x: parent.width - self.width - 8px;
+            y: 36px;
+            text: "SÖKT";
+            color: #00ff00;
+            font-size: 12px;
+            font-weight: 700;
+        }
+    }
+}

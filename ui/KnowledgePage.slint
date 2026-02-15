@@ -1,0 +1,141 @@
+import { Button, TextEdit, VerticalBox, HorizontalBox, ScrollView, StandardListView } from "std-widgets.slint";
+
+export struct DictEntry {
+    key: string,
+    value: string,
+}
+
+export component KnowledgePage inherits Rectangle {
+    in property <[DictEntry]> entries: [];
+    in property <string> status-msg: "";
+    
+    callback add-entry(string, string);
+    callback delete-entry(string);
+    callback extract-from-docs();
+
+    private property <string> new-key: "";
+    private property <string> new-val: "";
+
+    VerticalBox {
+        padding: 20px;
+        spacing: 15px;
+
+        Text {
+            text: "Min Ordbok & Kunskapsbas";
+            font-size: 24px;
+            font-weight: 700;
+        }
+
+        Text {
+            text: "Här sparar du nyckelord, kompetenser och bindningsord som hjälper systemet att matcha ditt CV mot annonser.";
+            font-size: 14px;
+            color: #aaaaaa;
+        }
+
+        // Formulär för att lägga till nya ord
+        Rectangle {
+            background: #2d2d3a;
+            border-radius: 8px;
+            height: 120px;
+            
+            VerticalBox {
+                padding: 10px;
+                HorizontalBox {
+                    spacing: 10px;
+                    VerticalBox {
+                        Text { text: "Nyckel (t.ex. 'RUST' eller 'ERFARENHET_AV')"; font-size: 12px; }
+                        Rectangle {
+                            background: #1a1a1a;
+                            height: 35px;
+                            TextInput {
+                                text <=> root.new-key;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    VerticalBox {
+                        Text { text: "Värde/Betydelse"; font-size: 12px; }
+                        Rectangle {
+                            background: #1a1a1a;
+                            height: 35px;
+                            TextInput {
+                                text <=> root.new-val;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+                Button {
+                    text: "Spara i ordboken";
+                    primary: true;
+                    enabled: root.new-key != "" && root.new-val != "";
+                    clicked => {
+                        root.add-entry(root.new-key, root.new-val);
+                        root.new-key = "";
+                        root.new-val = "";
+                    }
+                }
+            }
+        }
+
+        HorizontalBox {
+            alignment: space-between;
+            Button {
+                text: "✂️ Saxa ord från mina dokument";
+                clicked => { root.extract-from-docs(); }
+            }
+            if root.status-msg != "" : Text {
+                text: root.status-msg;
+                color: #00ff00;
+                vertical-alignment: center;
+            }
+        }
+
+        // Listan med ord
+        Rectangle {
+            background: #1a1a1a;
+            border-radius: 8px;
+            vertical-stretch: 1;
+
+            ScrollView {
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 5px;
+                    alignment: start;
+                    
+                    for entry in root.entries : Rectangle {
+                        height: 45px;
+                        background: #252525;
+                        border-radius: 4px;
+                        
+                        HorizontalLayout {
+                            padding-left: 15px;
+                            padding-right: 15px;
+                            spacing: 10px;
+                            
+                            Text {
+                                text: entry.key;
+                                color: #ffd700;
+                                font-weight: 700;
+                                vertical-alignment: center;
+                                width: 150px;
+                            }
+                            Text {
+                                text: entry.value;
+                                color: #ffffff;
+                                vertical-alignment: center;
+                                horizontal-stretch: 1;
+                                overflow: elide;
+                            }
+                            Button {
+                                text: "🗑️";
+                                width: 40px;
+                                clicked => { root.delete-entry(entry.key); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

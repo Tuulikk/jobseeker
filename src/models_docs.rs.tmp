@@ -1,0 +1,23 @@
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentType {
+    CV,
+    CoverLetter,
+    Other,
+}
+
+impl Default for DocumentType {
+    fn default() -> Self {
+        Self::Other
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UserDocument {
+    pub id: String,
+    pub name: String,
+    pub doc_type: DocumentType,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+    pub version: i32,
+}

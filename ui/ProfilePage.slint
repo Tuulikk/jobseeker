@@ -1,0 +1,148 @@
+import { Button, TextEdit, VerticalBox, HorizontalBox, ScrollView } from "std-widgets.slint";
+
+export struct DocEntry {
+    id: string,
+    name: string,
+    doc_type: string, // "CV", "Brev", "Annat"
+    is_main: bool,
+}
+
+export component ProfilePage inherits Rectangle {
+    in property <[DocEntry]> documents: [];
+    in-out property <string> selected-doc-content: "";
+    in-out property <int> selected-index: -1;
+    
+    callback import-file();
+    callback select-doc(string); // id
+    callback save-doc(string, string); // id, content
+    callback delete-doc(string); // id
+    callback export-doc(string, string); // id, format ("pdf", "md")
+    callback analyze-match(string); // id
+    callback set-as-main(string); // id
+
+    HorizontalLayout {
+        padding: 10px;
+        spacing: 10px;
+
+        // Vänster panel: Dokumentlista
+        VerticalBox {
+            width: 250px;
+            spacing: 5px;
+
+            Text {
+                text: "Mina Handlingar";
+                font-size: 18px;
+                font-weight: 700;
+            }
+
+            Button {
+                text: "➕ Importera ny fil";
+                clicked => { root.import-file(); }
+            }
+
+            Rectangle {
+                background: #1a1a1a;
+                border-radius: 4px;
+                vertical-stretch: 1;
+                
+                ScrollView {
+                    VerticalLayout {
+                        padding: 5px;
+                        spacing: 2px;
+                        alignment: start;
+                        for doc[i] in root.documents : Rectangle {
+                            height: 40px;
+                            background: root.selected-index == i ? #2d2d3a : touch.has-hover ? #252525 : transparent;
+                            border-radius: 4px;
+                            
+                            touch := TouchArea {
+                                clicked => { 
+                                    root.selected-index = i;
+                                    root.select-doc(doc.id);
+                                }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                spacing: 5px;
+                                alignment: center;
+                                
+                                Text {
+                                    text: doc.doc_type == "CV" ? "[CV]" : "[Brev]";
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: doc.name;
+                                    color: #ffffff;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                                if doc.is-main : Text {
+                                    text: "*";
+                                    color: #ffd700;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Höger panel: Editor
+        VerticalBox {
+            HorizontalLayout {
+                spacing: 5px;
+                Text {
+                    text: root.selected-index >= 0 ? "Redigera: " + root.documents[root.selected-index].name : "Välj ett dokument";
+                    font-size: 16px;
+                    vertical-alignment: center;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                
+                if root.selected-index >= 0 : Button {
+                    text: "Spara";
+                    clicked => { root.save-doc(root.documents[root.selected-index].id, root.selected-doc-content); }
+                }
+                if root.selected-index >= 0 && !root.documents[root.selected-index].is-main : Button {
+                    text: "⭐ Huvud-CV";
+                    clicked => { root.set-as-main(root.documents[root.selected-index].id); }
+                }
+                if root.selected-index >= 0 : Button {
+                    text: "Matcha mot jobb 🎯";
+                    primary: true;
+                    clicked => { root.analyze-match(root.documents[root.selected-index].id); }
+                }
+                if root.selected-index >= 0 : Button {
+                    text: "PDF 📥";
+                    clicked => { root.export-doc(root.documents[root.selected-index].id, "pdf"); }
+                }
+                if root.selected-index >= 0 : Button {
+                    text: "MD 📥";
+                    clicked => { root.export-doc(root.documents[root.selected-index].id, "md"); }
+                }
+                if root.selected-index >= 0 : Button {
+                    text: "🗑️";
+                    clicked => { root.delete-doc(root.documents[root.selected-index].id); }
+                }
+            }
+
+            /* TextEdit {
+                text <=> root.selected-doc-content;
+                enabled: root.selected-index >= 0;
+                vertical-stretch: 1;
+            } */
+            Rectangle {
+                background: #1a1a1a;
+                vertical-stretch: 1;
+                Text {
+                    text: root.selected-doc-content;
+                    color: #dddddd;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

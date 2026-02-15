@@ -1,0 +1,2 @@
+const PROFILES_TABLE: TableDefinition<&str, &str> = TableDefinition::new("profiles");
+const DOCUMENTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("documents");

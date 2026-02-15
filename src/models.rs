@@ -149,6 +149,28 @@ pub struct AppSettings {
     pub app_min_count: i32,
     pub app_goal_count: i32,
     pub show_motivation: bool,
+    #[serde(default)]
+    pub main_cv_id: String,
+}
+
+/// User documents (CVs, cover letters, etc.)
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UserDocument {
+    pub id: String,
+    pub name: String,
+    pub doc_type: String, // "CV", "Brev", "Annat"
+    pub content: String,
+    #[serde(default)]
+    pub is_main: bool,
+    #[serde(default = "Utc::now")]
+    pub created_at: DateTime<Utc>,
+}
+
+/// Dictionary entries for knowledge base
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DictEntry {
+    pub key: String,
+    pub value: String,
 }
 
 impl Default for AppSettings {
@@ -165,6 +187,7 @@ impl Default for AppSettings {
             app_min_count: 6,
             app_goal_count: 12,
             show_motivation: true,
+            main_cv_id: "".to_string(),
         }
     }
 }

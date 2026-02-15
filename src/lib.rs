@@ -3,6 +3,25 @@ mod ui {
     include!(concat!(env!("OUT_DIR"), "/main.rs"));
 }
 
+// Macro for tracing that uses log:: on Android since tracing subscriber is no-op
+#[cfg(target_os = "android")]
+macro_rules! tracing_info {
+    ($($arg:tt)*) => { log::info!($($arg)*); };
+}
+#[cfg(target_os = "android")]
+macro_rules! tracing_error {
+    ($($arg:tt)*) => { log::error!($($arg)*); };
+}
+
+#[cfg(not(target_os = "android"))]
+macro_rules! tracing_info {
+    ($($arg:tt)*) => { tracing::info!($($arg)*); };
+}
+#[cfg(not(target_os = "android"))]
+macro_rules! tracing_error {
+    ($($arg:tt)*) => { tracing::error!($($arg)*); };
+}
+
 use slint::ComponentHandle;
 use slint::Model;
 use std::rc::Rc;
@@ -24,11 +43,20 @@ pub mod models;
 pub mod api;
 pub mod db;
 pub mod ai;
+pub mod exporter;
+pub mod extractor;
+#[cfg(target_os = "android")]
+pub mod jni_http;
+
+#[cfg(target_os = "android")]
+use jni::objects::{JObject, JValue};
 
 use crate::api::JobSearchClient;
 use crate::db::Db;
 use crate::ui::*;
 use crate::models::AdStatus;
+use crate::models::UserDocument;
+use crate::models::DictEntry;
 
 use std::sync::mpsc;
 use tracing_subscriber::prelude::*;
@@ -69,7 +97,7 @@ fn setup_clipboard_manager() {
             #[cfg(not(target_os = "android"))]
             if let Some(ref mut cb) = clipboard {
                 let _ = cb.set_text(text);
-                tracing::info!("Text copied to clipboard and kept alive.");
+                tracing_info!("Text copied to clipboard and kept alive.");
             }
             #[cfg(target_os = "android")]
             let _ = text;
@@ -101,9 +129,9 @@ async fn trigger_sync(db: &Db) {
                 let db_path = get_db_path();
                 let target_path = sync_dir.join("jobseeker.redb");
                 if let Err(e) = std::fs::copy(&db_path, &target_path) {
-                    tracing::error!("Automatisk synk misslyckades: {}", e);
+                    tracing_error!("Automatisk synk misslyckades: {}", e);
                 } else {
-                    tracing::info!("Automatisk synk klar: {:?}", target_path);
+                    tracing_info!("Automatisk synk klar: {:?}", target_path);
                 }
             }
         }
@@ -113,15 +141,16 @@ async fn trigger_sync(db: &Db) {
 fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc::Receiver<String>) {
     let (tx, rx) = mpsc::channel();
     let _ = LOG_SENDER.set(tx.clone());
-    let slint_writer = SlintLogWriter { sender: tx };
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,winit=warn,calloop=warn,slint=warn,i_slint_backend_winit=warn"));
-    let registry = tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout).with_ansi(true))
-        .with(tracing_subscriber::fmt::layer().with_writer(move || slint_writer.sender.clone().into_writer()).with_ansi(false));
 
     #[cfg(not(target_os = "android"))]
     {
+        let slint_writer = SlintLogWriter { sender: tx };
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,winit=warn,calloop=warn,slint=warn,i_slint_backend_winit=warn"));
+        let registry = tracing_subscriber::registry()
+            .with(filter)
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout).with_ansi(true))
+            .with(tracing_subscriber::fmt::layer().with_writer(move || slint_writer.sender.clone().into_writer()).with_ansi(false));
+
         let log_dir = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker").map(|p| p.data_dir().join("logs")).unwrap_or_else(|| std::path::PathBuf::from("logs"));
         let _ = std::fs::create_dir_all(&log_dir);
         let file_appender = tracing_appender::rolling::daily(&log_dir, "jobseeker.log");
@@ -131,7 +160,25 @@ fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc
         (Some(guard), rx)
     }
     #[cfg(target_os = "android")]
-    { registry.init(); (None, rx) }
+    {
+        // On Android, use a minimal no-op subscriber to avoid panics
+        // Use tracing::Subscriber with a no-op implementation
+        use tracing::Subscriber;
+
+        struct NoOpSubscriber;
+        impl Subscriber for NoOpSubscriber {
+            fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool { false }
+            fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id { tracing::span::Id::from_u64(0) }
+            fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+            fn event(&self, _event: &tracing::Event<'_>) {}
+            fn enter(&self, _span: &tracing::span::Id) {}
+            fn exit(&self, _span: &tracing::span::Id) {}
+        }
+
+        let _ = tracing::subscriber::set_global_default(NoOpSubscriber);
+        (None, rx)
+    }
 }
 
 trait ToWriter { fn into_writer(self) -> mpsc_writer::MpscWriter; }
@@ -284,14 +331,14 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     let file_name = format!("jobb-rapport-{}.txt", month_str);
                     let file_path = directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.join(&file_name))).unwrap_or_else(|| std::path::PathBuf::from(&file_name));
                     if std::fs::write(&file_path, report).is_ok() {
-                        tracing::info!("Rapport sparad till: {:?}", file_path);
+                        tracing_info!("Rapport sparad till: {:?}", file_path);
                         let _ = slint::invoke_from_event_loop(move || {
                             if let Some(ui) = ui_weak.upgrade() {
                                 ui.set_status_msg(format!("Rapport sparad: {}", file_name).into());
                             }
                         });
                     } else {
-                        tracing::error!("Misslyckades att skapa backup!");
+                        tracing_error!("Misslyckades att skapa backup!");
                     }
                 }
             });
@@ -363,24 +410,43 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     let (db_set, ui_set, rt_set) = (db.clone(), ui.as_weak(), rt.clone());
     ui.on_save_settings(move |s| {
         let (db, ui_weak) = (db_set.clone(), ui_set.clone());
-        let settings = crate::models::AppSettings { 
-            keywords: s.keywords.to_string(), 
-            blacklist_keywords: s.blacklist_keywords.to_string(), 
-            locations_p1: s.locations_p1.to_string(), 
-            locations_p2: s.locations_p2.to_string(), 
-            locations_p3: s.locations_p3.to_string(), 
-            my_profile: s.my_profile.to_string(), 
-            ollama_url: s.ollama_url.to_string(), 
+        let settings = crate::models::AppSettings {
+            keywords: s.keywords.to_string(),
+            blacklist_keywords: s.blacklist_keywords.to_string(),
+            locations_p1: s.locations_p1.to_string(),
+            locations_p2: s.locations_p2.to_string(),
+            locations_p3: s.locations_p3.to_string(),
+            my_profile: s.my_profile.to_string(),
+            ollama_url: s.ollama_url.to_string(),
             sync_path: s.sync_path.to_string(),
-            app_min_count: s.app_min_count, 
-            app_goal_count: s.app_goal_count, 
-            show_motivation: s.show_motivation 
+            app_min_count: s.app_min_count,
+            app_goal_count: s.app_goal_count,
+            show_motivation: s.show_motivation,
+            main_cv_id: s.main_cv_id.to_string(),
         };
         let s_ui = settings.clone();
         rt_set.spawn(async move {
             if db.save_settings(&settings).await.is_ok() {
                 trigger_sync(&db).await;
-                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_settings(AppSettings { keywords: s_ui.keywords.into(), blacklist_keywords: s_ui.blacklist_keywords.into(), locations_p1: normalize_locations(&s_ui.locations_p1).into(), locations_p2: normalize_locations(&s_ui.locations_p2).into(), locations_p3: normalize_locations(&s_ui.locations_p3).into(), my_profile: s_ui.my_profile.into(), ollama_url: s_ui.ollama_url.into(), sync_path: s_ui.sync_path.into(), app_min_count: s_ui.app_min_count, app_goal_count: s_ui.app_goal_count, show_motivation: s_ui.show_motivation }); ui.set_status_msg("Inställningar sparade".into()); } });
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_settings(AppSettings {
+                            keywords: s_ui.keywords.into(),
+                            blacklist_keywords: s_ui.blacklist_keywords.into(),
+                            locations_p1: normalize_locations(&s_ui.locations_p1).into(),
+                            locations_p2: normalize_locations(&s_ui.locations_p2).into(),
+                            locations_p3: normalize_locations(&s_ui.locations_p3).into(),
+                            my_profile: s_ui.my_profile.into(),
+                            ollama_url: s_ui.ollama_url.into(),
+                            sync_path: s_ui.sync_path.into(),
+                            app_min_count: s_ui.app_min_count,
+                            app_goal_count: s_ui.app_goal_count,
+                            show_motivation: s_ui.show_motivation,
+                            main_cv_id: s_ui.main_cv_id.into(),
+                        });
+                        ui.set_status_msg("Inställningar sparade".into());
+                    }
+                });
             }
         });
     });
@@ -395,44 +461,272 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             let backup_path = directories::UserDirs::new()
                 .and_then(|u| u.download_dir().map(|d| d.join(&backup_name)))
                 .unwrap_or_else(|| std::path::PathBuf::from(&backup_name));
-            
+
             if std::fs::copy(&db_path, &backup_path).is_ok() {
-                tracing::info!("Backup skapad: {:?}", backup_path);
+                tracing_info!("Backup skapad: {:?}", backup_path);
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_status_msg(format!("Backup sparad: {}", backup_name).into());
                     }
                 });
             } else {
-                tracing::error!("Misslyckades att skapa backup!");
+                tracing_error!("Misslyckades att skapa backup!");
             }
         }
+    });
+
+    // Callback: Select document (load content into editor)
+    let (db_sel, ui_sel, rt_sel) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_select_doc(move |id| {
+        let db = db_sel.clone();
+        let ui_weak = ui_sel.clone();
+        let id_str = id.to_string();
+
+        rt_sel.spawn(async move {
+            if let Ok(docs) = db.get_documents().await {
+                if let Some(doc) = docs.iter().find(|d| d.id == id_str).cloned() {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_selected_doc_content(doc.content.clone().into());
+                        }
+                    });
+                }
+            }
+        });
+    });
+
+    // Callback: Save document
+    let (db_save, ui_save, rt_save) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_save_doc(move |id, content| {
+        let db = db_save.clone();
+        let ui_weak = ui_save.clone();
+        let id_str = id.to_string();
+        let content_str = content.to_string();
+
+        rt_save.spawn(async move {
+            if let Ok(mut docs) = db.get_documents().await {
+                if let Some(mut doc) = docs.iter_mut().find(|d| d.id == id_str) {
+                    doc.content = content_str.clone();
+                    let _ = db.save_document(doc).await;
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_status_msg("Dokument sparat".into());
+                        }
+                    });
+                }
+            }
+        });
+    });
+
+    // Callback: Delete document
+    let (db_del, ui_del) = (db.clone(), ui.as_weak());
+    let rt_del = rt.clone();
+    ui.on_delete_doc(move |id| {
+        let db = db_del.clone();
+        let ui_weak = ui_del.clone();
+        let id_str = id.to_string();
+
+        rt_del.spawn(async move {
+            let _ = db.delete_document(&id_str).await;
+            let ui_weak1 = ui_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak1.upgrade() {
+                    ui.set_status_msg("Dokument raderat".into());
+                }
+            });
+            // Reload documents list
+            if let Ok(docs) = db.get_documents().await {
+                let entries: Vec<DocEntry> = docs.into_iter().map(|d| DocEntry {
+                    id: d.id.into(),
+                    name: d.name.into(),
+                    doc_type: d.doc_type.into(),
+                    is_main: d.is_main
+                }).collect();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_documents(Rc::new(slint::VecModel::from(entries)).into());
+                    }
+                });
+            }
+        });
+    });
+
+    // Callback: Export document
+    let (db_exp, ui_exp, rt_exp) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_export_doc(move |id, format| {
+        let db = db_exp.clone();
+        let ui_weak = ui_exp.clone();
+        let id_str = id.to_string();
+        let format_str = format.to_string();
+
+        rt_exp.spawn(async move {
+            if let Ok(docs) = db.get_documents().await {
+                if let Some(doc) = docs.iter().find(|d| d.id == id_str).cloned() {
+                    let export_dir = directories::UserDirs::new()
+                        .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
+                        .unwrap_or(std::path::PathBuf::from("."));
+
+                    let file_name = format!("{}.{}", doc.name.replace('/', "_"), if format_str == "pdf" { "pdf" } else { "md" });
+                    let file_path = export_dir.join(&file_name);
+
+                    let result = if format_str == "pdf" {
+                        crate::exporter::export_doc_to_pdf(&doc.name, &doc.content, &file_path)
+                    } else {
+                        crate::exporter::export_doc_to_md(&doc.content, &file_path)
+                    };
+
+
+                    match result {
+                        Ok(_) => {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    ui.set_status_msg(format!("Exporterat: {}", file_name).into());
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            tracing_error!("Export misslyckades: {}", e);
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    ui.set_status_msg(format!("Export misslyckades: {}", e).into());
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        });
+    });
+
+    // Callback: Set as main CV
+    let (db_main, ui_main, rt_main) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_set_as_main(move |id| {
+        let db = db_main.clone();
+        let ui_weak = ui_main.clone();
+        let id_str = id.to_string();
+
+        rt_main.spawn(async move {
+            let _ = db.set_main_cv(&id_str).await;
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_status_msg("Huvud-CV uppdaterat".into());
+                }
+            });
+        });
+    });
+
+    // Callback: Add dictionary entry
+    let (db_add, ui_add, rt_add) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_add_entry(move |key, value| {
+        let db = db_add.clone();
+        let ui_weak = ui_add.clone();
+        let key_str = key.to_string();
+        let value_str = value.to_string();
+
+        rt_add.spawn(async move {
+            let entry = DictEntry { key: key_str, value: value_str };
+            let _ = db.save_dict_entry(&entry).await;
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_status_msg("Ord tillagt i ordboken".into());
+                }
+            });
+        });
+    });
+
+    // Callback: Delete dictionary entry
+    let (db_del_dict, ui_del_dict, rt_del_dict) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_delete_entry(move |key| {
+        let db = db_del_dict.clone();
+        let ui_weak = ui_del_dict.clone();
+        let key_str = key.to_string();
+
+        rt_del_dict.spawn(async move {
+            let _ = db.delete_dict_entry(&key_str).await;
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_status_msg("Ord raderat".into());
+                }
+            });
+        });
+    });
+
+    // Callback: Extract from documents
+    ui.on_extract_from_docs(|| {
+        // TODO: Implement AI extraction of terms from documents
+    });
+
+    // Callback: Analyze match
+    ui.on_analyze_match(|_id| {
+        // TODO: Implement AI matching between CV and job ad
+    });
+
+    // Callback: Import file (Android placeholder)
+    #[cfg(target_os = "android")]
+    ui.on_import_file(|| {
+        // TODO: Implement file picker on Android
     });
 
     // Initial laddning
     let (db_i, ui_i, rt_i) = (db.clone(), ui.as_weak(), rt.clone());
     let db_path_str = get_db_path().to_string_lossy().to_string();
-    rt_i.spawn(async move {
+    let rt_i_initial = rt_i.clone();
+    rt_i_initial.spawn(async move {
         let settings = db_i.load_settings().await.unwrap_or_default().unwrap_or_default();
         let (s, u_s) = (settings.clone(), ui_i.clone());
         let d_path = db_path_str.clone();
-        let _ = slint::invoke_from_event_loop(move || { 
-            if let Some(ui) = u_s.upgrade() { 
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = u_s.upgrade() {
                 ui.set_database_path(d_path.into());
-                ui.set_settings(AppSettings { 
-                    keywords: s.keywords.into(), 
-                    blacklist_keywords: s.blacklist_keywords.into(), 
-                    locations_p1: normalize_locations(&s.locations_p1).into(), 
-                    locations_p2: normalize_locations(&s.locations_p2).into(), 
-                    locations_p3: normalize_locations(&s.locations_p3).into(), 
-                    my_profile: s.my_profile.into(), 
-                    ollama_url: s.ollama_url.into(), 
+                ui.set_settings(AppSettings {
+                    keywords: s.keywords.into(),
+                    blacklist_keywords: s.blacklist_keywords.into(),
+                    locations_p1: normalize_locations(&s.locations_p1).into(),
+                    locations_p2: normalize_locations(&s.locations_p2).into(),
+                    locations_p3: normalize_locations(&s.locations_p3).into(),
+                    my_profile: s.my_profile.into(),
+                    ollama_url: s.ollama_url.into(),
                     sync_path: s.sync_path.into(),
-                    app_min_count: s.app_min_count, 
-                    app_goal_count: s.app_goal_count, 
-                    show_motivation: s.show_motivation 
-                }); 
-            } 
+                    app_min_count: s.app_min_count,
+                    app_goal_count: s.app_goal_count,
+                    show_motivation: s.show_motivation,
+                    main_cv_id: s.main_cv_id.into(),
+                });
+            }
+        });
+
+        // Ladda dokument
+        let (db_docs, ui_docs, rt_docs) = (db_i.clone(), ui_i.clone(), rt_i.clone());
+        rt_docs.spawn(async move {
+            if let Ok(docs) = db_docs.get_documents().await {
+                let entries: Vec<DocEntry> = docs.into_iter().map(|d| DocEntry {
+                    id: d.id.into(),
+                    name: d.name.into(),
+                    doc_type: d.doc_type.into(),
+                    is_main: d.is_main
+                }).collect();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_docs.upgrade() {
+                        ui.set_documents(Rc::new(slint::VecModel::from(entries)).into());
+                    }
+                });
+            }
+        });
+
+        // Ladda ordbok
+        let (db_dict, ui_dict, rt_dict) = (db_i.clone(), ui_i.clone(), rt_i.clone());
+        rt_dict.spawn(async move {
+            if let Ok(entries) = db_dict.get_dict_entries().await {
+                let dict_entries: Vec<crate::ui::DictEntry> = entries.into_iter().map(|e| crate::ui::DictEntry {
+                    key: e.key.into(),
+                    value: e.value.into()
+                }).collect();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_dict.upgrade() {
+                        ui.set_dictionary(Rc::new(slint::VecModel::from(dict_entries)).into());
+                    }
+                });
+            }
         });
         let now = chrono::Utc::now();
         let (ms, md, u_m) = (format!("{:04}-{:02}", now.year(), now.month()), format!("{} {}", swedish_month_name(now.month()), now.year()), ui_i.clone());
@@ -499,7 +793,11 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
     for keyword in &query_parts {
         match api_client.search(keyword, &municipalities, 100).await {
             Ok(ads) => { for mut ad in ads { ad.search_keyword = Some(keyword.clone()); let is_blacklisted = blacklist.iter().any(|word| ad.headline.to_lowercase().contains(word) || ad.description.as_ref().and_then(|d| d.text.as_deref()).map(|t| t.to_lowercase().contains(word)).unwrap_or(false)); if !is_blacklisted { if let Ok(None) = db.get_job_ad(&ad.id).await { if db.save_job_ad(&ad).await.is_ok() { new_count += 1; } } } } },
-            Err(e) => { tracing::error!("Sökning på '{}' misslyckades: {}", keyword, e); }
+            Err(e) => {
+                eprintln!("FULL ERROR CHAIN for keyword '{}': {:?}", keyword, e);
+                eprintln!("ERROR CHAIN: {:?}", e.chain().collect::<Vec<_>>());
+                tracing_error!("Sökning på '{}' misslyckades: {}", keyword, e);
+            }
         }
     }
 
@@ -517,7 +815,7 @@ pub fn desktop_main() {
     setup_crash_handler();
     let (guard, log_rx) = setup_logging();
     setup_clipboard_manager();
-    tracing::info!("Starting Jobseeker on Desktop");
+    tracing_info!("Starting Jobseeker on Desktop");
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     let db_path = get_db_path();
     let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()).await }).expect("Failed to initialize database");
@@ -530,70 +828,93 @@ pub fn desktop_main() {
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-fn android_main(app: slint::android::AndroidApp) {
-    // CRITICAL: Log to file FIRST, before anything else
-    let test_path = "/data/data/com.gnawsoftware.jobseeker/files/startup_test.txt";
-    let _ = std::fs::write(test_path, "android_main called! Step 1\n");
-    
-    android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info));
-    let _ = std::fs::write(test_path, "android_main called! Step 2: Logger initialized\n");
-    
-    tracing::info!("ANDROID: Logger initialized");
-    let _ = std::fs::write(test_path, "android_main called! Step 3: Tracing works\n");
-    
-    setup_crash_handler();
-    let _ = std::fs::write(test_path, "android_main called! Step 4: Crash handler done\n");
-    
-    tracing::info!("Starting Jobseeker on Android");
-    let _ = std::fs::write(test_path, "android_main called! Step 5: About to init Slint\n");
-    
-    tracing::info!("ANDROID: About to init Slint");
-    slint::android::init(app).expect("Failed to initialize Slint on Android");
-    let _ = std::fs::write(test_path, "android_main called! Step 6: Slint initialized!\n");
-    
-    tracing::info!("ANDROID: Slint initialized");
-    let _ = std::fs::write(test_path, "android_main called! Step 7: Creating runtime\n");
-    
-    tracing::info!("ANDROID: Creating Tokio runtime");
-    let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
-    let _ = std::fs::write(test_path, "android_main called! Step 8: Runtime created!\n");
-    
-    tracing::info!("ANDROID: Tokio runtime created");
-    
-    tracing::info!("ANDROID: Setting up logging");
+unsafe fn android_main(app: slint::android::AndroidApp) {
+    let files_dir = std::path::PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files");
+    let _ = std::fs::create_dir_all(&files_dir);
+
     let (guard, log_rx) = setup_logging();
-    let _ = std::fs::write(test_path, "android_main called! Step 9: Logging setup done\n");
+    android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("Jobseeker"));
+
+    tracing_info!("Starting Jobseeker on Android (with Java Wrapper)");
+    setup_crash_handler();
+
+    let vm_ptr = app.vm_as_ptr();
+    slint::android::init(app).expect("Failed to initialize Slint on Android");
+
+    // Initiera JavaVM för JNI HTTP
+    tracing_info!("ANDROID: Initializing JavaVM for JNI");
+    let vm = unsafe {
+        jni::JavaVM::from_raw(vm_ptr as *mut _)
+            .expect("Failed to create JavaVM from raw ptr")
+    };
     
-    tracing::info!("ANDROID: Getting DB path");
+    // Find our class using a manual DexClassLoader
+    {
+        let mut env = vm.attach_current_thread().expect("Failed to attach thread");
+        let activity_obj = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
+        
+        let application_info = env.call_method(&activity_obj, "getApplicationInfo", "()Landroid/content/pm/ApplicationInfo;", &[])
+            .expect("Failed to get application info")
+            .l()
+            .expect("getApplicationInfo returned null");
+        
+        let apk_path_jstr = env.get_field(&application_info, "sourceDir", "Ljava/lang/String;")
+            .expect("Failed to get sourceDir")
+            .l()
+            .expect("sourceDir is null");
+            
+        let code_cache_dir = env.call_method(&activity_obj, "getCodeCacheDir", "()Ljava/io/File;", &[])
+            .expect("Failed to get code cache dir")
+            .l()
+            .expect("getCodeCacheDir returned null");
+        
+        let code_cache_path = env.call_method(&code_cache_dir, "getAbsolutePath", "()Ljava/lang/String;", &[])
+            .expect("Failed to get absolute path")
+            .l()
+            .expect("getAbsolutePath returned null");
+
+        let parent_loader = env.call_method(&activity_obj, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
+            .expect("Failed to get parent class loader")
+            .l()
+            .expect("getClassLoader returned null");
+
+        let dex_loader_class = env.find_class("dalvik/system/DexClassLoader")
+            .expect("Failed to find DexClassLoader class");
+        
+        let dex_loader = env.new_object(&dex_loader_class, "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/ClassLoader;)V", 
+            &[JValue::Object(apk_path_jstr.as_ref()), JValue::Object(code_cache_path.as_ref()), JValue::Object(JObject::null().as_ref()), JValue::Object(parent_loader.as_ref())])
+            .expect("Failed to create DexClassLoader");
+
+        let fetcher_class_name_dots = env.new_string("com.gnawsoftware.jobseeker.HttpFetcher")
+            .expect("Failed to create class name string with dots");
+
+        let fetcher_class = match env.call_method(&dex_loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(fetcher_class_name_dots.as_ref())]) {
+            Ok(val) => val.l().expect("loadClass returned null"),
+            Err(e) => {
+                if env.exception_check().unwrap_or(false) {
+                    env.exception_describe().unwrap_or(());
+                    env.exception_clear().unwrap_or(());
+                }
+                panic!("Failed to load HttpFetcher class via DexClassLoader: {:?}", e);
+            }
+        };
+
+        let global_fetcher_class = env.new_global_ref(fetcher_class)
+            .expect("Failed to create global ref for HttpFetcher");
+
+        crate::jni_http::set_fetcher_class(global_fetcher_class);
+    }
+
+    crate::jni_http::set_java_vm(vm);
+    tracing_info!("ANDROID: JavaVM and Fetcher class initialized");
+
+    let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     let db_path = get_db_path();
-    let _ = std::fs::write(test_path, &format!("Step 10: DB path: {:?}\n", db_path));
-    
-    tracing::info!("ANDROID: DB path: {:?}", db_path);
-    
-    tracing::info!("ANDROID: Initializing database");
     let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()).await }).expect("Failed to initialize database");
     let db = Arc::new(db);
-    let _ = std::fs::write(test_path, "android_main called! Step 11: Database initialized!\n");
-    
-    tracing::info!("ANDROID: Database initialized");
-    
-    tracing::info!("ANDROID: Creating Slint UI");
     let ui = App::new().expect("Failed to create Slint UI");
-    let _ = std::fs::write(test_path, "android_main called! Step 12: UI created!\n");
-    
-    tracing::info!("ANDROID: UI created");
-    
-    tracing::info!("ANDROID: Setting up UI");
     setup_ui(&ui, rt, db, log_rx);
-    let _ = std::fs::write(test_path, "android_main called! Step 13: UI setup complete!\n");
-    
-    tracing::info!("ANDROID: UI setup complete");
-    
+
     let _log_guard = guard;
-    let _ = std::fs::write(test_path, "android_main called! Step 14: About to run UI!\n");
-    
-    tracing::info!("ANDROID: About to run UI");
-    let _ = std::fs::write(test_path, "android_main called! Step 15: Entering UI run loop...\n");
-    
     ui.run().expect("Failed to run Slint UI");
 }

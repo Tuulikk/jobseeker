@@ -1,4 +1,6 @@
 import { Button, LineEdit, ScrollView, TextEdit, CheckBox, HorizontalBox, VerticalBox, TabWidget } from "std-widgets.slint";
+import { ProfilePage, DocEntry } from "ProfilePage.slint";
+import { KnowledgePage, DictEntry } from "KnowledgePage.slint";
 
 export struct KeywordStat {
     name: string,
@@ -30,6 +32,7 @@ export struct AppSettings {
     app_min_count: int,
     app_goal_count: int,
     show_motivation: bool,
+    main_cv_id: string,
 }
 
 component IconButton inherits Rectangle {
@@ -675,6 +678,9 @@ export component App inherits Window {
     in-out property <int> thumbsup-count: 0;
     in-out property <int> rejected-count: 0;
     in-out property <[KeywordStat]> top-keywords: [];
+    in-out property <[DocEntry]> documents: [];
+    in-out property <[DictEntry]> dictionary: [];
+    in-out property <string> selected-doc-content: "";
     in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1", app_min_count: 6, app_goal_count: 12, show_motivation: true };
 
     callback search-pressed(string);
@@ -687,6 +693,16 @@ export component App inherits Window {
     callback stats_requested();
     callback export_requested(string, string, bool, bool, bool);
     callback db_action(string);
+    callback import_file();
+    callback select_doc(string);
+    callback save_doc(string, string);
+    callback delete_doc(string);
+    callback export_doc(string, string);
+    callback analyze_match(string);
+    callback set_as_main(string);
+    callback add_entry(string, string);
+    callback delete_entry(string);
+    callback extract_from_docs();
 
     VerticalLayout {
         // Main View
@@ -767,6 +783,25 @@ export component App inherits Window {
                 save-settings(s) => { root.save-settings(s); }
                 db-action(act) => { root.db-action(act); }
             }
+
+            if root.current-tab == 3 : ProfilePage {
+                documents: root.documents;
+                selected-doc-content <=> root.selected-doc-content;
+                import-file() => { root.import_file(); }
+                select-doc(id) => { root.select_doc(id); }
+                save-doc(id, content) => { root.save_doc(id, content); }
+                delete-doc(id) => { root.delete_doc(id); }
+                export-doc(id, format) => { root.export_doc(id, format); }
+                analyze-match(id) => { root.analyze_match(id); }
+                set-as-main(id) => { root.set_as_main(id); }
+            }
+
+            if root.current-tab == 4 : KnowledgePage {
+                entries: root.dictionary;
+                add-entry(key, value) => { root.add_entry(key, value); }
+                delete-entry(key) => { root.delete_entry(key); }
+                extract-from-docs() => { root.extract_from_docs(); }
+            }
         }
 
         // Global Status Bar
@@ -814,6 +849,20 @@ export component App inherits Window {
                     text: "Inställningar";
                     active: root.current-tab == 2;
                     clicked => { root.current-tab = 2; }
+                }
+
+                TabButton {
+                    icon: @image-url("../assets/icons/circle-fill.svg");
+                    text: "Profil";
+                    active: root.current-tab == 3;
+                    clicked => { root.current-tab = 3; }
+                }
+
+                TabButton {
+                    icon: @image-url("../assets/icons/text-left.svg");
+                    text: "Kunskap";
+                    active: root.current-tab == 4;
+                    clicked => { root.current-tab = 4; }
                 }
             }
         }

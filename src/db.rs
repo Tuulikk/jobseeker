@@ -1,5 +1,5 @@
 use redb::{Database, TableDefinition, ReadableTable};
-use crate::models::{JobAd, AdStatus, AppSettings};
+use crate::models::{JobAd, AdStatus, AppSettings, UserDocument, DictEntry};
 use anyhow::{Result, Context};
 use chrono::Utc;
 use std::sync::Arc;
@@ -7,6 +7,8 @@ use std::sync::Arc;
 const JOB_ADS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("job_ads");
 const APPLICATIONS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("job_applications");
 const SETTINGS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("settings");
+const DOCUMENTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("user_documents");
+const DICTIONARY_TABLE: TableDefinition<&str, &str> = TableDefinition::new("dictionary");
 
 /// RedB database wrapper. Uses JSON serialization for values to support
 /// complex job advertisement and settings objects while keeping the key-value structure.
@@ -28,6 +30,8 @@ impl Db {
             let _ = write_txn.open_table(JOB_ADS_TABLE)?;
             let _ = write_txn.open_table(APPLICATIONS_TABLE)?;
             let _ = write_txn.open_table(SETTINGS_TABLE)?;
+            let _ = write_txn.open_table(DOCUMENTS_TABLE)?;
+            let _ = write_txn.open_table(DICTIONARY_TABLE)?;
         }
         write_txn.commit()?;
 
@@ -216,6 +220,101 @@ impl Db {
             for key in keys_to_remove {
                 table.remove(key.as_str())?;
             }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    // --- Dokumenthantering ---
+    pub async fn save_document(&self, doc: &UserDocument) -> Result<()> {
+        let write_txn = self.database.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DOCUMENTS_TABLE)?;
+            let json = serde_json::to_string(doc)?;
+            table.insert(doc.id.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub async fn get_documents(&self) -> Result<Vec<UserDocument>> {
+        let read_txn = self.database.begin_read()?;
+        let table = read_txn.open_table(DOCUMENTS_TABLE)?;
+
+        let mut docs = Vec::new();
+        for item in table.iter()? {
+            let (_, json_handle) = item?;
+            if let Ok(doc) = serde_json::from_str(json_handle.value()) {
+                docs.push(doc);
+            }
+        }
+        Ok(docs)
+    }
+
+    pub async fn delete_document(&self, id: &str) -> Result<()> {
+        let write_txn = self.database.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DOCUMENTS_TABLE)?;
+            table.remove(id)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub async fn set_main_cv(&self, id: &str) -> Result<()> {
+        // Först ta bort is_main från alla dokument
+        let write_txn = self.database.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DOCUMENTS_TABLE)?;
+            let mut to_update = Vec::new();
+
+            for item in table.iter()? {
+                let (_id_handle, json_handle) = item?;
+                let mut doc: UserDocument = serde_json::from_str(json_handle.value())?;
+                doc.is_main = doc.id == id;
+                to_update.push(doc);
+            }
+
+            for doc in to_update {
+                let json = serde_json::to_string(&doc)?;
+                table.insert(doc.id.as_str(), json.as_str())?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    // --- Ordbokshantering ---
+    pub async fn save_dict_entry(&self, entry: &DictEntry) -> Result<()> {
+        let write_txn = self.database.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DICTIONARY_TABLE)?;
+            let json = serde_json::to_string(entry)?;
+            table.insert(entry.key.as_str(), json.as_str())?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    pub async fn get_dict_entries(&self) -> Result<Vec<DictEntry>> {
+        let read_txn = self.database.begin_read()?;
+        let table = read_txn.open_table(DICTIONARY_TABLE)?;
+
+        let mut entries = Vec::new();
+        for item in table.iter()? {
+            let (_, json_handle) = item?;
+            if let Ok(entry) = serde_json::from_str(json_handle.value()) {
+                entries.push(entry);
+            }
+        }
+        Ok(entries)
+    }
+
+    pub async fn delete_dict_entry(&self, key: &str) -> Result<()> {
+        let write_txn = self.database.begin_write()?;
+        {
+            let mut table = write_txn.open_table(DICTIONARY_TABLE)?;
+            table.remove(key)?;
         }
         write_txn.commit()?;
         Ok(())

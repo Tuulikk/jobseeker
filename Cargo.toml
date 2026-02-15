@@ -1,6 +1,6 @@
 [package]
 name = "Jobseeker"
-version = "0.2.12"
+version = "0.2.14"
 edition = "2024"
 authors = ["Svensson <tuulikk@gmail.com>"]
 description = "Ett kraftfullt verktyg för att hitta jobb, ranka annonser med AI och hantera ansökningar direkt till PDF/Word."
@@ -36,6 +36,8 @@ path = "src/bin/reset_settings.rs"
 
 [package.metadata.android]
 package = "com.gnawsoftware.jobseeker"
+activity = "com.gnawsoftware.jobseeker.MainActivity"
+src_path = "android/src"
 label = "Jobseeker"
 assets = "assets"
 build_targets = ["aarch64-linux-android", "x86_64-linux-android"]
@@ -74,6 +76,8 @@ webbrowser = "1.0"
 # rfd = "0.15"  # Temporarily disabled - ashpd version conflicts
 genpdf = "0.2"
 docx-rs = "0.4"
+zip = "2.2"
+pdf-extract = "0.7"
 log = "0.4.29"
 regex = "1.12.2"
 
@@ -82,7 +86,10 @@ slint = { version = "1.14", default-features = false, features = ["backend-andro
 i-slint-backend-android-activity = { version = "1.14", features = ["native-activity"] }
 android-activity = { version = "0.6", features = ["native-activity"] }
 android_logger = "0.14"
+ndk = "0.7"
+ndk-context = "0.1"
 jni = "0.21"
+reqwest = { version = "0.12.28", default-features = false, features = ["json"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 slint = { version = "1.14", default-features = true }

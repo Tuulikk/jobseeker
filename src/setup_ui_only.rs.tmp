@@ -1,0 +1,281 @@
+fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<String>) {
+    let matcher_mutex = Arc::new(tokio::sync::Mutex::new(crate::ai::SemanticMatcher::new().expect("Failed to init semantic matcher")));
+    let ui_weak = ui.as_weak();
+    spawn_log_task(ui_weak.clone(), log_rx);
+
+    // --- Statistics Function ---
+    let (db_stats, ui_stats, rt_stats, m_stats) = (db.clone(), ui.as_weak(), rt.clone(), matcher_mutex.clone());
+    let refresh_stats = move || {
+        let (db, ui_weak, rt, matcher) = (db_stats.clone(), ui_stats.clone(), rt_stats.clone(), m_stats.clone());
+        rt.spawn(async move {
+            let (y, m, d_only) = if let Some(ui) = ui_weak.upgrade() {
+                let month_str = ui.get_active_month().to_string();
+                let parts: Vec<&str> = month_str.split('-').collect();
+                let d_only = ui.get_diamond_only();
+                if parts.len() == 2 {
+                    (Some(parts[0].parse::<i32>().unwrap_or(2026)), Some(parts[1].parse::<u32>().unwrap_or(1)), d_only)
+                } else { (None, None, d_only) }
+            } else { (None, None, false) };
+
+            if let Ok(ads) = db.get_filtered_jobs(&[], y, m, d_only).await {
+                let (mut applied, mut bookmarked, mut thumbsup, mut rejected) = (0, 0, 0, 0);
+                for ad in &ads {
+                    match ad.status {
+                        Some(AdStatus::Applied) => applied += 1,
+                        Some(AdStatus::Bookmarked) => bookmarked += 1,
+                        Some(AdStatus::ThumbsUp) => thumbsup += 1,
+                        Some(AdStatus::Rejected) => rejected += 1,
+                        _ => {}
+                    }
+                }
+                let total = ads.len();
+                let dictionary = db.list_dictionary_entries().await.unwrap_or_default();
+                let mut kw_counts = std::collections::HashMap::new();
+                for ad in &ads {
+                    let text = format!("{} {}", ad.headline, ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("")).to_lowercase();
+                    for (kw, _) in &dictionary {
+                        if text.contains(&kw.to_lowercase()) {
+                            *kw_counts.entry(kw.clone()).or_insert(0) += 1;
+                        }
+                    }
+                }
+                let mut top_kws: Vec<KeywordStat> = kw_counts.into_iter()
+                    .map(|(name, count)| KeywordStat { name: name.into(), count })
+                    .collect();
+                top_kws.sort_by(|a, b| b.count.cmp(&a.count));
+                top_kws.truncate(5);
+
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_applied_count(applied);
+                        ui.set_bookmarked_count(bookmarked);
+                        ui.set_thumbsup_count(thumbsup);
+                        ui.set_rejected_count(rejected);
+                        ui.set_total_ads_count(total as i32);
+                        ui.set_top_keywords(std::rc::Rc::new(slint::VecModel::from(top_kws)).into());
+                    }
+                });
+            }
+        });
+    };
+
+    // Initial data load
+    let (db_i, ui_i, rt_i, m_i) = (db.clone(), ui.as_weak(), rt.clone(), matcher_mutex.clone());
+    let rs_init = refresh_stats.clone();
+    rt_i.spawn(async move {
+        let settings = db_i.load_settings().await.unwrap_or_default().unwrap_or_default();
+        let s = settings.clone();
+        let u_s = ui_i.clone();
+        let d_path = get_db_path().to_string_lossy().to_string();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = u_s.upgrade() {
+                ui.set_database_path(d_path.into());
+                ui.set_settings(AppSettings {
+                    keywords: s.keywords.into(),
+                    blacklist_keywords: s.blacklist_keywords.into(),
+                    locations_p1: normalize_locations(&s.locations_p1).into(),
+                    locations_p2: normalize_locations(&s.locations_p2).into(),
+                    locations_p3: normalize_locations(&s.locations_p3).into(),
+                    my_profile: s.my_profile.into(),
+                    ollama_url: s.ollama_url.into(),
+                    sync_path: s.sync_path.into(),
+                    main_cv_id: s.main_cv_id.unwrap_or_default().into(),
+                    app_min_count: s.app_min_count,
+                    app_goal_count: s.app_goal_count,
+                    show_motivation: s.show_motivation,
+                });
+            }
+        });
+
+        if let Ok(profile) = db_i.load_profile().await {
+            let u_p = ui_i.clone();
+            let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = u_p.upgrade() { ui.set_profile_text(profile.into()); } });
+        }
+
+        let now = chrono::Utc::now();
+        let ms = (format!("{:04}-{:02}", now.year(), now.month()), swedish_month_name(now.month()), ui_i.clone());
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ms.2.upgrade() { ui.set_active_month(ms.0.into()); ui.set_active_month_display(ms.1.into()); }
+        });
+
+        rs_init();
+        perform_search(Arc::new(JobSearchClient::new()), db_i, ui_i, Some(1), None, settings, m_i).await;
+    });
+
+    let rs_cmd = refresh_stats.clone();
+    ui.on_stats_requested(move || { rs_cmd(); });
+
+    let (db_dict, ui_dict, rt_dict) = (db.clone(), ui.as_weak(), rt.clone());
+    let refresh_dict = move || {
+        let (db, ui_weak) = (db_dict.clone(), ui_dict.clone());
+        rt_dict.spawn(async move {
+            if let Ok(entries) = db.list_dictionary_entries().await {
+                let slint_entries: Vec<DictEntry> = entries.into_iter().map(|(k, v)| DictEntry { key: k.into(), value: v.into() }).collect();
+                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_dictionary(std::rc::Rc::new(slint::VecModel::from(slint_entries)).into()); } });
+            }
+        });
+    };
+    let rd_dict = refresh_dict.clone();
+    refresh_dict();
+
+    let (db_add, rt_add, rd_add) = (db.clone(), rt.clone(), refresh_dict.clone());
+    ui.on_add_dictionary_entry(move |key, val| {
+        let (db, k, v, rd) = (db_add.clone(), key.to_string(), val.to_string(), rd_add.clone());
+        rt_add.spawn(async move { let _ = db.save_dictionary_entry(&k, &v).await; rd(); });
+    });
+
+    let (db_del_d, rt_del_d, rd_del_d) = (db.clone(), rt.clone(), refresh_dict.clone());
+    ui.on_delete_dictionary_entry(move |key| {
+        let (db, k, rd) = (db_del_d.clone(), key.to_string(), rd_del_d.clone());
+        rt_del_d.spawn(async move { let _ = db.delete_dictionary_entry(&k).await; rd(); });
+    });
+
+    let (db_mo, ui_mo, rt_mo, rs_mo, m_mo) = (db.clone(), ui.as_weak(), rt.clone(), refresh_stats.clone(), matcher_mutex.clone());
+    ui.on_month_offset(move |off| {
+        let (db, ui_weak, rt, rs, matcher) = (db_mo.clone(), ui_mo.clone(), rt_mo.clone(), rs_mo.clone(), m_mo.clone());
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                let current = ui.get_active_month().to_string();
+                let parts: Vec<&str> = current.split('-').collect();
+                if parts.len() == 2 {
+                    let mut y: i32 = parts[0].parse().unwrap_or(2026);
+                    let mut m: i32 = parts[1].parse().unwrap_or(1);
+                    m += off; if m > 12 { m = 1; y += 1; } if m < 1 { m = 12; y -= 1; }
+                    let new_month = format!("{:04}-{:02}", y, m);
+                    ui.set_active_month(new_month.clone().into());
+                    ui.set_active_month_display(swedish_month_name(m as u32).into());
+                    let (db, ui_weak, rt, rs, matcher) = (db.clone(), ui.as_weak(), rt.clone(), rs.clone(), matcher.clone());
+                    rt.spawn(async move {
+                        let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
+                        perform_search(Arc::new(JobSearchClient::new()), db, ui_weak, None, None, settings, matcher).await;
+                        rs();
+                    });
+                }
+            }
+        });
+    });
+
+    let (db_s, ui_s, rt_s, m_s) = (db.clone(), ui.as_weak(), rt.clone(), matcher_mutex.clone());
+    ui.on_search_pressed(move |q| {
+        let (db, ui_weak, rt, query, matcher) = (db_s.clone(), ui_s.clone(), rt_s.clone(), q.to_string(), m_s.clone());
+        rt.spawn(async move {
+            let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
+            perform_search(Arc::new(JobSearchClient::new()), db, ui_weak, None, Some(query), settings, matcher).await;
+        });
+    });
+
+    let (db_prio, ui_prio, rt_prio, m_prio) = (db.clone(), ui.as_weak(), rt.clone(), matcher_mutex.clone());
+    ui.on_search_prio(move |p| {
+        let (db, ui_weak, rt, prio, matcher) = (db_prio.clone(), ui_prio.clone(), rt_prio.clone(), p, m_prio.clone());
+        rt.spawn(async move {
+            let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
+            perform_search(Arc::new(JobSearchClient::new()), db, ui_weak, Some(prio), None, settings, matcher).await;
+        });
+    });
+
+    let (db_a, rt_a, ui_a, m_a) = (db.clone(), rt.clone(), ui.as_weak(), matcher_mutex.clone());
+    ui.on_job_action(move |id, act| {
+        let (db, id_str, ui_weak, rt, matcher) = (db_a.clone(), id.to_string(), ui_a.clone(), rt_a.clone(), m_a.clone());
+        let action = act.to_string();
+        rt.spawn(async move {
+            let mut changed = false;
+            let current_status = db.get_job_ad(&id_str).await.ok().flatten().and_then(|a| a.status);
+            match action.as_str() {
+                "reject" => { let new_status = if current_status == Some(AdStatus::Rejected) { None } else { Some(AdStatus::Rejected) }; let _ = db.update_ad_status(&id_str, new_status).await; changed = true; }
+                "save" => { let new_status = if current_status == Some(AdStatus::Bookmarked) { None } else { Some(AdStatus::Bookmarked) }; let _ = db.update_ad_status(&id_str, new_status).await; changed = true; }
+                "thumbsup" => { let new_status = if current_status == Some(AdStatus::ThumbsUp) { None } else { Some(AdStatus::ThumbsUp) }; let _ = db.update_ad_status(&id_str, new_status).await; changed = true; }
+                "apply" => { let new_status = if current_status == Some(AdStatus::Applied) { None } else { Some(AdStatus::Applied) }; let _ = db.update_ad_status(&id_str, new_status).await; changed = true; }
+                "analyze" => {
+                    if let Ok(doc_ids) = db.list_documents().await {
+                        if let Some(first_id) = doc_ids.first() {
+                            if let Ok(Some(json)) = db.get_document(first_id).await {
+                                if let Ok(doc) = serde_json::from_str::<crate::models::UserDocument>(&json) {
+                                    if let Ok(Some(mut ad)) = db.get_job_ad(&id_str).await {
+                                        let semantic_score = matcher.lock().await.score_match(&doc.content, &ad);
+                                        let dictionary = db.list_dictionary_entries().await.unwrap_or_default();
+                                        let mut match_count = 0; let mut req_count = 0;
+                                        let mut found_words = Vec::new();
+                                        let ad_text = format!("{} {}", ad.headline, ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("")).to_lowercase();
+                                        for (kw, _) in &dictionary { if ad_text.contains(&kw.to_lowercase()) { req_count += 1; match_count += 1; found_words.push(kw.clone()); } }
+                                        let keyword_score = if req_count > 0 { (match_count as f32 / req_count as f32) * 100.0 } else { semantic_score };
+                                        ad.match_score = Some(((semantic_score * 0.6) + (keyword_score * 0.4)) as i32);
+                                        ad.matched_words = Some(found_words.join(", "));
+                                        let _ = db.save_job_ad(&ad).await; changed = true;
+                                        let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("AI-Analys klar!".into()); } });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                "open" | "apply_direct" => {
+                    if let Ok(Some(ad)) = db.get_job_ad(&id_str).await {
+                        let url_opt = if action == "apply_direct" { ad.application_details.as_ref().and_then(|d| d.url.clone()).or(ad.webpage_url.clone()) } else { ad.webpage_url.clone() };
+                        if let Some(url) = url_opt { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
+                    }
+                }
+                _ => {}
+            }
+            if changed {
+                let (db, ui_weak, rt, matcher) = (db.clone(), ui_weak.clone(), rt.clone(), matcher.clone());
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
+                        let ui_weak = ui.as_weak();
+                        rt.spawn(async move { perform_search(Arc::new(JobSearchClient::new()), db, ui_weak, None, None, settings, matcher).await; });
+                    }
+                });
+            }
+        });
+    });
+
+    ui.on_copy_text(move |text| {
+        let text_str = text.to_string();
+        std::thread::spawn(move || { let _ = std::process::Command::new("sh").arg("-c").arg(format!("echo -n '{}' | xclip -selection clipboard", text_str.replace("'", "'''"))).status(); });
+    });
+
+    let (db_diam, rt_diam, ui_diam, m_diam) = (db.clone(), rt.clone(), ui.as_weak(), matcher_mutex.clone());
+    ui.on_toggle_diamond(move |id| {
+        let (db, id_str, ui_weak, rt, matcher) = (db_diam.clone(), id.to_string(), ui_diam.clone(), rt_diam.clone(), m_diam.clone());
+        rt.spawn(async move {
+            let _ = db.toggle_diamond(&id_str).await;
+            let (db, ui_weak, rt, matcher) = (db.clone(), ui_weak.clone(), rt.clone(), matcher.clone());
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
+                    let ui_weak = ui.as_weak();
+                    rt.spawn(async move { perform_search(Arc::new(JobSearchClient::new()), db, ui_weak, None, None, settings, matcher).await; });
+                }
+            });
+        });
+    });
+
+    let (db_doc, ui_doc, rt_doc) = (db.clone(), ui.as_weak(), rt.clone());
+    let refresh_docs = move || {
+        let (db, ui_weak, rt) = (db_doc.clone(), ui_doc.clone(), rt_doc.clone());
+        rt.spawn(async move {
+            let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
+            let main_id = settings.main_cv_id;
+            if let Ok(ids) = db.list_documents().await {
+                let mut docs = Vec::new();
+                for id in ids {
+                    if let Ok(Some(json)) = db.get_document(&id).await {
+                        if let Ok(doc) = serde_json::from_str::<crate::models::UserDocument>(&json) {
+                            docs.push(to_slint_doc_entry(&doc, &main_id));
+                        }
+                    }
+                }
+                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_user_documents(std::rc::Rc::new(slint::VecModel::from(docs)).into()); } });
+            }
+        });
+    };
+    let rd_docs = refresh_docs.clone();
+    refresh_docs();
+
+    let (db_main, rt_main, rd_main) = (db.clone(), rt.clone(), refresh_docs.clone());
+    ui.on_set_as_main(move |id| {
+        let (db, id_str, rd) = (db_main.clone(), id.to_string(), rd_main.clone());
+        rt_main.spawn(async move {
+            if let Ok(Some(mut settings)) = db.load_settings().await {
+                settings.main_cv_id = Some(id_str); let _ = db.save_settings(&settings).await; rd();
+            }
