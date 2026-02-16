@@ -826,44 +826,47 @@ export component App inherits Window {
         Rectangle {
             height: 60px;
             background: #1a1a1a;
-            HorizontalLayout {
-                alignment: start;
-                padding: 10px;
-                spacing: 15px;
+            ScrollView {
+                viewport-width: 500px; // Ensure enough space for all tabs
+                HorizontalLayout {
+                    alignment: center;
+                    padding: 10px;
+                    spacing: 15px;
 
-                TabButton {
-                    icon: @image-url("../assets/icons/inbox-fill.svg");
-                    text: "Jobb";
-                    active: root.current-tab == 0;
-                    clicked => { root.current-tab = 0; }
-                }
+                    TabButton {
+                        icon: @image-url("../assets/icons/inbox-fill.svg");
+                        text: "Jobb";
+                        active: root.current-tab == 0;
+                        clicked => { root.current-tab = 0; }
+                    }
 
-                TabButton {
-                    icon: @image-url("../assets/icons/justify.svg");
-                    text: "Statistik";
-                    active: root.current-tab == 1;
-                    clicked => { root.current-tab = 1; root.stats_requested(); }
-                }
+                    TabButton {
+                        icon: @image-url("../assets/icons/justify.svg");
+                        text: "Statistik";
+                        active: root.current-tab == 1;
+                        clicked => { root.current-tab = 1; root.stats_requested(); }
+                    }
 
-                TabButton {
-                    icon: @image-url("../assets/icons/gear-fill.svg");
-                    text: "Inställningar";
-                    active: root.current-tab == 2;
-                    clicked => { root.current-tab = 2; }
-                }
+                    TabButton {
+                        icon: @image-url("../assets/icons/gear-fill.svg");
+                        text: "Inställningar";
+                        active: root.current-tab == 2;
+                        clicked => { root.current-tab = 2; }
+                    }
 
-                TabButton {
-                    icon: @image-url("../assets/icons/circle-fill.svg");
-                    text: "Profil";
-                    active: root.current-tab == 3;
-                    clicked => { root.current-tab = 3; }
-                }
+                    TabButton {
+                        icon: @image-url("../assets/icons/circle-fill.svg");
+                        text: "Profil";
+                        active: root.current-tab == 3;
+                        clicked => { root.current-tab = 3; }
+                    }
 
-                TabButton {
-                    icon: @image-url("../assets/icons/text-left.svg");
-                    text: "Kunskap";
-                    active: root.current-tab == 4;
-                    clicked => { root.current-tab = 4; }
+                    TabButton {
+                        icon: @image-url("../assets/icons/text-left.svg");
+                        text: "Kunskap";
+                        active: root.current-tab == 4;
+                        clicked => { root.current-tab = 4; }
+                    }
                 }
             }
         }

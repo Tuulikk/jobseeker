@@ -72,7 +72,7 @@ pub struct JobAd {
     #[serde(default = "Utc::now")]
     pub internal_created_at: DateTime<Utc>,
     #[serde(default = "Utc::now")]
-    pub updated_at: DateTime<Utc>, // New: tracks when this record was last modified
+    pub updated_at: DateTime<Utc>,
     #[serde(default)]
     pub search_keyword: Option<String>,
     #[serde(default)]
@@ -154,7 +154,7 @@ pub struct AppSettings {
     #[serde(default)]
     pub main_cv_id: String,
     #[serde(default = "Utc::now")]
-    pub updated_at: DateTime<Utc>, // New: tracks when settings were changed
+    pub updated_at: DateTime<Utc>,
 }
 
 /// User documents (CVs, cover letters, etc.)
@@ -169,7 +169,7 @@ pub struct UserDocument {
     #[serde(default = "Utc::now")]
     pub created_at: DateTime<Utc>,
     #[serde(default = "Utc::now")]
-    pub updated_at: DateTime<Utc>, // New: tracks document edits
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Dictionary entries for knowledge base
@@ -178,18 +178,18 @@ pub struct DictEntry {
     pub key: String,
     pub value: String,
     #[serde(default = "Utc::now")]
-    pub updated_at: DateTime<Utc>, // New: tracks dictionary changes
+    pub updated_at: DateTime<Utc>,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            keywords: "it, Supporttekniker, helpdesk, kundtjänst, kundsupport".to_string(),
-            blacklist_keywords: "barnvakt, körkort, barnflicka, nanny, myNanny, undersköterska, parkarbetare".to_string(),
-            locations_p1: "1283, 1277, 1260, 1292, 1284, 1276, 1231, 1282, 1261".to_string(),
-            locations_p2: "1280, 1281".to_string(),
+            keywords: "".to_string(),
+            blacklist_keywords: "".to_string(),
+            locations_p1: "".to_string(),
+            locations_p2: "".to_string(),
             locations_p3: "".to_string(),
-            my_profile: "Jag är en serviceinriktad person med erfarenhet inom IT-support och kundservice.".to_string(),
+            my_profile: "".to_string(),
             ollama_url: "http://localhost:11434/v1".to_string(),
             sync_path: "".to_string(),
             app_min_count: 6,
