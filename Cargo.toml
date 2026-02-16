@@ -36,12 +36,16 @@ path = "src/bin/reset_settings.rs"
 
 [package.metadata.android]
 package = "com.gnawsoftware.jobseeker"
-activity = "com.gnawsoftware.jobseeker.MainActivity"
-src_path = "android/src"
 label = "Jobseeker"
 assets = "assets"
 build_targets = ["aarch64-linux-android", "x86_64-linux-android"]
-manifest = "android/AndroidManifest.xml"
+manifest = "AndroidManifest.xml"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
+
+[[package.metadata.android.uses_permission]]
+name = "android.permission.ACCESS_NETWORK_STATE"
 
 [package.metadata.android.signing.release]
 path = "dummy.keystore"

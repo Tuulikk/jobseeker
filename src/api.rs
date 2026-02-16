@@ -56,9 +56,18 @@ const MUNICIPALITIES: &[(&str, &str)] = &[
 
 impl JobSearchClient {
     pub fn new() -> Self {
+        #[cfg(target_os = "android")]
+        let base_url = "https://192.165.88.118".to_string();
+        #[cfg(not(target_os = "android"))]
+        let base_url = "https://jobsearch.api.jobtechdev.se".to_string();
+
         Self {
-            client: Client::new(),
-            base_url: "https://jobsearch.api.jobtechdev.se".to_string(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .danger_accept_invalid_certs(true)
+                .build()
+                .unwrap_or_else(|_| Client::new()),
+            base_url,
         }
     }
 
@@ -126,6 +135,7 @@ impl JobSearchClient {
         let url = format!("{}/search", self.base_url);
         let request = self.client.get(&url)
             .header("accept", "application/json")
+            .header("Host", "jobsearch.api.jobtechdev.se")
             .query(&params);
 
         // Log the full URL for debugging (with parameters)

@@ -818,7 +818,7 @@ pub fn desktop_main() {
     tracing_info!("Starting Jobseeker on Desktop");
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     let db_path = get_db_path();
-    let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()).await }).expect("Failed to initialize database");
+    let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()) }).expect("Failed to initialize database");
     let db = Arc::new(db);
     let ui = App::new().expect("Failed to create Slint UI");
     setup_ui(&ui, rt, db, log_rx);
@@ -835,82 +835,14 @@ unsafe fn android_main(app: slint::android::AndroidApp) {
     let (guard, log_rx) = setup_logging();
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("Jobseeker"));
 
-    tracing_info!("Starting Jobseeker on Android (with Java Wrapper)");
+    tracing_info!("Starting Jobseeker on Android (Pure Rust)");
     setup_crash_handler();
 
-    let vm_ptr = app.vm_as_ptr();
     slint::android::init(app).expect("Failed to initialize Slint on Android");
-
-    // Initiera JavaVM för JNI HTTP
-    tracing_info!("ANDROID: Initializing JavaVM for JNI");
-    let vm = unsafe {
-        jni::JavaVM::from_raw(vm_ptr as *mut _)
-            .expect("Failed to create JavaVM from raw ptr")
-    };
-    
-    // Find our class using a manual DexClassLoader
-    {
-        let mut env = vm.attach_current_thread().expect("Failed to attach thread");
-        let activity_obj = unsafe { JObject::from_raw(ndk_context::android_context().context().cast()) };
-        
-        let application_info = env.call_method(&activity_obj, "getApplicationInfo", "()Landroid/content/pm/ApplicationInfo;", &[])
-            .expect("Failed to get application info")
-            .l()
-            .expect("getApplicationInfo returned null");
-        
-        let apk_path_jstr = env.get_field(&application_info, "sourceDir", "Ljava/lang/String;")
-            .expect("Failed to get sourceDir")
-            .l()
-            .expect("sourceDir is null");
-            
-        let code_cache_dir = env.call_method(&activity_obj, "getCodeCacheDir", "()Ljava/io/File;", &[])
-            .expect("Failed to get code cache dir")
-            .l()
-            .expect("getCodeCacheDir returned null");
-        
-        let code_cache_path = env.call_method(&code_cache_dir, "getAbsolutePath", "()Ljava/lang/String;", &[])
-            .expect("Failed to get absolute path")
-            .l()
-            .expect("getAbsolutePath returned null");
-
-        let parent_loader = env.call_method(&activity_obj, "getClassLoader", "()Ljava/lang/ClassLoader;", &[])
-            .expect("Failed to get parent class loader")
-            .l()
-            .expect("getClassLoader returned null");
-
-        let dex_loader_class = env.find_class("dalvik/system/DexClassLoader")
-            .expect("Failed to find DexClassLoader class");
-        
-        let dex_loader = env.new_object(&dex_loader_class, "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/ClassLoader;)V", 
-            &[JValue::Object(apk_path_jstr.as_ref()), JValue::Object(code_cache_path.as_ref()), JValue::Object(JObject::null().as_ref()), JValue::Object(parent_loader.as_ref())])
-            .expect("Failed to create DexClassLoader");
-
-        let fetcher_class_name_dots = env.new_string("com.gnawsoftware.jobseeker.HttpFetcher")
-            .expect("Failed to create class name string with dots");
-
-        let fetcher_class = match env.call_method(&dex_loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(fetcher_class_name_dots.as_ref())]) {
-            Ok(val) => val.l().expect("loadClass returned null"),
-            Err(e) => {
-                if env.exception_check().unwrap_or(false) {
-                    env.exception_describe().unwrap_or(());
-                    env.exception_clear().unwrap_or(());
-                }
-                panic!("Failed to load HttpFetcher class via DexClassLoader: {:?}", e);
-            }
-        };
-
-        let global_fetcher_class = env.new_global_ref(fetcher_class)
-            .expect("Failed to create global ref for HttpFetcher");
-
-        crate::jni_http::set_fetcher_class(global_fetcher_class);
-    }
-
-    crate::jni_http::set_java_vm(vm);
-    tracing_info!("ANDROID: JavaVM and Fetcher class initialized");
 
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     let db_path = get_db_path();
-    let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()).await }).expect("Failed to initialize database");
+    let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()) }).expect("Failed to initialize database");
     let db = Arc::new(db);
     let ui = App::new().expect("Failed to create Slint UI");
     setup_ui(&ui, rt, db, log_rx);

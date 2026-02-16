@@ -20,7 +20,7 @@ pub struct Db {
 impl Db {
     /// Opens or creates the RedB database at the given path.
     /// Tables are automatically initialized if they don't exist.
-    pub async fn new(db_path: &str) -> Result<Self> {
+    pub fn new(db_path: &str) -> Result<Self> {
         let db = Database::create(db_path)
             .context("Failed to create/open RedB database")?;
 
