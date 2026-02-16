@@ -28,7 +28,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use regex::Regex;
-use chrono::Datelike;
+use chrono::{Datelike, Utc};
 
 fn swedish_month_name(month: u32) -> &'static str {
     match month {
@@ -54,9 +54,7 @@ use jni::objects::{JObject, JValue};
 use crate::api::JobSearchClient;
 use crate::db::Db;
 use crate::ui::*;
-use crate::models::AdStatus;
-use crate::models::UserDocument;
-use crate::models::DictEntry;
+use crate::models::{AdStatus, AppSettings, JobAd, UserDocument, DictEntry};
 
 use std::sync::mpsc;
 use tracing_subscriber::prelude::*;
@@ -120,20 +118,65 @@ fn setup_crash_handler() {
     }));
 }
 
-/// Triggers an automatic backup of the database to a user-defined sync folder.
+// --- Synk Logik (Merging) ---
+
+async fn merge_databases(local: &Db, sync_path: &std::path::Path) -> anyhow::Result<()> {
+    if !sync_path.exists() { return Ok(()); }
+    let remote = Db::new(sync_path.to_str().unwrap())?;
+
+    // 1. Merge Inställningar
+    if let (Ok(Some(l_set)), Ok(Some(r_set))) = (local.load_settings().await, remote.load_settings().await) {
+        if r_set.updated_at > l_set.updated_at { local.save_settings(&r_set).await?; }
+        else if l_set.updated_at > r_set.updated_at { remote.save_settings(&l_set).await?; }
+    }
+
+    // 2. Merge Jobbannonser
+    let l_jobs = local.get_filtered_jobs(&[], None, None).await?;
+    let r_jobs = remote.get_filtered_jobs(&[], None, None).await?;
+    
+    for r_job in &r_jobs {
+        if let Ok(Some(l_job)) = local.get_job_ad(&r_job.id).await {
+            if r_job.updated_at > l_job.updated_at { local.save_job_ad(r_job).await?; }
+        } else { local.save_job_ad(r_job).await?; }
+    }
+    for l_job in &l_jobs {
+        if let Ok(Some(r_job)) = remote.get_job_ad(&l_job.id).await {
+            if l_job.updated_at > r_job.updated_at { remote.save_job_ad(l_job).await?; }
+        } else { remote.save_job_ad(l_job).await?; }
+    }
+
+    // 3. Merge Dokument
+    let l_docs = local.get_documents().await?;
+    let r_docs = remote.get_documents().await?;
+    for r_doc in &r_docs {
+        if let Some(l_doc) = l_docs.iter().find(|d| d.id == r_doc.id) {
+            if r_doc.updated_at > l_doc.updated_at { local.save_document(r_doc).await?; }
+        } else { local.save_document(r_doc).await?; }
+    }
+    for l_doc in &l_docs {
+        if !r_docs.iter().any(|d| d.id == l_doc.id) { remote.save_document(l_doc).await?; }
+    }
+
+    // 4. Merge Ordbok
+    let l_dict = local.get_dictionary().await?;
+    let r_dict = remote.get_dictionary().await?;
+    for r_ent in &r_dict {
+        if let Some(l_ent) = l_dict.iter().find(|e| e.key == r_ent.key) {
+            if r_ent.updated_at > l_ent.updated_at { local.save_dict_entry(r_ent).await?; }
+        } else { local.save_dict_entry(r_ent).await?; }
+    }
+    for l_ent in &l_dict {
+        if !r_dict.iter().any(|e| e.key == l_ent.key) { remote.save_dict_entry(l_ent).await?; }
+    }
+
+    Ok(())
+}
+
 async fn trigger_sync(db: &Db) {
     if let Ok(Some(settings)) = db.load_settings().await {
         if !settings.sync_path.is_empty() {
-            let sync_dir = std::path::PathBuf::from(&settings.sync_path);
-            if sync_dir.exists() && sync_dir.is_dir() {
-                let db_path = get_db_path();
-                let target_path = sync_dir.join("jobseeker.redb");
-                if let Err(e) = std::fs::copy(&db_path, &target_path) {
-                    tracing_error!("Automatisk synk misslyckades: {}", e);
-                } else {
-                    tracing_info!("Automatisk synk klar: {:?}", target_path);
-                }
-            }
+            let sync_file = std::path::PathBuf::from(&settings.sync_path).join("jobseeker.redb");
+            let _ = merge_databases(db, &sync_file).await;
         }
     }
 }
@@ -161,10 +204,7 @@ fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc
     }
     #[cfg(target_os = "android")]
     {
-        // On Android, use a minimal no-op subscriber to avoid panics
-        // Use tracing::Subscriber with a no-op implementation
         use tracing::Subscriber;
-
         struct NoOpSubscriber;
         impl Subscriber for NoOpSubscriber {
             fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool { false }
@@ -175,7 +215,6 @@ fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc
             fn enter(&self, _span: &tracing::span::Id) {}
             fn exit(&self, _span: &tracing::span::Id) {}
         }
-
         let _ = tracing::subscriber::set_global_default(NoOpSubscriber);
         (None, rx)
     }
@@ -194,11 +233,7 @@ mod mpsc_writer {
 
 fn get_db_path() -> std::path::PathBuf {
     #[cfg(target_os = "android")]
-    { 
-        let path = std::path::PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files"); 
-        let _ = std::fs::create_dir_all(&path); 
-        return path.join("jobseeker.redb"); 
-    }
+    { let path = std::path::PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files"); let _ = std::fs::create_dir_all(&path); return path.join("jobseeker.redb"); }
     #[cfg(not(target_os = "android"))]
     { directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker").map(|p| { let d = p.data_dir(); let _ = std::fs::create_dir_all(d); d.join("jobseeker.redb") }).unwrap_or_else(|| std::path::PathBuf::from("jobseeker.redb")) }
 }
@@ -322,8 +357,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                         } else { 
                             report 
                         };
-                        let body_encoded = urlencoding::encode(&body_text);
-                        let mailto = format!("mailto:?subject={}&body={}", subject, body_encoded);
+                        let mailto = format!("mailto:?subject={}&body={}", subject, urlencoding::encode(&body_text));
                         let _ = webbrowser::open(&mailto);
                         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Öppnar e-post (rapport kopierad till urklipp)".into()); } });
                     }
@@ -331,14 +365,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     let file_name = format!("jobb-rapport-{}.txt", month_str);
                     let file_path = directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.join(&file_name))).unwrap_or_else(|| std::path::PathBuf::from(&file_name));
                     if std::fs::write(&file_path, report).is_ok() {
-                        tracing_info!("Rapport sparad till: {:?}", file_path);
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak.upgrade() {
-                                ui.set_status_msg(format!("Rapport sparad: {}", file_name).into());
-                            }
-                        });
-                    } else {
-                        tracing_error!("Misslyckades att skapa backup!");
+                        let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg(format!("Rapport sparad: {}", file_name).into()); } });
                     }
                 }
             });
@@ -372,7 +399,6 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                         if ad.driving_license_required { clean_desc.push_str("\n\nKÖRKORT:\n • Krav på körkort\n"); }
                         JobEntry { id: ad.id.into(), title: ad.headline.into(), employer: ad.employer.and_then(|e| e.name).unwrap_or_default().into(), location: ad.workplace_address.and_then(|a| a.city).unwrap_or_default().into(), description: clean_desc.into(), date: ad.publication_date.split('T').next().unwrap_or("").into(), apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(), rating: ad.rating.unwrap_or(0) as i32, status: match ad.status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 }, status_text: "".into() }
                     }).collect();
-                    
                     let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_f.upgrade() { ui.set_jobs(Rc::new(slint::VecModel::from(entries)).into()); ui.set_applied_count(app_count); } });
                 }
             });
@@ -410,7 +436,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     let (db_set, ui_set, rt_set) = (db.clone(), ui.as_weak(), rt.clone());
     ui.on_save_settings(move |s| {
         let (db, ui_weak) = (db_set.clone(), ui_set.clone());
-        let settings = crate::models::AppSettings {
+        let settings = AppSettings {
             keywords: s.keywords.to_string(),
             blacklist_keywords: s.blacklist_keywords.to_string(),
             locations_p1: s.locations_p1.to_string(),
@@ -423,6 +449,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             app_goal_count: s.app_goal_count,
             show_motivation: s.show_motivation,
             main_cv_id: s.main_cv_id.to_string(),
+            updated_at: Utc::now(),
         };
         let s_ui = settings.clone();
         rt_set.spawn(async move {
@@ -430,7 +457,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 trigger_sync(&db).await;
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
-                        ui.set_settings(AppSettings {
+                        ui.set_settings(crate::ui::AppSettings {
                             keywords: s_ui.keywords.into(),
                             blacklist_keywords: s_ui.blacklist_keywords.into(),
                             locations_p1: normalize_locations(&s_ui.locations_p1).into(),
@@ -444,7 +471,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                             show_motivation: s_ui.show_motivation,
                             main_cv_id: s_ui.main_cv_id.into(),
                         });
-                        ui.set_status_msg("Inställningar sparade".into());
+                        ui.set_status_msg("Sparat & Synkat".into());
                     }
                 });
             }
@@ -453,25 +480,22 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
 
     // Callback: Database Action (Synk/Backup)
     let ui_db = ui.as_weak();
+    let db_db = db.clone();
+    let rt_db = rt.clone();
     ui.on_db_action(move |act| {
-        let ui_weak = ui_db.clone();
+        let (db, ui_weak, rt) = (db_db.clone(), ui_db.clone(), rt_db.clone());
         if act == "backup" {
             let db_path = get_db_path();
-            let backup_name = format!("jobseeker_backup_{}.redb", chrono::Local::now().format("%Y%m%d_%H%M"));
-            let backup_path = directories::UserDirs::new()
-                .and_then(|u| u.download_dir().map(|d| d.join(&backup_name)))
-                .unwrap_or_else(|| std::path::PathBuf::from(&backup_name));
-
+            let backup_name = format!("backup_{}.redb", Utc::now().format("%Y%m%d_%H%M"));
+            let backup_path = std::path::PathBuf::from(&backup_name);
             if std::fs::copy(&db_path, &backup_path).is_ok() {
-                tracing_info!("Backup skapad: {:?}", backup_path);
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak.upgrade() {
-                        ui.set_status_msg(format!("Backup sparad: {}", backup_name).into());
-                    }
-                });
-            } else {
-                tracing_error!("Misslyckades att skapa backup!");
+                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg(format!("Backup: {}", backup_name).into()); } });
             }
+        } else if act == "sync" {
+            rt.spawn(async move {
+                trigger_sync(&db).await;
+                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Synk klar".into()); } });
+            });
         }
     });
 
@@ -508,9 +532,10 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 if let Some(mut doc) = docs.iter_mut().find(|d| d.id == id_str) {
                     doc.content = content_str.clone();
                     let _ = db.save_document(doc).await;
+                    trigger_sync(&db).await;
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(ui) = ui_weak.upgrade() {
-                            ui.set_status_msg("Dokument sparat".into());
+                            ui.set_status_msg("Dokument sparat & synkat".into());
                         }
                     });
                 }
@@ -528,6 +553,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
 
         rt_del.spawn(async move {
             let _ = db.delete_document(&id_str).await;
+            trigger_sync(&db).await;
             let ui_weak1 = ui_weak.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_weak1.upgrade() {
@@ -607,6 +633,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
 
         rt_main.spawn(async move {
             let _ = db.set_main_cv(&id_str).await;
+            trigger_sync(&db).await;
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_status_msg("Huvud-CV uppdaterat".into());
@@ -624,8 +651,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let value_str = value.to_string();
 
         rt_add.spawn(async move {
-            let entry = DictEntry { key: key_str, value: value_str };
+            let entry = DictEntry { key: key_str, value: value_str, updated_at: Utc::now() };
             let _ = db.save_dict_entry(&entry).await;
+            trigger_sync(&db).await;
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_status_msg("Ord tillagt i ordboken".into());
@@ -643,6 +671,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
 
         rt_del_dict.spawn(async move {
             let _ = db.delete_dict_entry(&key_str).await;
+            trigger_sync(&db).await;
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_weak.upgrade() {
                     ui.set_status_msg("Ord raderat".into());
@@ -672,13 +701,14 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     let db_path_str = get_db_path().to_string_lossy().to_string();
     let rt_i_initial = rt_i.clone();
     rt_i_initial.spawn(async move {
+        trigger_sync(&db_i).await;
         let settings = db_i.load_settings().await.unwrap_or_default().unwrap_or_default();
         let (s, u_s) = (settings.clone(), ui_i.clone());
         let d_path = db_path_str.clone();
         let _ = slint::invoke_from_event_loop(move || {
             if let Some(ui) = u_s.upgrade() {
                 ui.set_database_path(d_path.into());
-                ui.set_settings(AppSettings {
+                ui.set_settings(crate::ui::AppSettings {
                     keywords: s.keywords.into(),
                     blacklist_keywords: s.blacklist_keywords.into(),
                     locations_p1: normalize_locations(&s.locations_p1).into(),
@@ -716,7 +746,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         // Ladda ordbok
         let (db_dict, ui_dict, rt_dict) = (db_i.clone(), ui_i.clone(), rt_i.clone());
         rt_dict.spawn(async move {
-            if let Ok(entries) = db_dict.get_dict_entries().await {
+            if let Ok(entries) = db_dict.get_dictionary().await {
                 let dict_entries: Vec<crate::ui::DictEntry> = entries.into_iter().map(|e| crate::ui::DictEntry {
                     key: e.key.into(),
                     value: e.value.into()
@@ -746,7 +776,7 @@ fn spawn_log_task(ui_weak: slint::Weak<App>, log_rx: mpsc::Receiver<String>) {
     });
 }
 
-async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: slint::Weak<App>, prio: Option<i32>, free_query: Option<String>, settings: crate::models::AppSettings) {
+async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: slint::Weak<App>, prio: Option<i32>, free_query: Option<String>, settings: AppSettings) {
     let now = chrono::Utc::now();
     let (y, m) = if let Some(ui) = ui_weak.upgrade() { let month_str = ui.get_active_month().to_string(); let parts: Vec<&str> = month_str.split('-').collect(); if parts.len() == 2 { (parts[0].parse().unwrap_or(now.year()), parts[1].parse().unwrap_or(now.month())) } else { (now.year(), now.month()) } } else { (now.year(), now.month()) };
     let (raw_query, locations_str) = match (free_query.clone(), prio) { (Some(q), _) => (q, String::new()), (None, Some(p)) => { let locs = match p { 1 => &settings.locations_p1, 2 => &settings.locations_p2, 3 => &settings.locations_p3, _ => &settings.locations_p1 }; (settings.keywords.clone(), locs.clone()) }, _ => (String::new(), String::new()) };

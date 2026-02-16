@@ -71,6 +71,8 @@ pub struct JobAd {
     pub bookmarked_at: Option<DateTime<Utc>>,
     #[serde(default = "Utc::now")]
     pub internal_created_at: DateTime<Utc>,
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>, // New: tracks when this record was last modified
     #[serde(default)]
     pub search_keyword: Option<String>,
     #[serde(default)]
@@ -151,6 +153,8 @@ pub struct AppSettings {
     pub show_motivation: bool,
     #[serde(default)]
     pub main_cv_id: String,
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>, // New: tracks when settings were changed
 }
 
 /// User documents (CVs, cover letters, etc.)
@@ -164,6 +168,8 @@ pub struct UserDocument {
     pub is_main: bool,
     #[serde(default = "Utc::now")]
     pub created_at: DateTime<Utc>,
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>, // New: tracks document edits
 }
 
 /// Dictionary entries for knowledge base
@@ -171,6 +177,8 @@ pub struct UserDocument {
 pub struct DictEntry {
     pub key: String,
     pub value: String,
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>, // New: tracks dictionary changes
 }
 
 impl Default for AppSettings {
@@ -188,6 +196,7 @@ impl Default for AppSettings {
             app_goal_count: 12,
             show_motivation: true,
             main_cv_id: "".to_string(),
+            updated_at: Utc::now(),
         }
     }
 }

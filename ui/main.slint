@@ -542,6 +542,7 @@ component SettingsPage inherits Rectangle {
                         HorizontalLayout {
                             spacing: 10px;
                             Button { text: "Skapa Backup"; clicked => { root.db-action("backup"); } }
+                            Button { text: "Synka Nu"; clicked => { root.db-action("sync"); } }
                         }
                         Rectangle { height: 10px; } // Spacer
                         Text { text: "SYNKRAPP (Valfri):"; color: #888; font-size: 12px; }
