@@ -29,6 +29,7 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 use regex::Regex;
 use chrono::{Datelike, Utc};
+use std::path::{Path, PathBuf};
 
 fn swedish_month_name(month: u32) -> &'static str {
     match month {
@@ -120,7 +121,7 @@ fn setup_crash_handler() {
 
 // --- Synk Logik (Merging) ---
 
-async fn merge_databases(local: &Db, sync_path: &std::path::Path) -> anyhow::Result<()> {
+async fn merge_databases(local: &Db, sync_path: &Path) -> anyhow::Result<()> {
     let local_file = get_db_path();
     let sync_file = sync_path.join("jobseeker.redb");
 
@@ -184,12 +185,31 @@ async fn merge_databases(local: &Db, sync_path: &std::path::Path) -> anyhow::Res
 async fn trigger_sync(db: &Db) {
     if let Ok(Some(settings)) = db.load_settings().await {
         if !settings.sync_path.is_empty() {
-            let sync_dir = std::path::PathBuf::from(&settings.sync_path);
+            let sync_dir = PathBuf::from(&settings.sync_path);
             if sync_dir.exists() {
                 let _ = merge_databases(db, &sync_dir).await;
             }
         }
     }
+}
+
+// --- Hjälpfunktioner ---
+
+fn get_folder_entries(path: &Path) -> Vec<FolderEntry> {
+    let mut entries = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(path) {
+        for entry in rd.flatten() {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let path_str = entry.path().to_string_lossy().to_string();
+                    entries.push(FolderEntry { name: name.into(), path: path_str.into() });
+                }
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries
 }
 
 fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc::Receiver<String>) {
@@ -198,20 +218,10 @@ fn setup_logging() -> (Option<tracing_appender::non_blocking::WorkerGuard>, mpsc
 
     #[cfg(not(target_os = "android"))]
     {
-        let slint_writer = SlintLogWriter { sender: tx };
-        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,winit=warn,calloop=warn,slint=warn,i_slint_backend_winit=warn"));
-        let registry = tracing_subscriber::registry()
-            .with(filter)
-            .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout).with_ansi(true))
-            .with(tracing_subscriber::fmt::layer().with_writer(move || slint_writer.sender.clone().into_writer()).with_ansi(false));
-
-        let log_dir = directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker").map(|p| p.data_dir().join("logs")).unwrap_or_else(|| std::path::PathBuf::from("logs"));
-        let _ = std::fs::create_dir_all(&log_dir);
-        let file_appender = tracing_appender::rolling::daily(&log_dir, "jobseeker.log");
-        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-        let r = registry.with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false));
-        r.init();
-        (Some(guard), rx)
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,slint=warn"));
+        let registry = tracing_subscriber::registry().with(filter).with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout).with_ansi(true));
+        registry.init();
+        (None, rx)
     }
     #[cfg(target_os = "android")]
     {
@@ -242,11 +252,11 @@ mod mpsc_writer {
     }
 }
 
-fn get_db_path() -> std::path::PathBuf {
+fn get_db_path() -> PathBuf {
     #[cfg(target_os = "android")]
-    { let path = std::path::PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files"); let _ = std::fs::create_dir_all(&path); return path.join("jobseeker.redb"); }
+    { let path = PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files"); let _ = std::fs::create_dir_all(&path); return path.join("jobseeker.redb"); }
     #[cfg(not(target_os = "android"))]
-    { directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker").map(|p| { let d = p.data_dir(); let _ = std::fs::create_dir_all(d); d.join("jobseeker.redb") }).unwrap_or_else(|| std::path::PathBuf::from("jobseeker.redb")) }
+    { directories::ProjectDirs::from("com", "GnawSoftware", "Jobseeker").map(|p| { let d = p.data_dir(); let _ = std::fs::create_dir_all(d); d.join("jobseeker.redb") }).unwrap_or_else(|| PathBuf::from("jobseeker.redb")) }
 }
 
 fn normalize_locations(input: &str) -> String {
@@ -255,6 +265,8 @@ fn normalize_locations(input: &str) -> String {
         else { let mut chars = s.chars(); match chars.next() { None => String::new(), Some(f) => f.to_uppercase().collect::<String>() + chars.as_str().to_lowercase().as_str() } }
     }).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(", ")
 }
+
+// --- UI Setup ---
 
 fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<String>) {
     let ui_weak = ui.as_weak();
@@ -374,7 +386,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     }
                 } else if method == "file" {
                     let file_name = format!("jobb-rapport-{}.txt", month_str);
-                    let file_path = directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.join(&file_name))).unwrap_or_else(|| std::path::PathBuf::from(&file_name));
+                    let file_path = directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.join(&file_name))).unwrap_or_else(|| PathBuf::from(&file_name));
                     if std::fs::write(&file_path, report).is_ok() {
                         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg(format!("Rapport sparad: {}", file_name).into()); } });
                     }
@@ -510,7 +522,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         if act == "backup" {
             let db_path = get_db_path();
             let backup_name = format!("backup_{}.redb", Utc::now().format("%Y%m%d_%H%M"));
-            let backup_path = std::path::PathBuf::from(&backup_name);
+            let backup_path = PathBuf::from(&backup_name);
             if std::fs::copy(&db_path, &backup_path).is_ok() {
                 let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg(format!("Backup: {}", backup_name).into()); } });
             }
@@ -520,187 +532,6 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Synk klar".into()); } });
             });
         }
-    });
-
-    // Callback: Select document (load content into editor)
-    let (db_sel, ui_sel, rt_sel) = (db.clone(), ui.as_weak(), rt.clone());
-    ui.on_select_doc(move |id| {
-        let db = db_sel.clone();
-        let ui_weak = ui_sel.clone();
-        let id_str = id.to_string();
-
-        rt_sel.spawn(async move {
-            if let Ok(docs) = db.get_documents().await {
-                if let Some(doc) = docs.iter().find(|d| d.id == id_str).cloned() {
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = ui_weak.upgrade() {
-                            ui.set_selected_doc_content(doc.content.clone().into());
-                        }
-                    });
-                }
-            }
-        });
-    });
-
-    // Callback: Save document
-    let (db_save, ui_save, rt_save) = (db.clone(), ui.as_weak(), rt.clone());
-    ui.on_save_doc(move |id, content| {
-        let db = db_save.clone();
-        let ui_weak = ui_save.clone();
-        let id_str = id.to_string();
-        let content_str = content.to_string();
-
-        rt_save.spawn(async move {
-            if let Ok(mut docs) = db.get_documents().await {
-                if let Some(mut doc) = docs.iter_mut().find(|d| d.id == id_str) {
-                    doc.content = content_str.clone();
-                    let _ = db.save_document(doc).await;
-                    trigger_sync(&db).await;
-                    let _ = slint::invoke_from_event_loop(move || {
-                        if let Some(ui) = ui_weak.upgrade() {
-                            ui.set_status_msg("Dokument sparat & synkat".into());
-                        }
-                    });
-                }
-            }
-        });
-    });
-
-    // Callback: Delete document
-    let (db_del, ui_del) = (db.clone(), ui.as_weak());
-    let rt_del = rt.clone();
-    ui.on_delete_doc(move |id| {
-        let db = db_del.clone();
-        let ui_weak = ui_del.clone();
-        let id_str = id.to_string();
-
-        rt_del.spawn(async move {
-            let _ = db.delete_document(&id_str).await;
-            trigger_sync(&db).await;
-            let ui_weak1 = ui_weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak1.upgrade() {
-                    ui.set_status_msg("Dokument raderat".into());
-                }
-            });
-            // Reload documents list
-            if let Ok(docs) = db.get_documents().await {
-                let entries: Vec<DocEntry> = docs.into_iter().map(|d| DocEntry {
-                    id: d.id.into(),
-                    name: d.name.into(),
-                    doc_type: d.doc_type.into(),
-                    is_main: d.is_main
-                }).collect();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_weak.upgrade() {
-                        ui.set_documents(Rc::new(slint::VecModel::from(entries)).into());
-                    }
-                });
-            }
-        });
-    });
-
-    // Callback: Export document
-    let (db_exp, ui_exp, rt_exp) = (db.clone(), ui.as_weak(), rt.clone());
-    ui.on_export_doc(move |id, format| {
-        let db = db_exp.clone();
-        let ui_weak = ui_exp.clone();
-        let id_str = id.to_string();
-        let format_str = format.to_string();
-
-        rt_exp.spawn(async move {
-            if let Ok(docs) = db.get_documents().await {
-                if let Some(doc) = docs.iter().find(|d| d.id == id_str).cloned() {
-                    let export_dir = directories::UserDirs::new()
-                        .and_then(|u| u.download_dir().map(|p| p.to_path_buf()))
-                        .unwrap_or(std::path::PathBuf::from("."));
-
-                    let file_name = format!("{}.{}", doc.name.replace('/', "_"), if format_str == "pdf" { "pdf" } else { "md" });
-                    let file_path = export_dir.join(&file_name);
-
-                    let result = if format_str == "pdf" {
-                        crate::exporter::export_doc_to_pdf(&doc.name, &doc.content, &file_path)
-                    } else {
-                        crate::exporter::export_doc_to_md(&doc.content, &file_path)
-                    };
-
-
-                    match result {
-                        Ok(_) => {
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = ui_weak.upgrade() {
-                                    ui.set_status_msg(format!("Exporterat: {}", file_name).into());
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            tracing_error!("Export misslyckades: {}", e);
-                            let _ = slint::invoke_from_event_loop(move || {
-                                if let Some(ui) = ui_weak.upgrade() {
-                                    ui.set_status_msg(format!("Export misslyckades: {}", e).into());
-                                }
-                            });
-                        }
-                    }
-                }
-            }
-        });
-    });
-
-    // Callback: Set as main CV
-    let (db_main, ui_main, rt_main) = (db.clone(), ui.as_weak(), rt.clone());
-    ui.on_set_as_main(move |id| {
-        let db = db_main.clone();
-        let ui_weak = ui_main.clone();
-        let id_str = id.to_string();
-
-        rt_main.spawn(async move {
-            let _ = db.set_main_cv(&id_str).await;
-            trigger_sync(&db).await;
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_status_msg("Huvud-CV uppdaterat".into());
-                }
-            });
-        });
-    });
-
-    // Callback: Add dictionary entry
-    let (db_add, ui_add, rt_add) = (db.clone(), ui.as_weak(), rt.clone());
-    ui.on_add_entry(move |key, value| {
-        let db = db_add.clone();
-        let ui_weak = ui_add.clone();
-        let key_str = key.to_string();
-        let value_str = value.to_string();
-
-        rt_add.spawn(async move {
-            let entry = DictEntry { key: key_str, value: value_str, updated_at: Utc::now() };
-            let _ = db.save_dict_entry(&entry).await;
-            trigger_sync(&db).await;
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_status_msg("Ord tillagt i ordboken".into());
-                }
-            });
-        });
-    });
-
-    // Callback: Delete dictionary entry
-    let (db_del_dict, ui_del_dict, rt_del_dict) = (db.clone(), ui.as_weak(), rt.clone());
-    ui.on_delete_entry(move |key| {
-        let db = db_del_dict.clone();
-        let ui_weak = ui_del_dict.clone();
-        let key_str = key.to_string();
-
-        rt_del_dict.spawn(async move {
-            let _ = db.delete_dict_entry(&key_str).await;
-            trigger_sync(&db).await;
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_status_msg("Ord raderat".into());
-                }
-            });
-        });
     });
 
     // Callback: Pick Sync Path
@@ -722,28 +553,157 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         }
         #[cfg(target_os = "android")]
         {
+            let start_path = "/sdcard";
+            let entries = get_folder_entries(Path::new(start_path));
             let _ = slint::invoke_from_event_loop(move || {
                 if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_status_msg("Välj mapp manuellt i textfältet på Android".into());
+                    ui.set_current_folder_path(start_path.into());
+                    ui.set_folder_entries(Rc::new(slint::VecModel::from(entries)).into());
+                    ui.set_show_folder_picker(true);
                 }
             });
         }
     });
 
-    // Callback: Extract from documents
-    ui.on_extract_from_docs(|| {
-        // TODO: Implement AI extraction of terms from documents
+    // Callback: Custom Folder Picker Navigation
+    let ui_fold = ui.as_weak();
+    ui.on_select_folder(move |path| {
+        let (ui_weak, p_str) = (ui_fold.clone(), path.to_string());
+        let entries = get_folder_entries(Path::new(&p_str));
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_current_folder_path(p_str.into());
+                ui.set_folder_entries(Rc::new(slint::VecModel::from(entries)).into());
+            }
+        });
     });
 
-    // Callback: Analyze match
-    ui.on_analyze_match(|_id| {
-        // TODO: Implement AI matching between CV and job ad
+    let ui_back = ui.as_weak();
+    ui.on_folder_go_back(move || {
+        let ui_weak = ui_back.clone();
+        if let Some(ui) = ui_weak.upgrade() {
+            let current = PathBuf::from(ui.get_current_folder_path().to_string());
+            if let Some(parent) = current.parent() {
+                let p_str = parent.to_string_lossy().to_string();
+                let entries = get_folder_entries(parent);
+                ui.set_current_folder_path(p_str.into());
+                ui.set_folder_entries(Rc::new(slint::VecModel::from(entries)).into());
+            }
+        }
     });
 
-    // Callback: Import file (Android placeholder)
-    #[cfg(target_os = "android")]
-    ui.on_import_file(|| {
-        // TODO: Implement file picker on Android
+    // Callback: Select document
+    let (db_sel, ui_sel, rt_sel) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_select_doc(move |id| {
+        let db = db_sel.clone();
+        let ui_weak = ui_sel.clone();
+        let id_str = id.to_string();
+        rt_sel.spawn(async move {
+            if let Ok(docs) = db.get_documents().await {
+                if let Some(doc) = docs.iter().find(|d| d.id == id_str).cloned() {
+                    let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_selected_doc_content(doc.content.clone().into()); } });
+                }
+            }
+        });
+    });
+
+    // Callback: Save document
+    let (db_save, ui_save, rt_save) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_save_doc(move |id, content| {
+        let db = db_save.clone();
+        let ui_weak = ui_save.clone();
+        let id_str = id.to_string();
+        let content_str = content.to_string();
+        rt_save.spawn(async move {
+            if let Ok(mut docs) = db.get_documents().await {
+                if let Some(mut doc) = docs.iter_mut().find(|d| d.id == id_str) {
+                    doc.content = content_str.clone();
+                    let _ = db.save_document(doc).await;
+                    trigger_sync(&db).await;
+                    let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Dokument sparat & synkat".into()); } });
+                }
+            }
+        });
+    });
+
+    // Callback: Delete document
+    let (db_del, ui_del, rt_del) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_delete_doc(move |id| {
+        let db = db_del.clone();
+        let ui_weak = ui_del.clone();
+        let id_str = id.to_string();
+        rt_del.spawn(async move {
+            let _ = db.delete_document(&id_str).await;
+            trigger_sync(&db).await;
+            if let Ok(docs) = db.get_documents().await {
+                let entries: Vec<DocEntry> = docs.into_iter().map(|d| DocEntry { id: d.id.into(), name: d.name.into(), doc_type: d.doc_type.into(), is_main: d.is_main }).collect();
+                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_documents(Rc::new(slint::VecModel::from(entries)).into()); ui.set_status_msg("Dokument raderat".into()); } });
+            }
+        });
+    });
+
+    // Callback: Export document
+    let (db_exp, ui_exp, rt_exp) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_export_doc(move |id, format| {
+        let db = db_exp.clone();
+        let ui_weak = ui_exp.clone();
+        let id_str = id.to_string();
+        let format_str = format.to_string();
+        rt_exp.spawn(async move {
+            if let Ok(docs) = db.get_documents().await {
+                if let Some(doc) = docs.iter().find(|d| d.id == id_str).cloned() {
+                    let export_dir = directories::UserDirs::new().and_then(|u| u.download_dir().map(|p| p.to_path_buf())).unwrap_or(PathBuf::from("."));
+                    let file_name = format!("{}.{}", doc.name.replace('/', "_"), if format_str == "pdf" { "pdf" } else { "md" });
+                    let file_path = export_dir.join(&file_name);
+                    let result = if format_str == "pdf" { crate::exporter::export_doc_to_pdf(&doc.name, &doc.content, &file_path) } else { crate::exporter::export_doc_to_md(&doc.content, &file_path) };
+                    match result {
+                        Ok(_) => { let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg(format!("Exporterat: {}", file_name).into()); } }); }
+                        Err(e) => { let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg(format!("Export misslyckades: {}", e).into()); } }); }
+                    }
+                }
+            }
+        });
+    });
+
+    // Callback: Set as main CV
+    let (db_main, ui_main, rt_main) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_set_as_main(move |id| {
+        let db = db_main.clone();
+        let ui_weak = ui_main.clone();
+        let id_str = id.to_string();
+        rt_main.spawn(async move {
+            let _ = db.set_main_cv(&id_str).await;
+            trigger_sync(&db).await;
+            let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Huvud-CV uppdaterat".into()); } });
+        });
+    });
+
+    // Callback: Add dictionary entry
+    let (db_add, ui_add, rt_add) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_add_entry(move |key, value| {
+        let db = db_add.clone();
+        let ui_weak = ui_add.clone();
+        let key_str = key.to_string();
+        let value_str = value.to_string();
+        rt_add.spawn(async move {
+            let entry = DictEntry { key: key_str, value: value_str, updated_at: Utc::now() };
+            let _ = db.save_dict_entry(&entry).await;
+            trigger_sync(&db).await;
+            let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Ord tillagt i ordboken".into()); } });
+        });
+    });
+
+    // Callback: Delete dictionary entry
+    let (db_del_dict, ui_del_dict, rt_del_dict) = (db.clone(), ui.as_weak(), rt.clone());
+    ui.on_delete_entry(move |key| {
+        let db = db_del_dict.clone();
+        let ui_weak = ui_del_dict.clone();
+        let key_str = key.to_string();
+        rt_del_dict.spawn(async move {
+            let _ = db.delete_dict_entry(&key_str).await;
+            trigger_sync(&db).await;
+            let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Ord raderat".into()); } });
+        });
     });
 
     // Initial laddning
@@ -775,39 +735,26 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             }
         });
 
-        // Ladda dokument
-        let (db_docs, ui_docs, _rt_docs) = (db_i.clone(), ui_i.clone(), rt_i.clone());
-        rt_i.spawn(async move {
+        let db_docs = db_i.clone();
+        let ui_docs = ui_i.clone();
+        let rt_docs = rt_i.clone();
+        rt_docs.spawn(async move {
             if let Ok(docs) = db_docs.get_documents().await {
-                let entries: Vec<DocEntry> = docs.into_iter().map(|d| DocEntry {
-                    id: d.id.into(),
-                    name: d.name.into(),
-                    doc_type: d.doc_type.into(),
-                    is_main: d.is_main
-                }).collect();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_docs.upgrade() {
-                        ui.set_documents(Rc::new(slint::VecModel::from(entries)).into());
-                    }
-                });
+                let entries: Vec<DocEntry> = docs.into_iter().map(|d| DocEntry { id: d.id.into(), name: d.name.into(), doc_type: d.doc_type.into(), is_main: d.is_main }).collect();
+                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_docs.upgrade() { ui.set_documents(Rc::new(slint::VecModel::from(entries)).into()); } });
             }
         });
 
-        // Ladda ordbok
-        let (db_dict, ui_dict, _rt_dict) = (db_i.clone(), ui_i.clone(), rt_i.clone());
-        rt_i.spawn(async move {
+        let db_dict = db_i.clone();
+        let ui_dict = ui_i.clone();
+        let rt_dict = rt_i.clone();
+        rt_dict.spawn(async move {
             if let Ok(entries) = db_dict.get_dict_entries().await {
-                let dict_entries: Vec<crate::ui::DictEntry> = entries.into_iter().map(|e| crate::ui::DictEntry {
-                    key: e.key.into(),
-                    value: e.value.into()
-                }).collect();
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(ui) = ui_dict.upgrade() {
-                        ui.set_dictionary(Rc::new(slint::VecModel::from(dict_entries)).into());
-                    }
-                });
+                let dict_entries: Vec<crate::ui::DictEntry> = entries.into_iter().map(|e| crate::ui::DictEntry { key: e.key.into(), value: e.value.into() }).collect();
+                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_dict.upgrade() { ui.set_dictionary(Rc::new(slint::VecModel::from(dict_entries)).into()); } });
             }
         });
+        
         let now = chrono::Utc::now();
         let (ms, md, u_m) = (format!("{:04}-{:02}", now.year(), now.month()), format!("{} {}", swedish_month_name(now.month()), now.year()), ui_i.clone());
         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = u_m.upgrade() { ui.set_active_month(ms.into()); ui.set_active_month_display(md.into()); } });
@@ -838,30 +785,16 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
     let refresh_ui_from_db = |ui: &App, ads: Vec<crate::models::JobAd>, p: Option<i32>, muns: Vec<String>, msg: String| {
         let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
         let pmn: Vec<String> = if p.is_some() { muns.iter().filter_map(|code| JobSearchClient::get_municipality_name(code)).map(|s| s.to_lowercase()).collect() } else { Vec::new() };
-        
         let applied_count = ads.iter().filter(|ad| ad.status == Some(AdStatus::Applied)).count() as i32;
-
-        let mut entries: Vec<JobEntry> = ads.into_iter().filter(|ad| { 
-            if !pmn.is_empty() { 
-                if let Some(ref addr) = ad.workplace_address { 
-                    if let Some(ref mun) = addr.municipality { return pmn.contains(&mun.to_lowercase()); } 
-                } 
-                return false; 
-            } 
-            true 
-        }).map(|ad| {
+        let mut entries: Vec<JobEntry> = ads.into_iter().filter(|ad| { if !pmn.is_empty() { if let Some(ref addr) = ad.workplace_address { if let Some(ref mun) = addr.municipality { return pmn.contains(&mun.to_lowercase()); } } return false; } true }).map(|ad| {
             let raw_desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).map(|s| s.as_str()).unwrap_or("");
             let formatted_desc = raw_desc.replace("<li>", "\n • ").replace("</li>", "").replace("<ul>", "\n").replace("</ul>", "\n").replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n").replace("<p>", "\n\n").replace("</p>", "").replace("<strong>", "").replace("</strong>", "").replace("<b>", "").replace("</b>", "");
             let mut clean_desc = re_html.replace_all(&formatted_desc, "").to_string();
             if ad.driving_license_required { clean_desc.push_str("\n\nKÖRKORT:\n • Krav på körkort\n"); }
             JobEntry { id: ad.id.into(), title: ad.headline.into(), employer: ad.employer.and_then(|e| e.name).unwrap_or_default().into(), location: ad.workplace_address.and_then(|a| a.city).unwrap_or_default().into(), description: clean_desc.into(), date: ad.publication_date.split('T').next().unwrap_or("").into(), apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(), rating: ad.rating.unwrap_or(0) as i32, status: match ad.status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 }, status_text: "".into() }
         }).collect();
-        
         entries.sort_by(|a, b| b.date.cmp(&a.date));
-        
-        ui.set_jobs(std::rc::Rc::new(slint::VecModel::from(entries)).into()); 
-        ui.set_applied_count(applied_count);
-        ui.set_status_msg(msg.into());
+        ui.set_jobs(std::rc::Rc::new(slint::VecModel::from(entries)).into()); ui.set_applied_count(applied_count); ui.set_status_msg(msg.into());
     };
 
     if let Ok(existing_ads) = db.get_filtered_jobs(&[], Some(y), Some(m)).await {
@@ -873,11 +806,7 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
     for keyword in &query_parts {
         match api_client.search(keyword, &municipalities, 100).await {
             Ok(ads) => { for mut ad in ads { ad.search_keyword = Some(keyword.clone()); let is_blacklisted = blacklist.iter().any(|word| ad.headline.to_lowercase().contains(word) || ad.description.as_ref().and_then(|d| d.text.as_deref()).map(|t| t.to_lowercase().contains(word)).unwrap_or(false)); if !is_blacklisted { if let Ok(None) = db.get_job_ad(&ad.id).await { if db.save_job_ad(&ad).await.is_ok() { new_count += 1; } } } } },
-            Err(e) => {
-                eprintln!("FULL ERROR CHAIN for keyword '{}': {:?}", keyword, e);
-                eprintln!("ERROR CHAIN: {:?}", e.chain().collect::<Vec<_>>());
-                tracing_error!("Sökning på '{}' misslyckades: {}", keyword, e);
-            }
+            Err(e) => { tracing_error!("Sökning på '{}' misslyckades: {}", keyword, e); }
         }
     }
 
@@ -909,24 +838,19 @@ pub fn desktop_main() {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 unsafe fn android_main(app: slint::android::AndroidApp) {
-    let files_dir = std::path::PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files");
+    let files_dir = PathBuf::from("/data/data/com.gnawsoftware.jobseeker/files");
     let _ = std::fs::create_dir_all(&files_dir);
-
     let (guard, log_rx) = setup_logging();
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("Jobseeker"));
-
     tracing_info!("Starting Jobseeker on Android (Pure Rust)");
     setup_crash_handler();
-
     slint::android::init(app).expect("Failed to initialize Slint on Android");
-
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     let db_path = get_db_path();
     let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()) }).expect("Failed to initialize database");
     let db = Arc::new(db);
     let ui = App::new().expect("Failed to create Slint UI");
     setup_ui(&ui, rt, db, log_rx);
-
     let _log_guard = guard;
     ui.run().expect("Failed to run Slint UI");
 }

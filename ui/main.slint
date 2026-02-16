@@ -661,6 +661,66 @@ component SettingsPage inherits Rectangle {
     }
 }
 
+struct FolderEntry {
+    name: string,
+    path: string,
+}
+
+export component FolderPicker inherits Rectangle {
+    in property <[FolderEntry]> entries;
+    in property <string> current-path;
+    callback select-folder(string);
+    callback go-back;
+    callback cancel;
+    callback confirm;
+
+    background: #1a1a1a;
+    border-width: 1px;
+    border-color: #333;
+
+    VerticalLayout {
+        padding: 15px;
+        spacing: 10px;
+        
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: "Bläddra: " + root.current-path; color: #fff; font-size: 14px; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "Upp"; clicked => { root.go-back(); } }
+        }
+
+        Rectangle {
+            background: #000;
+            vertical-stretch: 1;
+            ScrollView {
+                VerticalLayout {
+                    spacing: 2px;
+                    for entry in root.entries: Rectangle {
+                        height: 40px;
+                        background: touch.pressed ? #333 : #000;
+                        touch := TouchArea {
+                            clicked => { root.select-folder(entry.path); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            spacing: 10px;
+                            Text { text: "📁"; vertical-alignment: center; }
+                            Text { text: entry.name; color: #eee; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 15px;
+            alignment: end;
+            Button { text: "Avbryt"; clicked => { root.cancel(); } }
+            Button { text: "Välj denna mapp"; primary: true; clicked => { root.confirm(); } }
+        }
+    }
+}
+
 export component App inherits Window {
     title: "Jobseeker 2026";
     min-width: 380px;
@@ -691,6 +751,9 @@ export component App inherits Window {
     in-out property <[DictEntry]> dictionary: [];
     in-out property <string> selected-doc-content: "";
     in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1", app_min_count: 6, app_goal_count: 12, show_motivation: true };
+    in-out property <bool> show-folder-picker: false;
+    in-out property <[FolderEntry]> folder-entries: [];
+    in-out property <string> current-folder-path: "";
 
     callback search-pressed(string);
     callback search-prio(int);
@@ -713,6 +776,8 @@ export component App inherits Window {
     callback delete_entry(string);
     callback extract_from_docs();
     callback pick_sync_path();
+    callback select_folder(string);
+    callback folder_go_back();
 
     VerticalLayout {
         // Main View
@@ -877,6 +942,23 @@ export component App inherits Window {
                         active: root.current-tab == 4;
                         clicked => { root.current-tab = 4; }
                     }
+                }
+            }
+        }
+
+        if root.show-folder-picker : Rectangle {
+            background: #000000aa;
+            FolderPicker {
+                width: 90%;
+                height: 80%;
+                entries: root.folder-entries;
+                current-path: root.current-folder-path;
+                select-folder(p) => { root.select_folder(p); }
+                go-back => { root.folder_go_back(); }
+                cancel => { root.show-folder-picker = false; }
+                confirm => { 
+                    root.settings.sync_path = root.current-folder-path;
+                    root.show-folder-picker = false; 
                 }
             }
         }
