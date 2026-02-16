@@ -515,6 +515,7 @@ component SettingsPage inherits Rectangle {
     callback clear-logs;
     callback copy-text(string);
     callback db-action(string); // backup, restore
+    callback pick-sync-path;
 
     background: #121212;
 
@@ -546,11 +547,18 @@ component SettingsPage inherits Rectangle {
                         }
                         Rectangle { height: 10px; } // Spacer
                         Text { text: "SYNKRAPP (Valfri):"; color: #888; font-size: 12px; }
-                        sync-input := TextEdit {
-                            text: root.settings.sync_path;
-                            placeholder-text: "/path/to/sync/folder";
-                            height: 40px;
-                            font-size: 12px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            sync-input := TextEdit {
+                                text: root.settings.sync_path;
+                                placeholder-text: "/path/to/sync/folder";
+                                height: 40px;
+                                font-size: 12px;
+                            }
+                            Button {
+                                text: "Välj mapp";
+                                clicked => { root.pick-sync-path(); }
+                            }
                         }
                         Text { text: "Databasen kopieras hit automatiskt vid ändringar."; color: #666; font-size: 10px; }
                     }
@@ -704,6 +712,7 @@ export component App inherits Window {
     callback add_entry(string, string);
     callback delete_entry(string);
     callback extract_from_docs();
+    callback pick_sync_path();
 
     VerticalLayout {
         // Main View
@@ -783,6 +792,7 @@ export component App inherits Window {
                 last_api_request: root.last_api_request;
                 save-settings(s) => { root.save-settings(s); }
                 db-action(act) => { root.db-action(act); }
+                pick-sync-path() => { root.pick-sync-path(); }
             }
 
             if root.current-tab == 3 : ProfilePage {

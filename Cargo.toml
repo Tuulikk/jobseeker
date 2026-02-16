@@ -104,7 +104,7 @@ reqwest = { version = "0.12.28", default-features = false, features = ["json"] }
 [target.'cfg(not(target_os = "android"))'.dependencies]
 slint = { version = "1.14", default-features = true }
 arboard = "3.4"
-# rfd = "0.15"  # Temporarily disabled - ashpd version conflicts
+rfd = "0.15"
 
 [profile.release]
 opt-level = "z"

@@ -121,8 +121,17 @@ fn setup_crash_handler() {
 // --- Synk Logik (Merging) ---
 
 async fn merge_databases(local: &Db, sync_path: &std::path::Path) -> anyhow::Result<()> {
-    if !sync_path.exists() { return Ok(()); }
-    let remote = Db::new(sync_path.to_str().unwrap())?;
+    let local_file = get_db_path();
+    let sync_file = sync_path.join("jobseeker.redb");
+
+    // If sync file doesn't exist, create it from local
+    if !sync_file.exists() {
+        tracing_info!("Synk-fil saknas, skapar initial kopia...");
+        std::fs::copy(&local_file, &sync_file)?;
+        return Ok(());
+    }
+
+    let remote = Db::new(sync_file.to_str().unwrap())?;
 
     // 1. Merge Inställningar
     if let (Ok(Some(l_set)), Ok(Some(r_set))) = (local.load_settings().await, remote.load_settings().await) {
@@ -175,8 +184,10 @@ async fn merge_databases(local: &Db, sync_path: &std::path::Path) -> anyhow::Res
 async fn trigger_sync(db: &Db) {
     if let Ok(Some(settings)) = db.load_settings().await {
         if !settings.sync_path.is_empty() {
-            let sync_file = std::path::PathBuf::from(&settings.sync_path).join("jobseeker.redb");
-            let _ = merge_databases(db, &sync_file).await;
+            let sync_dir = std::path::PathBuf::from(&settings.sync_path);
+            if sync_dir.exists() {
+                let _ = merge_databases(db, &sync_dir).await;
+            }
         }
     }
 }
@@ -407,11 +418,23 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
 
     // Callback: Free Search
     let (api_s, db_s, ui_s, rt_s) = (Arc::new(JobSearchClient::new()), db.clone(), ui.as_weak(), rt.clone());
-    ui.on_search_pressed(move |q| { let (api, db, ui_weak, q_str) = (api_s.clone(), db_s.clone(), ui_s.clone(), q.to_string()); rt_s.spawn(async move { let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default(); perform_search(api, db, ui_weak, None, Some(q_str), settings).await; }); });
+    ui.on_search_pressed(move |q| { 
+        let (api, db, ui_weak, q_str) = (api_s.clone(), db_s.clone(), ui_s.clone(), q.to_string()); 
+        rt_s.spawn(async move { 
+            let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default(); 
+            perform_search(api, db, ui_weak, None, Some(q_str), settings).await; 
+        }); 
+    });
 
     // Callback: Prio Search
     let (api_p, db_p, ui_p, rt_p) = (Arc::new(JobSearchClient::new()), db.clone(), ui.as_weak(), rt.clone());
-    ui.on_search_prio(move |p| { let (api, db, ui_weak) = (api_p.clone(), db_p.clone(), ui_p.clone()); rt_p.spawn(async move { let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default(); perform_search(api, db, ui_weak, Some(p), None, settings).await; }); });
+    ui.on_search_prio(move |p| { 
+        let (api, db, ui_weak) = (api_p.clone(), db_p.clone(), ui_p.clone()); 
+        rt_p.spawn(async move { 
+            let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default(); 
+            perform_search(api, db, ui_weak, Some(p), None, settings).await; 
+        }); 
+    });
 
     // Callback: Job Action
     let (db_a, ui_a, rt_a) = (db.clone(), ui.as_weak(), rt.clone());
@@ -430,7 +453,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         });
     });
 
-    ui.on_copy_text(|text| copy_to_clipboard(text.to_string()));
+    ui.on_copy_text(|t| copy_to_clipboard(t.to_string()));
 
     // Callback: Save Settings
     let (db_set, ui_set, rt_set) = (db.clone(), ui.as_weak(), rt.clone());
@@ -680,6 +703,33 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         });
     });
 
+    // Callback: Pick Sync Path
+    let ui_pick = ui.as_weak();
+    ui.on_pick_sync_path(move || {
+        let ui_weak = ui_pick.clone();
+        #[cfg(not(target_os = "android"))]
+        {
+            if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                let path_str = path.to_string_lossy().to_string();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        let mut s = ui.get_settings();
+                        s.sync_path = path_str.into();
+                        ui.set_settings(s);
+                    }
+                });
+            }
+        }
+        #[cfg(target_os = "android")]
+        {
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_status_msg("Välj mapp manuellt i textfältet på Android".into());
+                }
+            });
+        }
+    });
+
     // Callback: Extract from documents
     ui.on_extract_from_docs(|| {
         // TODO: Implement AI extraction of terms from documents
@@ -726,8 +776,8 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         });
 
         // Ladda dokument
-        let (db_docs, ui_docs, rt_docs) = (db_i.clone(), ui_i.clone(), rt_i.clone());
-        rt_docs.spawn(async move {
+        let (db_docs, ui_docs, _rt_docs) = (db_i.clone(), ui_i.clone(), rt_i.clone());
+        rt_i.spawn(async move {
             if let Ok(docs) = db_docs.get_documents().await {
                 let entries: Vec<DocEntry> = docs.into_iter().map(|d| DocEntry {
                     id: d.id.into(),
@@ -744,9 +794,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         });
 
         // Ladda ordbok
-        let (db_dict, ui_dict, rt_dict) = (db_i.clone(), ui_i.clone(), rt_i.clone());
-        rt_dict.spawn(async move {
-            if let Ok(entries) = db_dict.get_dictionary().await {
+        let (db_dict, ui_dict, _rt_dict) = (db_i.clone(), ui_i.clone(), rt_i.clone());
+        rt_i.spawn(async move {
+            if let Ok(entries) = db_dict.get_dict_entries().await {
                 let dict_entries: Vec<crate::ui::DictEntry> = entries.into_iter().map(|e| crate::ui::DictEntry {
                     key: e.key.into(),
                     value: e.value.into()
