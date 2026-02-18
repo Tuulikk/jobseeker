@@ -1,0 +1,271 @@
+export component App inherits Window {
+    title: "Jobseeker 2026";
+    min-width: 380px;
+    min-height: 500px;
+    background: #121212;
+    preferred-width: 900px;
+    preferred-height: 800px;
+
+    in-out property <int> selected-index: -1;
+    in-out property <[JobEntry]> jobs: [];
+    in-out property <bool> searching: false;
+    in-out property <string> status-msg: "Redo";
+    in-out property <int> current-tab: 0;
+    in-out property <string> active-month: "2026-01";
+    in-out property <string> active-month-display: "Januari 2026";
+    in-out property <string> system-logs: "";
+    in-out property <string> log_file_path: "";
+    in-out property <string> database_path: "";
+    in-out property <string> last_api_request: "";
+    in-out property <int> applied-count: 0;
+    in-out property <int> last_tab: 0;
+    in-out property <int> total-ads-count: 0;
+    in-out property <int> bookmarked-count: 0;
+    in-out property <int> thumbsup-count: 0;
+    in-out property <int> rejected-count: 0;
+    in-out property <[KeywordStat]> top-keywords: [];
+    in-out property <[DocEntry]> documents: [];
+    in-out property <[DictEntry]> dictionary: [];
+    in-out property <string> selected-doc-content: "";
+    in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1", app_min_count: 6, app_goal_count: 12, show_motivation: true, show_dev_logs: false };
+    in-out property <bool> show-folder-picker: false;
+    in-out property <[FolderEntry]> folder-entries: [];
+    in-out property <string> current-folder-path: "";
+    in-out property <[LogEntry]> static-logs: [];
+    in-out property <string> log-filter: "ALL";
+
+    callback search-pressed(string);
+    callback search-prio(int);
+    callback job-selected(string, int);
+    callback job-action(string, string);
+    callback copy-text(string);
+    callback month_offset(int);
+    callback save_settings(AppSettings);
+    callback stats_requested();
+    callback export_requested(string, string, bool, bool, bool);
+    callback db_action(string);
+    callback import_file();
+    callback select_doc(string);
+    callback save_doc(string, string);
+    callback delete_doc(string);
+    callback export_doc(string, string);
+    callback analyze_match(string);
+    callback set_as_main(string);
+    callback add_entry(string, string);
+    callback delete_entry(string);
+    callback extract_from_docs();
+    callback pick_sync_path();
+    callback select_folder(string);
+    callback create_folder(string, string);
+    callback folder_go_back();
+    callback request_logs(string);
+    callback save_logs_to_file();
+
+    VerticalLayout {
+        // Main View
+        Rectangle {
+            vertical-stretch: 1;
+
+            if current-tab == 0 : Rectangle {
+                // Responsive Split View
+                if root.width > 750px : HorizontalLayout {
+                    InboxPane {
+                        width: 350px;
+                        jobs: root.jobs;
+                        searching: root.searching;
+                        status-msg: root.status-msg;
+                        selected-index: root.selected-index;
+                        active-month: root.active-month;
+                        active-month-display: root.active-month-display;
+                        applied-count: root.applied-count;
+                        app-min-count: root.settings.app_min_count;
+                        app-goal-count: root.settings.app_goal_count;
+                        job-selected(id, idx) => { root.selected-index = idx; root.job-selected(id, idx); }
+                        month-offset(off) => { root.month_offset(off); }
+                        search-pressed(q) => { root.search-pressed(q); }
+                        search-prio(p) => { root.search-prio(p); }
+                    }
+                    Rectangle { width: 1px; background: #333; }
+                    if root.selected-index >= 0 : JobDetailPane {
+                        job: root.jobs[root.selected-index];
+                        close => { root.selected-index = -1; }
+                        action(act) => { root.job-action(root.jobs[root.selected-index].id, act); }
+                        copy(t) => { root.copy-text(t); }
+                    }
+                    if root.selected-index < 0 : Text { text: "Välj ett jobb"; color: #444; vertical-alignment: center; horizontal-alignment: center; }
+                }
+
+                if root.width <= 750px : Rectangle {
+                    if root.selected-index < 0 : InboxPane {
+                        jobs: root.jobs;
+                        searching: root.searching;
+                        status-msg: root.status-msg;
+                        active-month: root.active-month;
+                        active-month-display: root.active-month-display;
+                        applied-count: root.applied-count;
+                        app-min-count: root.settings.app_min_count;
+                        app-goal-count: root.settings.app_goal_count;
+                        job-selected(id, idx) => { root.selected-index = idx; root.job-selected(id, idx); }
+                        month-offset(off) => { root.month_offset(off); }
+                        search-pressed(q) => { root.search-pressed(q); }
+                        search-prio(p) => { root.search-prio(p); }
+                    }
+                    if root.selected-index >= 0 : JobDetailPane {
+                        job: root.jobs[root.selected-index];
+                        close => { root.selected-index = -1; }
+                        action(act) => { root.job-action(root.jobs[root.selected-index].id, act); }
+                        copy(t) => { root.copy-text(t); }
+                    }
+                }
+            }
+
+            if root.current-tab == 1 : StatsPage {
+                total-count: root.total-ads-count;
+                applied-count: root.applied-count;
+                bookmarked-count: root.bookmarked-count;
+                thumbsup-count: root.thumbsup-count;
+                rejected-count: root.rejected-count;
+                active-month-display: root.active-month-display;
+                top-keywords: root.top-keywords;
+                export(method, format, jobs, params, analysis) => { 
+                    root.export_requested(method, format, jobs, params, analysis); 
+                }
+            }
+
+            if root.current-tab == 2 : SettingsPage {
+                settings: root.settings;
+                log_file_path: root.log_file_path;
+                database_path: root.database_path;
+                last_api_request: root.last_api_request;
+                save-settings(s) => { root.save_settings(s); }
+                db-action(act) => { root.db_action(act); }
+                pick-sync-path() => { root.pick_sync_path(); }
+            }
+
+            if root.current-tab == 3 : ProfilePage {
+                documents: root.documents;
+                selected-doc-content <=> root.selected-doc-content;
+                import-file() => { root.import_file(); }
+                select-doc(id) => { root.select_doc(id); }
+                save-doc(id, content) => { root.save_doc(id, content); }
+                delete-doc(id) => { root.delete_doc(id); }
+                export-doc(id, format) => { root.export_doc(id, format); }
+                analyze-match(id) => { root.analyze_match(id); }
+                set-as-main(id) => { root.set_as_main(id); }
+            }
+
+            if root.current-tab == 4 : KnowledgePage {
+                entries: root.dictionary;
+                add-entry(key, value) => { root.add_entry(key, value); }
+                delete-entry(key) => { root.delete_entry(key); }
+                extract-from-docs() => { root.extract_from_docs(); }
+            }
+
+            if root.current-tab == 5 : LogPage {
+                logs: root.static-logs;
+                filter-level: root.log-filter;
+                refresh => { root.request_logs(root.log-filter); }
+                set-filter(lvl) => { 
+                    root.log-filter = lvl;
+                    root.request_logs(lvl);
+                }
+                copy-logs => { root.copy-text(root.system-logs); }
+                save-to-file => { root.save_logs_to_file(); }
+            }
+        }
+
+        // Global Status Bar
+        Rectangle {
+            height: 20px;
+            background: #121212;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                Text {
+                    text: root.status-msg;
+                    color: #666666;
+                    font-size: 12px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Bottom Bar
+        Rectangle {
+            height: 60px;
+            background: #1a1a1a;
+            ScrollView {
+                viewport-width: 550px;
+                HorizontalLayout {
+                    alignment: center;
+                    padding: 10px;
+                    spacing: 15px;
+
+                    TabButton {
+                        icon: @image-url("../assets/icons/inbox-fill.svg");
+                        text: "Jobb";
+                        active: root.current-tab == 0;
+                        clicked => { root.current-tab = 0; }
+                    }
+
+                    TabButton {
+                        icon: @image-url("../assets/icons/justify.svg");
+                        text: "Statistik";
+                        active: root.current-tab == 1;
+                        clicked => { root.current-tab = 1; root.stats_requested(); }
+                    }
+
+                    TabButton {
+                        icon: @image-url("../assets/icons/gear-fill.svg");
+                        text: "Inställningar";
+                        active: root.current-tab == 2;
+                        clicked => { root.current-tab = 2; }
+                    }
+
+                    TabButton {
+                        icon: @image-url("../assets/icons/circle-fill.svg");
+                        text: "Profil";
+                        active: root.current-tab == 3;
+                        clicked => { root.current-tab = 3; }
+                    }
+
+                    TabButton {
+                        icon: @image-url("../assets/icons/text-left.svg");
+                        text: "Kunskap";
+                        active: root.current-tab == 4;
+                        clicked => { root.current-tab = 4; }
+                    }
+
+                    if root.settings.show_dev_logs : TabButton {
+                        icon: @image-url("../assets/icons/justify.svg");
+                        text: "Loggar";
+                        active: root.current-tab == 5;
+                        clicked => { 
+                            root.current-tab = 5; 
+                            root.request_logs(root.log-filter);
+                        }
+                    }
+                }
+            }
+        }
+
+        if root.show-folder-picker : Rectangle {
+            background: #000000aa;
+            FolderPicker {
+                width: 90%;
+                height: 80%;
+                entries: root.folder-entries;
+                current-path: root.current-folder-path;
+                select-folder(p) => { root.select_folder(p); }
+                create-folder(n) => { root.create_folder(root.current-folder-path, n); }
+                go-back => { root.folder_go_back(); }
+                cancel => { root.show-folder-picker = false; }
+                confirm => { 
+                    root.settings.sync_path = root.current-folder-path;
+                    root.show-folder-picker = false; 
+                }
+            }
+        }
+    }
+}

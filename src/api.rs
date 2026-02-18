@@ -56,6 +56,7 @@ impl JobSearchClient {
     }
 
     pub async fn search(&self, query: &str, municipalities: &[String], limit: u32) -> Result<Vec<JobAd>> {
+        tracing_info!("API: Söker efter '{}' i {} kommuner (limit: {})", query, municipalities.len(), limit);
         if municipalities.len() > 1 {
             return self.search_multi_municipalities(query, municipalities, limit).await;
         }
@@ -64,7 +65,7 @@ impl JobSearchClient {
         for m in municipalities { if !m.is_empty() { params.push(("municipality", m.to_string())); } }
 
         let url = format!("{}/search", self.base_url);
-        info!("Fetching: {}", url);
+        tracing_info!("API: Skickar request till: {}", url);
 
         let response = self.client.get(&url)
             .header("accept", "application/json")
@@ -82,6 +83,7 @@ impl JobSearchClient {
 
         let json: Value = response.json().await?;
         let hits = json["hits"].as_array().ok_or_else(|| anyhow::anyhow!("Missing hits"))?;
+        crate::tracing_info!("API: Hittade {} råa träffar", hits.len());
 
         let mut results = Vec::new();
         for hit in hits {

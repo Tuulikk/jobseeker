@@ -4,22 +4,85 @@ mod ui {
 }
 
 // Macro for tracing that uses log:: on Android since tracing subscriber is no-op
+
 #[cfg(target_os = "android")]
-macro_rules! tracing_info {
-    ($($arg:tt)*) => { log::info!($($arg)*); };
-}
+
+#[macro_export]
+
+macro_rules! tracing_info { ($($arg:tt)*) => { 
+
+    let msg = format!($($arg)*);
+
+    log::info!("{}", msg);
+
+    $crate::record_log("INFO", &msg);
+
+}; }
+
 #[cfg(target_os = "android")]
-macro_rules! tracing_error {
-    ($($arg:tt)*) => { log::error!($($arg)*); };
-}
+
+#[macro_export]
+
+macro_rules! tracing_error { ($($arg:tt)*) => { 
+
+    let msg = format!($($arg)*);
+
+    log::error!("{}", msg);
+
+    $crate::record_log("ERROR", &msg);
+
+}; }
+
+
 
 #[cfg(not(target_os = "android"))]
-macro_rules! tracing_info {
-    ($($arg:tt)*) => { tracing::info!($($arg)*); };
-}
+
+#[macro_export]
+
+macro_rules! tracing_info { ($($arg:tt)*) => { 
+
+    let msg = format!($($arg)*);
+
+    tracing::info!("{}", msg);
+
+    $crate::record_log("INFO", &msg);
+
+}; }
+
 #[cfg(not(target_os = "android"))]
-macro_rules! tracing_error {
-    ($($arg:tt)*) => { tracing::error!($($arg)*); };
+
+#[macro_export]
+
+macro_rules! tracing_error { ($($arg:tt)*) => { 
+
+    let msg = format!($($arg)*);
+
+    tracing::error!("{}", msg);
+
+    $crate::record_log("ERROR", &msg);
+
+}; }
+
+
+
+pub fn record_log(level: &str, msg: &str) {
+
+    if let Ok(mut logs) = RAW_LOGS.lock() {
+
+        logs.push(LogEntry {
+
+            level: level.into(),
+
+            message: msg.trim().into(),
+
+            timestamp: Utc::now().format("%H:%M:%S").to_string().into(),
+
+        });
+
+        if logs.len() > 500 { logs.remove(0); }
+
+    }
+
 }
 
 use slint::ComponentHandle;
@@ -66,7 +129,7 @@ static CLIPBOARD_SENDER: std::sync::OnceLock<mpsc::Sender<String>> = std::sync::
 
 // Log buffer to keep track of recent logs for the UI
 static LOG_SENDER: std::sync::OnceLock<mpsc::Sender<String>> = std::sync::OnceLock::new();
-static LOCAL_LOG_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> = std::sync::OnceLock::new();
+static RAW_LOGS: std::sync::Mutex<Vec<LogEntry>> = std::sync::Mutex::new(Vec::new());
 
 struct SlintLogWriter {
     sender: mpsc::Sender<String>,
@@ -75,7 +138,9 @@ struct SlintLogWriter {
 impl std::io::Write for SlintLogWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         if let Ok(msg) = String::from_utf8(buf.to_vec()) {
-            let _ = self.sender.send(msg);
+            let _ = self.sender.send(msg.clone());
+            let level = if msg.contains("ERROR") { "ERROR" } else if msg.contains("WARN") { "WARN" } else { "INFO" };
+            record_log(level, &msg);
         }
         Ok(buf.len())
     }
@@ -398,6 +463,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     // Callback: Month Offset
     let (db_month, rt_month, ui_month, rs_month) = (db.clone(), rt.clone(), ui.as_weak(), refresh_stats.clone());
     ui.on_month_offset(move |offset| {
+        tracing_info!("UI: Byter månad med offset {}", offset);
         rs_month();
         let (db, rt, ui_weak) = (db_month.clone(), rt_month.clone(), ui_month.clone());
         let data = if let Some(ui) = ui_weak.upgrade() { Some(ui.get_active_month().to_string()) } else { None };
@@ -432,6 +498,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     let (api_s, db_s, ui_s, rt_s) = (Arc::new(JobSearchClient::new()), db.clone(), ui.as_weak(), rt.clone());
     ui.on_search_pressed(move |q| { 
         let (api, db, ui_weak, q_str) = (api_s.clone(), db_s.clone(), ui_s.clone(), q.to_string()); 
+        tracing_info!("UI: Fri sökning på '{}'", q_str);
         rt_s.spawn(async move { 
             let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default(); 
             perform_search(api, db, ui_weak, None, Some(q_str), settings).await; 
@@ -442,10 +509,15 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     let (api_p, db_p, ui_p, rt_p) = (Arc::new(JobSearchClient::new()), db.clone(), ui.as_weak(), rt.clone());
     ui.on_search_prio(move |p| { 
         let (api, db, ui_weak) = (api_p.clone(), db_p.clone(), ui_p.clone()); 
+        tracing_info!("UI: Prio-sökning på P{}", p);
         rt_p.spawn(async move { 
             let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default(); 
             perform_search(api, db, ui_weak, Some(p), None, settings).await; 
         }); 
+    });
+
+    ui.on_job_selected(move |id, idx| {
+        tracing_info!("UI: Jobb valt: {} (index {})", id, idx);
     });
 
     // Callback: Job Action
@@ -484,6 +556,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             app_goal_count: s.app_goal_count,
             show_motivation: s.show_motivation,
             main_cv_id: s.main_cv_id.to_string(),
+            show_dev_logs: s.show_dev_logs,
             updated_at: Utc::now(),
         };
         let s_ui = settings.clone();
@@ -505,6 +578,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                             app_goal_count: s_ui.app_goal_count,
                             show_motivation: s_ui.show_motivation,
                             main_cv_id: s_ui.main_cv_id.into(),
+                            show_dev_logs: s_ui.show_dev_logs,
                         });
                         ui.set_status_msg("Sparat & Synkat".into());
                     }
@@ -570,12 +644,17 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     ui.on_select_folder(move |path| {
         let (ui_weak, p_str) = (ui_fold.clone(), path.to_string());
         let entries = get_folder_entries(Path::new(&p_str));
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_current_folder_path(p_str.into());
-                ui.set_folder_entries(Rc::new(slint::VecModel::from(entries)).into());
-            }
-        });
+        let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_current_folder_path(p_str.into()); ui.set_folder_entries(Rc::new(slint::VecModel::from(entries)).into()); } });
+    });
+
+    let ui_create = ui.as_weak();
+    ui.on_create_folder(move |parent, name| {
+        let (ui_weak, p_str, n_str) = (ui_create.clone(), parent.to_string(), name.to_string());
+        let target = PathBuf::from(&p_str).join(&n_str);
+        if std::fs::create_dir_all(&target).is_ok() {
+            let entries = get_folder_entries(Path::new(&p_str));
+            let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_folder_entries(Rc::new(slint::VecModel::from(entries)).into()); } });
+        }
     });
 
     let ui_back = ui.as_weak();
@@ -590,6 +669,29 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 ui.set_folder_entries(Rc::new(slint::VecModel::from(entries)).into());
             }
         }
+    });
+
+    // Callback: Logging system
+    let ui_logs = ui.as_weak();
+    ui.on_request_logs(move |filter| {
+        let filter = filter.to_string();
+        let logs = RAW_LOGS.lock().unwrap().iter().filter(|l| filter == "ALL" || l.level == filter).cloned().collect::<Vec<_>>();
+        let ui_clone = ui_logs.clone();
+        let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_clone.upgrade() { ui.set_static_logs(Rc::new(slint::VecModel::from(logs)).into()); } });
+    });
+
+    let db_log_save = db.clone();
+    ui.on_save_logs_to_file(move || {
+        let db = db_log_save.clone();
+        tokio::spawn(async move {
+            if let Ok(Some(settings)) = db.load_settings().await {
+                if !settings.sync_path.is_empty() {
+                    let path = PathBuf::from(settings.sync_path).join(format!("jobseeker_log_{}.txt", Utc::now().format("%Y%m%d_%H%M")));
+                    let logs = RAW_LOGS.lock().unwrap().iter().map(|l| format!("[{}] {}: {}", l.timestamp, l.level, l.message)).collect::<Vec<_>>().join("\n");
+                    let _ = std::fs::write(path, logs);
+                }
+            }
+        });
     });
 
     // Callback: Select document
@@ -731,6 +833,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     app_goal_count: s.app_goal_count,
                     show_motivation: s.show_motivation,
                     main_cv_id: s.main_cv_id.into(),
+                    show_dev_logs: s.show_dev_logs,
                 });
             }
         });
@@ -812,6 +915,7 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
 
     if let Ok(final_ads) = db.get_filtered_jobs(&[], Some(y), Some(m)).await {
         trigger_sync(&db).await;
+        tracing_info!("Search: Klart! Hittade {} nya unika annonser för denna månad", new_count);
         let ui_f = ui_weak.clone(); let muns_f = municipalities.clone();
         let msg = if new_count > 0 { format!("Klar! Hittade {} nya annonser.", new_count) } else { "Inga nya annonser hittades just nu.".to_string() };
         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_f.upgrade() { refresh_ui_from_db(&ui, final_ads, prio, muns_f, msg); ui.set_searching(false); } });

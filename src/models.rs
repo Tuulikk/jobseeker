@@ -153,6 +153,8 @@ pub struct AppSettings {
     pub show_motivation: bool,
     #[serde(default)]
     pub main_cv_id: String,
+    #[serde(default)]
+    pub show_dev_logs: bool,
     #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
 }
@@ -196,6 +198,7 @@ impl Default for AppSettings {
             app_goal_count: 12,
             show_motivation: true,
             main_cv_id: "".to_string(),
+            show_dev_logs: false,
             updated_at: Utc::now(),
         }
     }

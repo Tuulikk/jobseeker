@@ -7,6 +7,17 @@ export struct KeywordStat {
     count: int,
 }
 
+export struct FolderEntry {
+    name: string,
+    path: string,
+}
+
+export struct LogEntry {
+    level: string,
+    message: string,
+    timestamp: string,
+}
+
 export struct JobEntry {
     id: string,
     title: string,
@@ -33,6 +44,131 @@ export struct AppSettings {
     app_goal_count: int,
     show_motivation: bool,
     main_cv_id: string,
+    show_dev_logs: bool,
+}
+
+export component FolderPicker inherits Rectangle {
+    in property <[FolderEntry]> entries;
+    in property <string> current-path;
+    callback select-folder(string);
+    callback create-folder(string);
+    callback go-back;
+    callback cancel;
+    callback confirm;
+
+    background: #1a1a1a;
+    border-width: 1px;
+    border-color: #333;
+
+    VerticalLayout {
+        padding: 15px;
+        spacing: 10px;
+        
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: "Bläddra: " + root.current-path; color: #fff; font-size: 14px; vertical-alignment: center; }
+            Rectangle { horizontal-stretch: 1; }
+            Button { text: "Upp"; clicked => { root.go-back(); } }
+        }
+
+        HorizontalLayout {
+            spacing: 10px;
+            new-folder-input := LineEdit { placeholder-text: "Mappnamn..."; horizontal-stretch: 1; }
+            Button { 
+                text: "Ny mapp"; 
+                enabled: new-folder-input.text != "";
+                clicked => { 
+                    root.create-folder(new-folder-input.text);
+                    new-folder-input.text = "";
+                } 
+            }
+        }
+
+        Rectangle {
+            background: #000;
+            vertical-stretch: 1;
+            ScrollView {
+                VerticalLayout {
+                    spacing: 2px;
+                    for entry in root.entries: Rectangle {
+                        height: 40px;
+                        background: touch.pressed ? #333 : #000;
+                        touch := TouchArea {
+                            clicked => { root.select-folder(entry.path); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            spacing: 10px;
+                            Text { text: "📁"; vertical-alignment: center; }
+                            Text { text: entry.name; color: #eee; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 15px;
+            alignment: end;
+            Button { text: "Avbryt"; clicked => { root.cancel(); } }
+            Button { text: "Välj denna mapp"; primary: true; clicked => { root.confirm(); } }
+        }
+    }
+}
+
+component LogPage inherits Rectangle {
+    in property <[LogEntry]> logs;
+    in property <string> filter-level: "ALL";
+    callback refresh;
+    callback copy-logs;
+    callback save-to-file;
+    callback set-filter(string);
+
+    background: #121212;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 15px;
+
+        HorizontalLayout {
+            Text { text: "Systemloggar"; font-size: 24px; font-weight: 700; color: #ffffff; horizontal-stretch: 1; }
+            Button { text: "Uppdatera"; clicked => { root.refresh(); } }
+        }
+
+        HorizontalLayout {
+            spacing: 10px;
+            Button { text: "Alla"; primary: root.filter-level == "ALL"; clicked => { root.set-filter("ALL"); } }
+            Button { text: "Info"; primary: root.filter-level == "INFO"; clicked => { root.set-filter("INFO"); } }
+            Button { text: "Varning"; primary: root.filter-level == "WARN"; clicked => { root.set-filter("WARN"); } }
+            Button { text: "Fel"; primary: root.filter-level == "ERROR"; clicked => { root.set-filter("ERROR"); } }
+        }
+
+        Rectangle {
+            background: #000;
+            border-radius: 4px;
+            vertical-stretch: 1;
+            ScrollView {
+                VerticalLayout {
+                    padding: 5px;
+                    spacing: 0px;
+                    for entry in root.logs: Text {
+                        text: "[" + entry.timestamp + "] " + entry.level + ": " + entry.message;
+                        color: entry.level == "ERROR" ? #ff4444 : (entry.level == "WARN" ? #ffbb33 : #00ff00);
+                        font-family: "monospace";
+                        font-size: 11px;
+                        wrap: word-wrap;
+                    }
+                    Rectangle { vertical-stretch: 1; } // This pushes everything up
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 15px;
+            Button { text: "Kopiera allt"; clicked => { root.copy-logs(); } }
+            Button { text: "Spara till fil"; clicked => { root.save-to-file(); } }
+        }
+    }
 }
 
 component IconButton inherits Rectangle {
@@ -78,11 +214,7 @@ component JobListItem inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
-    // Vi använder en Rectangle som "canvas" istället för layouts
-    // för att kunna låsa positionerna på pixelnivå.
     container := Rectangle {
-
-        // 1. Status-indikator (Vänster)
         Rectangle {
             x: 8px;
             y: (parent.height - self.height) / 2;
@@ -92,7 +224,6 @@ component JobListItem inherits Rectangle {
             border-radius: 2px;
         }
 
-        // 2. Titel (Låst till y: 16px)
         Text {
             x: 22px;
             y: 16px;
@@ -104,9 +235,6 @@ component JobListItem inherits Rectangle {
             overflow: elide;
         }
 
-        // 3. Info-rad (Låst till y: 36px)
-        // Genom att lägga både employer och location i samma Text-sträng
-        // garanterar vi att de ALDRIG kan vara o jämna mot varandra.
         Text {
             x: 22px;
             y: 36px;
@@ -117,7 +245,6 @@ component JobListItem inherits Rectangle {
             overflow: elide;
         }
 
-        // 4. Datum (Högst upp till höger)
         Text {
             x: parent.width - self.width - 8px;
             y: 18px;
@@ -126,7 +253,6 @@ component JobListItem inherits Rectangle {
             font-size: 12px;
         }
 
-        // 5. Status-text (Längst ner till höger)
         if job.status == 4 : Text {
             x: parent.width - self.width - 8px;
             y: 36px;
@@ -158,7 +284,6 @@ component InboxPane inherits VerticalLayout {
     padding: 10px;
     spacing: 5px;
 
-    // Progress Section
     Rectangle {
         height: 24px;
         HorizontalLayout {
@@ -181,7 +306,6 @@ component InboxPane inherits VerticalLayout {
         }
     }
 
-    // Search & Filter Section
     Rectangle {
         background: #1a1a1a;
         border-radius: 8px;
@@ -218,7 +342,6 @@ component InboxPane inherits VerticalLayout {
                 IconButton { icon: @image-url("../assets/icons/check-circle-fill.svg"); active: root.active-filter == 4; clicked => { root.active-filter = (root.active-filter == 4 ? 0 : 4); } }
             }
 
-            // Month Selector
             HorizontalLayout {
                 height: 32px;
                 alignment: center;
@@ -237,7 +360,6 @@ component InboxPane inherits VerticalLayout {
         }
     }
 
-    // List Area
     Rectangle {
         background: #1e1e1e;
         border-radius: 4px;
@@ -249,7 +371,7 @@ component InboxPane inherits VerticalLayout {
                 alignment: start;
                 spacing: 4px;
                 padding: 4px;
-                padding-right: 16px; // Space for scrollbar
+                padding-right: 16px;
 
                 for job[idx] in jobs : JobListItem {
                     visible: root.active-filter == 0 || job.status == root.active-filter;
@@ -303,7 +425,6 @@ component JobDetailPane inherits Rectangle {
             wrap: word-wrap;
         }
 
-        // Reporting Help (Sticky top if applied)
         if job.status == 4 : Rectangle {
             background: #1a2e1a;
             border-radius: 4px;
@@ -323,7 +444,6 @@ component JobDetailPane inherits Rectangle {
             }
         }
 
-        // Action Bar
         action_bar := HorizontalLayout {
             spacing: 10px;
             alignment: center;
@@ -341,12 +461,11 @@ component JobDetailPane inherits Rectangle {
             IconButton { icon: @image-url("../assets/icons/globe.svg"); icon-size: 20px; clicked => { root.action("open"); } }
         }
 
-        // Beskrivningen tar upp allt kvarvarande utrymme och tvingar därmed fram scroll om den är för stor.
         Rectangle {
             vertical-stretch: 1;
             ScrollView {
                 VerticalLayout {
-                    padding-right: 25px; // Rejält med plats för scrollisten
+                    padding-right: 25px;
                     Text {
                         text: job.description;
                         color: #dddddd;
@@ -409,7 +528,7 @@ component StatisticsPage inherits Rectangle {
     in-out property <bool> include-params: true;
     in-out property <bool> include-analysis: false;
 
-    callback export(string, string, bool, bool, bool); // method, format, jobs, params, analysis
+    callback export(string, string, bool, bool, bool);
 
     background: #121212;
 
@@ -491,7 +610,7 @@ component StatisticsPage inherits Rectangle {
                     CheckBox { text: "Aktivitetsanalys"; checked: root.include-analysis; toggled => { root.include-analysis = self.checked; } }
                 }
 
-                Rectangle { height: 10px; } // Spacer
+                Rectangle { height: 10px; }
 
                 HorizontalLayout {
                     spacing: 10px;
@@ -501,7 +620,7 @@ component StatisticsPage inherits Rectangle {
                 }
             }
         }
-        Rectangle { vertical-stretch: 1; } // Push everything up
+        Rectangle { vertical-stretch: 1; }
     }
 }
 
@@ -514,7 +633,7 @@ component SettingsPage inherits Rectangle {
     callback save-settings(AppSettings);
     callback clear-logs;
     callback copy-text(string);
-    callback db-action(string); // backup, restore
+    callback db-action(string);
     callback pick-sync-path;
 
     background: #121212;
@@ -527,9 +646,9 @@ component SettingsPage inherits Rectangle {
 
         ScrollView {
             VerticalLayout {
-                width: 100%; // Tvinga layouten att hålla sig inom ScrollView:ns bredd
+                width: 100%;
                 spacing: 15px;
-                padding-right: 25px; // Extra plats för att slippa horisontell scroll helt
+                padding-right: 25px;
 
                 Text { text: "DATABASHANTERING (SYNK)"; color: #00ffff; font-weight: 700; font-size: 11px; }
                 Rectangle {
@@ -545,7 +664,7 @@ component SettingsPage inherits Rectangle {
                             Button { text: "Skapa Backup"; clicked => { root.db-action("backup"); } }
                             Button { text: "Synka Nu"; clicked => { root.db-action("sync"); } }
                         }
-                        Rectangle { height: 10px; } // Spacer
+                        Rectangle { height: 10px; }
                         Text { text: "SYNKRAPP (Valfri):"; color: #888; font-size: 12px; }
                         HorizontalLayout {
                             spacing: 10px;
@@ -565,45 +684,16 @@ component SettingsPage inherits Rectangle {
                 }
 
                 Text { text: "SÖKORD"; color: #4a90e2; font-weight: 700; font-size: 11px; }
-                keywords-input := TextEdit { 
-                    text: root.settings.keywords; 
-                    font-size: 12px; 
-                    height: 80px;
-                    wrap: word-wrap;
-                }
-                blacklist-input := TextEdit { 
-                    text: root.settings.blacklist_keywords; 
-                    font-size: 12px; 
-                    height: 60px;
-                    wrap: word-wrap;
-                }
+                keywords-input := TextEdit { text: root.settings.keywords; font-size: 12px; height: 80px; wrap: word-wrap; }
+                blacklist-input := TextEdit { text: root.settings.blacklist_keywords; font-size: 12px; height: 60px; wrap: word-wrap; }
 
                 Text { text: "PRIORITERADE OMRÅDEN"; color: #4a90e2; font-weight: 700; font-size: 11px; }
-                loc-p1 := TextEdit { 
-                    text: root.settings.locations_p1; 
-                    font-size: 12px; 
-                    height: 60px;
-                    wrap: word-wrap;
-                }
-                loc-p2 := TextEdit { 
-                    text: root.settings.locations_p2; 
-                    font-size: 12px; 
-                    height: 60px;
-                    wrap: word-wrap;
-                }
-                loc-p3 := TextEdit { 
-                    text: root.settings.locations_p3; 
-                    font-size: 12px; 
-                    height: 60px;
-                    wrap: word-wrap;
-                }
+                loc-p1 := TextEdit { text: root.settings.locations_p1; font-size: 12px; height: 60px; wrap: word-wrap; }
+                loc-p2 := TextEdit { text: root.settings.locations_p2; font-size: 12px; height: 60px; wrap: word-wrap; }
+                loc-p3 := TextEdit { text: root.settings.locations_p3; font-size: 12px; height: 60px; wrap: word-wrap; }
 
                 Text { text: "AI PROFIL"; color: #ffd700; font-weight: 700; font-size: 11px; }
-                profile-input := TextEdit { 
-                    text: root.settings.my_profile; 
-                    height: 100px; 
-                    wrap: word-wrap;
-                }
+                profile-input := TextEdit { text: root.settings.my_profile; height: 100px; wrap: word-wrap; }
 
                 Text { text: "ANSÖKNINGSMÅL"; color: #00ff00; font-weight: 700; font-size: 11px; }
                 HorizontalLayout {
@@ -622,18 +712,11 @@ component SettingsPage inherits Rectangle {
                     checked: root.settings.show_motivation;
                     toggled => { root.settings.show_motivation = self.checked; }
                 }
-
-                // Visible log file path and last API request for easier troubleshooting
-                Text { text: "Loggfil:"; color: #999999; font-size: 11px; }
-                Text { text: root.log_file_path; color: #999999; font-size: 11px; }
-                Text { text: "Senaste API-request:"; color: #999999; font-size: 11px; }
-                Text { text: root.last_api_request; color: #999999; font-family: "monospace"; font-size: 10px; }
-
-                Rectangle {
-                    background: #000;
-                    height: 200px;
-                    ScrollView {
-                        Text { text: root.system-logs; color: #00ff00; font-family: "monospace"; font-size: 10px; }
+                CheckBox {
+                    text: "Visa systemloggar i menyn";
+                    checked: root.settings.show_dev_logs;
+                    toggled => { 
+                        root.settings.show_dev_logs = self.checked; 
                     }
                 }
 
@@ -652,71 +735,13 @@ component SettingsPage inherits Rectangle {
                             sync_path: sync-input.text,
                             app_min_count: min-input.text.to-float(),
                             app_goal_count: goal-input.text.to-float(),
-                            show_motivation: root.settings.show_motivation
+                            show_motivation: root.settings.show_motivation,
+                            main_cv_id: root.settings.main_cv_id,
+                            show_dev_logs: root.settings.show_dev_logs
                         });
                     }
                 }
             }
-        }
-    }
-}
-
-struct FolderEntry {
-    name: string,
-    path: string,
-}
-
-export component FolderPicker inherits Rectangle {
-    in property <[FolderEntry]> entries;
-    in property <string> current-path;
-    callback select-folder(string);
-    callback go-back;
-    callback cancel;
-    callback confirm;
-
-    background: #1a1a1a;
-    border-width: 1px;
-    border-color: #333;
-
-    VerticalLayout {
-        padding: 15px;
-        spacing: 10px;
-        
-        HorizontalLayout {
-            spacing: 10px;
-            Text { text: "Bläddra: " + root.current-path; color: #fff; font-size: 14px; vertical-alignment: center; }
-            Rectangle { horizontal-stretch: 1; }
-            Button { text: "Upp"; clicked => { root.go-back(); } }
-        }
-
-        Rectangle {
-            background: #000;
-            vertical-stretch: 1;
-            ScrollView {
-                VerticalLayout {
-                    spacing: 2px;
-                    for entry in root.entries: Rectangle {
-                        height: 40px;
-                        background: touch.pressed ? #333 : #000;
-                        touch := TouchArea {
-                            clicked => { root.select-folder(entry.path); }
-                        }
-                        HorizontalLayout {
-                            padding-left: 10px;
-                            spacing: 10px;
-                            Text { text: "📁"; vertical-alignment: center; }
-                            Text { text: entry.name; color: #eee; vertical-alignment: center; }
-                        }
-                    }
-                }
-            }
-        }
-
-        HorizontalLayout {
-            spacing: 15px;
-            alignment: end;
-            Button { text: "Avbryt"; clicked => { root.cancel(); } }
-            Button { text: "Välj denna mapp"; primary: true; clicked => { root.confirm(); } }
         }
     }
 }
@@ -741,7 +766,6 @@ export component App inherits Window {
     in-out property <string> database_path: "";
     in-out property <string> last_api_request: "";
     in-out property <int> applied-count: 0;
-    in-out property <int> last_tab: 0;
     in-out property <int> total-ads-count: 0;
     in-out property <int> bookmarked-count: 0;
     in-out property <int> thumbsup-count: 0;
@@ -750,10 +774,12 @@ export component App inherits Window {
     in-out property <[DocEntry]> documents: [];
     in-out property <[DictEntry]> dictionary: [];
     in-out property <string> selected-doc-content: "";
-    in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1", app_min_count: 6, app_goal_count: 12, show_motivation: true };
+    in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1", app_min_count: 6, app_goal_count: 12, show_motivation: true, show_dev_logs: false };
     in-out property <bool> show-folder-picker: false;
     in-out property <[FolderEntry]> folder-entries: [];
     in-out property <string> current-folder-path: "";
+    in-out property <[LogEntry]> static-logs: [];
+    in-out property <string> log-filter: "ALL";
 
     callback search-pressed(string);
     callback search-prio(int);
@@ -777,15 +803,16 @@ export component App inherits Window {
     callback extract_from_docs();
     callback pick_sync_path();
     callback select_folder(string);
+    callback create_folder(string, string);
     callback folder_go_back();
+    callback request_logs(string);
+    callback save_logs_to_file();
 
     VerticalLayout {
-        // Main View
         Rectangle {
             vertical-stretch: 1;
 
             if current-tab == 0 : Rectangle {
-                // Responsive Split View
                 if root.width > 750px : HorizontalLayout {
                     InboxPane {
                         width: 350px;
@@ -799,7 +826,7 @@ export component App inherits Window {
                         app-min-count: root.settings.app_min_count;
                         app-goal-count: root.settings.app_goal_count;
                         job-selected(id, idx) => { root.selected-index = idx; root.job-selected(id, idx); }
-                        month-offset(off) => { root.month-offset(off); }
+                        month-offset(off) => { root.month_offset(off); }
                         search-pressed(q) => { root.search-pressed(q); }
                         search-prio(p) => { root.search-prio(p); }
                     }
@@ -824,7 +851,7 @@ export component App inherits Window {
                         app-min-count: root.settings.app_min_count;
                         app-goal-count: root.settings.app_goal_count;
                         job-selected(id, idx) => { root.selected-index = idx; root.job-selected(id, idx); }
-                        month-offset(off) => { root.month-offset(off); }
+                        month-offset(off) => { root.month_offset(off); }
                         search-pressed(q) => { root.search-pressed(q); }
                         search-prio(p) => { root.search-prio(p); }
                     }
@@ -837,7 +864,7 @@ export component App inherits Window {
                 }
             }
 
-            if current_tab == 1 : StatisticsPage {
+            if root.current-tab == 1 : StatisticsPage {
                 applied-count: root.applied-count;
                 bookmarked-count: root.bookmarked-count;
                 thumbsup-count: root.thumbsup-count;
@@ -845,19 +872,18 @@ export component App inherits Window {
                 total-ads-count: root.total-ads-count;
                 active-month-display: root.active-month-display;
                 top-keywords: root.top-keywords;
-                export(method, format, jobs, params, analysis) => { 
-                    root.export_requested(method, format, jobs, params, analysis); 
-                }
+                export(method, format, jobs, params, analysis) => { root.export_requested(method, format, jobs, params, analysis); }
             }
 
             if root.current-tab == 2 : SettingsPage {
-                settings: root.settings;
+                settings <=> root.settings;
                 log_file_path: root.log_file_path;
                 database_path: root.database_path;
                 last_api_request: root.last_api_request;
-                save-settings(s) => { root.save-settings(s); }
-                db-action(act) => { root.db-action(act); }
-                pick-sync-path() => { root.pick-sync-path(); }
+                system-logs: root.system-logs;
+                save-settings(s) => { root.save_settings(s); }
+                db-action(act) => { root.db_action(act); }
+                pick-sync-path() => { root.pick_sync_path(); }
             }
 
             if root.current-tab == 3 : ProfilePage {
@@ -878,70 +904,42 @@ export component App inherits Window {
                 delete-entry(key) => { root.delete_entry(key); }
                 extract-from-docs() => { root.extract_from_docs(); }
             }
+
+            if root.current-tab == 5 : LogPage {
+                logs: root.static-logs;
+                filter-level: root.log-filter;
+                refresh => { root.request_logs(root.log-filter); }
+                set-filter(lvl) => { root.log-filter = lvl; root.request_logs(lvl); }
+                copy-logs => { root.copy-text(root.system-logs); }
+                save-to-file => { root.save_logs_to_file(); }
+            }
         }
 
-        // Global Status Bar
         Rectangle {
             height: 20px;
             background: #121212;
             HorizontalLayout {
                 padding-left: 10px;
                 padding-right: 10px;
-                Text {
-                    text: root.status-msg;
-                    color: #666666;
-                    font-size: 12px;
-                    horizontal-alignment: right;
-                    vertical-alignment: center;
-                }
+                Text { text: root.status-msg; color: #666666; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
             }
         }
 
-        // Bottom Bar
         Rectangle {
             height: 60px;
             background: #1a1a1a;
             ScrollView {
-                viewport-width: 500px; // Ensure enough space for all tabs
+                viewport-width: 550px;
                 HorizontalLayout {
                     alignment: center;
                     padding: 10px;
                     spacing: 15px;
-
-                    TabButton {
-                        icon: @image-url("../assets/icons/inbox-fill.svg");
-                        text: "Jobb";
-                        active: root.current-tab == 0;
-                        clicked => { root.current-tab = 0; }
-                    }
-
-                    TabButton {
-                        icon: @image-url("../assets/icons/justify.svg");
-                        text: "Statistik";
-                        active: root.current-tab == 1;
-                        clicked => { root.current-tab = 1; root.stats_requested(); }
-                    }
-
-                    TabButton {
-                        icon: @image-url("../assets/icons/gear-fill.svg");
-                        text: "Inställningar";
-                        active: root.current-tab == 2;
-                        clicked => { root.current-tab = 2; }
-                    }
-
-                    TabButton {
-                        icon: @image-url("../assets/icons/circle-fill.svg");
-                        text: "Profil";
-                        active: root.current-tab == 3;
-                        clicked => { root.current-tab = 3; }
-                    }
-
-                    TabButton {
-                        icon: @image-url("../assets/icons/text-left.svg");
-                        text: "Kunskap";
-                        active: root.current-tab == 4;
-                        clicked => { root.current-tab = 4; }
-                    }
+                    TabButton { icon: @image-url("../assets/icons/inbox-fill.svg"); text: "Jobb"; active: root.current-tab == 0; clicked => { root.current-tab = 0; } }
+                    TabButton { icon: @image-url("../assets/icons/justify.svg"); text: "Statistik"; active: root.current-tab == 1; clicked => { root.current-tab = 1; root.stats_requested(); } }
+                    TabButton { icon: @image-url("../assets/icons/gear-fill.svg"); text: "Inställningar"; active: root.current-tab == 2; clicked => { root.current-tab = 2; } }
+                    TabButton { icon: @image-url("../assets/icons/circle-fill.svg"); text: "Profil"; active: root.current-tab == 3; clicked => { root.current-tab = 3; } }
+                    TabButton { icon: @image-url("../assets/icons/text-left.svg"); text: "Kunskap"; active: root.current-tab == 4; clicked => { root.current-tab = 4; } }
+                    if root.settings.show_dev_logs : TabButton { icon: @image-url("../assets/icons/justify.svg"); text: "Loggar"; active: root.current-tab == 5; clicked => { root.current-tab = 5; root.request_logs(root.log-filter); } }
                 }
             }
         }
@@ -954,12 +952,10 @@ export component App inherits Window {
                 entries: root.folder-entries;
                 current-path: root.current-folder-path;
                 select-folder(p) => { root.select_folder(p); }
+                create-folder(n) => { root.create_folder(root.current-folder-path, n); }
                 go-back => { root.folder_go_back(); }
                 cancel => { root.show-folder-picker = false; }
-                confirm => { 
-                    root.settings.sync_path = root.current-folder-path;
-                    root.show-folder-picker = false; 
-                }
+                confirm => { root.settings.sync_path = root.current-folder-path; root.show-folder-picker = false; }
             }
         }
     }
