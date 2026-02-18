@@ -165,7 +165,32 @@ fn setup_clipboard_manager() {
                 tracing_info!("Text copied to clipboard and kept alive.");
             }
             #[cfg(target_os = "android")]
-            let _ = text;
+            {
+                // JNI-logik för att nå Androids ClipboardManager
+                let ctx = ndk_context::android_context();
+                let vm_ptr = ctx.vm();
+                let activity = ctx.context();
+                
+                unsafe {
+                    let vm = jni::JavaVM::from_raw(vm_ptr as *mut _).unwrap();
+                    let mut env = vm.attach_current_thread().unwrap();
+                    let activity_obj = JObject::from_raw(activity as jni::sys::jobject);
+                    
+                    let cls_context = env.find_class("android/content/Context").unwrap();
+                    let field_clipboard_service = env.get_static_field(cls_context, "CLIPBOARD_SERVICE", "Ljava/lang/String;").unwrap().l().unwrap();
+                    
+                    let clipboard_manager = env.call_method(&activity_obj, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;", &[JValue::Object(&field_clipboard_service)]).unwrap().l().unwrap();
+                    
+                    let cls_clip_data = env.find_class("android/content/ClipData").unwrap();
+                    let label = env.new_string("Jobseeker").unwrap();
+                    let text_val = env.new_string(&text).unwrap();
+                    
+                    let clip_data = env.call_static_method(cls_clip_data, "newPlainText", "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Landroid/content/ClipData;", &[JValue::Object(&label.into()), JValue::Object(&text_val.into())]).unwrap().l().unwrap();
+                    
+                    env.call_method(clipboard_manager, "setPrimaryClip", "(Landroid/content/ClipData;)V", &[JValue::Object(&clip_data)]).unwrap();
+                    tracing_info!("System: Text kopierad till Android urklipp.");
+                }
+            }
         }
     });
 }
@@ -191,14 +216,15 @@ async fn merge_databases(local: &Db, sync_path: &Path) -> anyhow::Result<()> {
     let local_file = get_db_path();
     let sync_file = sync_path.join("jobseeker.redb");
 
-    // If sync file doesn't exist, create it from local
     if !sync_file.exists() {
-        tracing_info!("Synk-fil saknas, skapar initial kopia...");
+        tracing_info!("Synk: Skapar ny databasfil i synkmappen...");
         std::fs::copy(&local_file, &sync_file)?;
+        tracing_info!("Synk: Initial fil kopierad.");
         return Ok(());
     }
 
     let remote = Db::new(sync_file.to_str().unwrap())?;
+    let mut stats = (0, 0, 0); // (jobs, docs, dict)
 
     // 1. Merge Inställningar
     if let (Ok(Some(l_set)), Ok(Some(r_set))) = (local.load_settings().await, remote.load_settings().await) {
@@ -212,8 +238,8 @@ async fn merge_databases(local: &Db, sync_path: &Path) -> anyhow::Result<()> {
     
     for r_job in &r_jobs {
         if let Ok(Some(l_job)) = local.get_job_ad(&r_job.id).await {
-            if r_job.updated_at > l_job.updated_at { local.save_job_ad(r_job).await?; }
-        } else { local.save_job_ad(r_job).await?; }
+            if r_job.updated_at > l_job.updated_at { local.save_job_ad(r_job).await?; stats.0 += 1; }
+        } else { local.save_job_ad(r_job).await?; stats.0 += 1; }
     }
     for l_job in &l_jobs {
         if let Ok(Some(r_job)) = remote.get_job_ad(&l_job.id).await {
@@ -226,8 +252,8 @@ async fn merge_databases(local: &Db, sync_path: &Path) -> anyhow::Result<()> {
     let r_docs = remote.get_documents().await?;
     for r_doc in &r_docs {
         if let Some(l_doc) = l_docs.iter().find(|d| d.id == r_doc.id) {
-            if r_doc.updated_at > l_doc.updated_at { local.save_document(r_doc).await?; }
-        } else { local.save_document(r_doc).await?; }
+            if r_doc.updated_at > l_doc.updated_at { local.save_document(r_doc).await?; stats.1 += 1; }
+        } else { local.save_document(r_doc).await?; stats.1 += 1; }
     }
     for l_doc in &l_docs {
         if !r_docs.iter().any(|d| d.id == l_doc.id) { remote.save_document(l_doc).await?; }
@@ -238,22 +264,46 @@ async fn merge_databases(local: &Db, sync_path: &Path) -> anyhow::Result<()> {
     let r_dict = remote.get_dictionary().await?;
     for r_ent in &r_dict {
         if let Some(l_ent) = l_dict.iter().find(|e| e.key == r_ent.key) {
-            if r_ent.updated_at > l_ent.updated_at { local.save_dict_entry(r_ent).await?; }
-        } else { local.save_dict_entry(r_ent).await?; }
+            if r_ent.updated_at > l_ent.updated_at { local.save_dict_entry(r_ent).await?; stats.2 += 1; }
+        } else { local.save_dict_entry(r_ent).await?; stats.2 += 1; }
     }
     for l_ent in &l_dict {
         if !r_dict.iter().any(|e| e.key == l_ent.key) { remote.save_dict_entry(l_ent).await?; }
     }
 
+    if stats.0 > 0 || stats.1 > 0 || stats.2 > 0 {
+        tracing_info!("Synk: Klar. Uppdaterade {} jobb, {} dokument, {} ord.", stats.0, stats.1, stats.2);
+    } else {
+        tracing_info!("Synk: Inga ändringar behövdes.");
+    }
+
     Ok(())
 }
 
-async fn trigger_sync(db: &Db) {
+async fn trigger_sync(db: &Db, ui_weak: slint::Weak<App>) {
     if let Ok(Some(settings)) = db.load_settings().await {
-        if !settings.sync_path.is_empty() {
-            let sync_dir = PathBuf::from(&settings.sync_path);
-            if sync_dir.exists() {
-                let _ = merge_databases(db, &sync_dir).await;
+        let path_raw = settings.sync_path.trim();
+        if !path_raw.is_empty() {
+            let sync_dir = PathBuf::from(path_raw);
+            tracing_info!("Synk: Kontrollerar sökpath: {:?}", sync_dir);
+            
+            if !sync_dir.exists() {
+                tracing_info!("Synk: Mappen finns inte, försöker skapa den...");
+                if let Err(e) = std::fs::create_dir_all(&sync_dir) {
+                    tracing_error!("Synk: Kunde inte skapa mappen: {}", e);
+                    return;
+                }
+            }
+
+            if let Err(e) = merge_databases(db, &sync_dir).await {
+                tracing_error!("Synk: Fel vid synkronisering: {}", e);
+            } else {
+                tracing_info!("Synk: Genomförd mot {:?}", sync_dir);
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_status_msg("Synk genomförd".into());
+                    }
+                });
             }
         }
     }
@@ -580,7 +630,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             let current = db.get_job_ad(&id_str).await.ok().flatten().and_then(|ad| ad.status);
             let new_status = if current == Some(target) { None } else { Some(target) };
             if db.update_ad_status(&id_str, new_status).await.is_ok() {
-                trigger_sync(&db).await;
+                trigger_sync(&db, ui_weak.clone()).await;
                 let status_int = match new_status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 };
                 let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { let jobs = ui.get_jobs(); let mut vec: Vec<JobEntry> = jobs.iter().collect(); if let Some(pos) = vec.iter().position(|j| j.id == id_str) { if status_int == 1 { vec.remove(pos); } else { vec[pos].status = status_int; } ui.set_jobs(Rc::new(slint::VecModel::from(vec)).into()); } } });
             }
@@ -613,7 +663,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let s_ui = settings.clone();
         rt_set.spawn(async move {
             if db.save_settings(&settings).await.is_ok() {
-                trigger_sync(&db).await;
+                trigger_sync(&db, ui_weak.clone()).await;
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = ui_weak.upgrade() {
                         ui.set_settings(crate::ui::AppSettings {
@@ -654,8 +704,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             }
         } else if act == "sync" {
             rt.spawn(async move {
-                trigger_sync(&db).await;
-                let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Synk klar".into()); } });
+                trigger_sync(&db, ui_weak.clone()).await;
             });
         }
     });
@@ -773,7 +822,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 if let Some(mut doc) = docs.iter_mut().find(|d| d.id == id_str) {
                     doc.content = content_str.clone();
                     let _ = db.save_document(doc).await;
-                    trigger_sync(&db).await;
+                    trigger_sync(&db, ui_weak.clone()).await;
                     let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Dokument sparat & synkat".into()); } });
                 }
             }
@@ -788,7 +837,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let id_str = id.to_string();
         rt_del.spawn(async move {
             let _ = db.delete_document(&id_str).await;
-            trigger_sync(&db).await;
+            trigger_sync(&db, ui_weak.clone()).await;
             if let Ok(docs) = db.get_documents().await {
                 let entries: Vec<DocEntry> = docs.into_iter().map(|d| DocEntry { id: d.id.into(), name: d.name.into(), doc_type: d.doc_type.into(), is_main: d.is_main }).collect();
                 let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_documents(Rc::new(slint::VecModel::from(entries)).into()); ui.set_status_msg("Dokument raderat".into()); } });
@@ -827,7 +876,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let id_str = id.to_string();
         rt_main.spawn(async move {
             let _ = db.set_main_cv(&id_str).await;
-            trigger_sync(&db).await;
+            trigger_sync(&db, ui_weak.clone()).await;
             let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Huvud-CV uppdaterat".into()); } });
         });
     });
@@ -842,7 +891,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         rt_add.spawn(async move {
             let entry = DictEntry { key: key_str, value: value_str, updated_at: Utc::now() };
             let _ = db.save_dict_entry(&entry).await;
-            trigger_sync(&db).await;
+            trigger_sync(&db, ui_weak.clone()).await;
             let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Ord tillagt i ordboken".into()); } });
         });
     });
@@ -855,7 +904,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let key_str = key.to_string();
         rt_del_dict.spawn(async move {
             let _ = db.delete_dict_entry(&key_str).await;
-            trigger_sync(&db).await;
+            trigger_sync(&db, ui_weak.clone()).await;
             let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Ord raderat".into()); } });
         });
     });
@@ -865,7 +914,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     let db_path_str = get_db_path().to_string_lossy().to_string();
     let rt_i_initial = rt_i.clone();
     rt_i_initial.spawn(async move {
-        trigger_sync(&db_i).await;
+        trigger_sync(&db_i, ui_i.clone()).await;
         let settings = db_i.load_settings().await.unwrap_or_default().unwrap_or_default();
         let (s, u_s) = (settings.clone(), ui_i.clone());
         let d_path = db_path_str.clone();
@@ -967,7 +1016,7 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
     }
 
     if let Ok(final_ads) = db.get_filtered_jobs(&[], Some(y), Some(m)).await {
-        trigger_sync(&db).await;
+        trigger_sync(&db, ui_weak.clone()).await;
         tracing_info!("Search: Klart! Hittade {} nya unika annonser för denna månad", new_count);
         let ui_f = ui_weak.clone(); let muns_f = municipalities.clone();
         let msg = if new_count > 0 { format!("Klar! Hittade {} nya annonser.", new_count) } else { "Inga nya annonser hittades just nu.".to_string() };

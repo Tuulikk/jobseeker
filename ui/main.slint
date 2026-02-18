@@ -376,7 +376,7 @@ component InboxPane inherits VerticalLayout {
                 padding-right: 16px;
 
                 for job[idx] in jobs : JobListItem {
-                    visible: root.active-filter == 0 || job.status == root.active-filter;
+                    visible: (root.active-filter == 0 && job.status != 1) || job.status == root.active-filter;
                     height: self.visible ? 72px : 0px;
                     job: job;
                     selected: idx == root.selected-index;
@@ -718,14 +718,16 @@ component SettingsPage inherits Rectangle {
                         Text { text: "SYNKRAPP (Valfri):"; color: #888; font-size: 12px; }
                         HorizontalLayout {
                             spacing: 10px;
-                            sync-input := TextEdit {
+                            height: 36px;
+                            sync-input := LineEdit {
                                 text: root.settings.sync_path;
                                 placeholder-text: "/path/to/sync/folder";
-                                height: 40px;
                                 font-size: 12px;
+                                horizontal-stretch: 1;
                             }
                             Button {
                                 text: "Välj mapp";
+                                width: 80px;
                                 clicked => { root.pick-sync-path(); }
                             }
                         }
