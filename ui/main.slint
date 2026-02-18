@@ -29,6 +29,7 @@ export struct JobEntry {
     rating: int,
     status: int, // 0=New, 1=Rejected, 2=Saved, 3=ThumbsUp, 4=Applied
     status_text: string,
+    ai_summary: string,
 }
 
 export struct AppSettings {
@@ -45,6 +46,7 @@ export struct AppSettings {
     show_motivation: bool,
     main_cv_id: string,
     show_dev_logs: bool,
+    auto_extract: bool,
 }
 
 export component FolderPicker inherits Rectangle {
@@ -394,6 +396,7 @@ component InboxPane inherits VerticalLayout {
 
 component JobDetailPane inherits Rectangle {
     in property <JobEntry> job;
+    in property <bool> auto-extract;
     callback close;
     callback action(string);
     callback copy(string);
@@ -423,6 +426,29 @@ component JobDetailPane inherits Rectangle {
             font-weight: 700;
             color: #ffffff;
             wrap: word-wrap;
+        }
+
+        if job.ai_summary != "" : Rectangle {
+            background: #2a2a2a;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: #444;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+                Text { text: "ANNONSENS KÄRNA (AUTOMATISK EXTRAKTION)"; color: #00ffff; font-weight: 700; font-size: 10px; }
+                Text {
+                    text: job.ai_summary;
+                    color: #eeeeee;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if job.ai_summary == "" && !root.auto-extract : Button {
+            text: "🔍 Extrahera kärnan (Snabb-analys)";
+            clicked => { root.action("analyze"); }
         }
 
         if job.status == 4 : Rectangle {
@@ -719,6 +745,11 @@ component SettingsPage inherits Rectangle {
                         root.settings.show_dev_logs = self.checked; 
                     }
                 }
+                CheckBox {
+                    text: "Auto-extrahera kärnan när annons öppnas";
+                    checked: root.settings.auto_extract;
+                    toggled => { root.settings.auto_extract = self.checked; }
+                }
 
                 Button {
                     text: "Spara Inställningar";
@@ -807,6 +838,7 @@ export component App inherits Window {
     callback folder_go_back();
     callback request_logs(string);
     callback save_logs_to_file();
+    callback analyze_job(string);
 
     VerticalLayout {
         Rectangle {
@@ -833,6 +865,7 @@ export component App inherits Window {
                     Rectangle { width: 1px; background: #333; }
                     if root.selected-index >= 0 : JobDetailPane {
                         job: root.jobs[root.selected-index];
+                        auto-extract: root.settings.auto_extract;
                         close => { root.selected-index = -1; }
                         action(act) => { root.job-action(root.jobs[root.selected-index].id, act); }
                         copy(t) => { root.copy-text(t); }
@@ -857,6 +890,7 @@ export component App inherits Window {
                     }
                     if root.selected-index >= 0 : JobDetailPane {
                         job: root.jobs[root.selected-index];
+                        auto-extract: root.settings.auto_extract;
                         close => { root.selected-index = -1; }
                         action(act) => { root.job-action(root.jobs[root.selected-index].id, act); }
                         copy(t) => { root.copy-text(t); }

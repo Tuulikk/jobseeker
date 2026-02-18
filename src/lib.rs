@@ -130,6 +130,7 @@ static CLIPBOARD_SENDER: std::sync::OnceLock<mpsc::Sender<String>> = std::sync::
 // Log buffer to keep track of recent logs for the UI
 static LOG_SENDER: std::sync::OnceLock<mpsc::Sender<String>> = std::sync::OnceLock::new();
 static RAW_LOGS: std::sync::Mutex<Vec<LogEntry>> = std::sync::Mutex::new(Vec::new());
+static LOCAL_AI: std::sync::OnceLock<crate::ai::LocalAi> = std::sync::OnceLock::new();
 
 struct SlintLogWriter {
     sender: mpsc::Sender<String>,
@@ -486,7 +487,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                         let formatted_desc = raw_desc.replace("<li>", "\n • ").replace("</li>", "").replace("<ul>", "\n").replace("</ul>", "\n").replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n").replace("<p>", "\n\n").replace("</p>", "").replace("<strong>", "").replace("</strong>", "").replace("<b>", "").replace("</b>", "");
                         let mut clean_desc = re_html.replace_all(&formatted_desc, "").to_string();
                         if ad.driving_license_required { clean_desc.push_str("\n\nKÖRKORT:\n • Krav på körkort\n"); }
-                        JobEntry { id: ad.id.into(), title: ad.headline.into(), employer: ad.employer.and_then(|e| e.name).unwrap_or_default().into(), location: ad.workplace_address.and_then(|a| a.city).unwrap_or_default().into(), description: clean_desc.into(), date: ad.publication_date.split('T').next().unwrap_or("").into(), apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(), rating: ad.rating.unwrap_or(0) as i32, status: match ad.status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 }, status_text: "".into() }
+                        JobEntry { id: ad.id.into(), title: ad.headline.into(), employer: ad.employer.and_then(|e| e.name).unwrap_or_default().into(), location: ad.workplace_address.and_then(|a| a.city).unwrap_or_default().into(), description: clean_desc.into(), date: ad.publication_date.split('T').next().unwrap_or("").into(), apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(), rating: ad.rating.unwrap_or(0) as i32, status: match ad.status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 }, status_text: "".into(), ai_summary: "".into() }
                     }).collect();
                     let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_f.upgrade() { ui.set_jobs(Rc::new(slint::VecModel::from(entries)).into()); ui.set_applied_count(app_count); } });
                 }
@@ -516,16 +517,65 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         }); 
     });
 
+    let ui_job_sel = ui.as_weak();
+    let db_job_sel = db.clone();
     ui.on_job_selected(move |id, idx| {
         tracing_info!("UI: Jobb valt: {} (index {})", id, idx);
+        let ui_weak = ui_job_sel.clone();
+        let db = db_job_sel.clone();
+        let id_str = id.to_string();
+        
+        slint::invoke_from_event_loop(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                if ui.get_settings().auto_extract {
+                    let jobs = ui.get_jobs();
+                    if let Some(job) = jobs.iter().nth(idx as usize) {
+                        if job.ai_summary.is_empty() {
+                            // Trigger analysis if not already done
+                            ui.invoke_job_action(id_str.into(), "analyze".into());
+                        }
+                    }
+                }
+            }
+        }).unwrap();
     });
 
     // Callback: Job Action
     let (db_a, ui_a, rt_a) = (db.clone(), ui.as_weak(), rt.clone());
     ui.on_job_action(move |id, act| {
         let (db, ui_weak, id_str, action) = (db_a.clone(), ui_a.clone(), id.to_string(), act.to_string());
+        tracing_info!("UI: Utför åtgärd '{}' på jobb {}", action, id_str);
         rt_a.spawn(async move {
             if action == "open" || action == "apply_direct" { if let Ok(Some(ad)) = db.get_job_ad(&id_str).await { let url = if action == "open" { ad.webpage_url } else { ad.application_details.and_then(|d| d.url) }; if let Some(u) = url { let _ = webbrowser::open(&u); } } return; }
+            
+            if action == "analyze" {
+                if let Ok(Some(ad)) = db.get_job_ad(&id_str).await {
+                    let desc = ad.description.as_ref().and_then(|d| d.text.as_ref()).cloned().unwrap_or_default();
+                    tracing_info!("System: Startar automatisk extraktion av kärnan...");
+                    
+                    let ai = LOCAL_AI.get_or_init(|| {
+                        tracing_info!("System: Initierar FastExtractor-algoritm...");
+                        crate::ai::LocalAi::new().unwrap()
+                    });
+
+                    if let Ok(summary) = ai.extractive_summarize(&desc) {
+                        let summary_shared: slint::SharedString = summary.into();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak.upgrade() {
+                                let jobs = ui.get_jobs();
+                                let mut vec: Vec<JobEntry> = jobs.iter().collect();
+                                if let Some(pos) = vec.iter().position(|j| j.id == id_str) {
+                                    vec[pos].ai_summary = summary_shared;
+                                    ui.set_jobs(Rc::new(slint::VecModel::from(vec)).into());
+                                    ui.set_status_msg("Analys klar".into());
+                                }
+                            }
+                        });
+                    }
+                }
+                return;
+            }
+
             let target = match action.as_str() { "reject" => AdStatus::Rejected, "save" => AdStatus::Bookmarked, "thumbsup" => AdStatus::ThumbsUp, "apply" => AdStatus::Applied, _ => return };
             let current = db.get_job_ad(&id_str).await.ok().flatten().and_then(|ad| ad.status);
             let new_status = if current == Some(target) { None } else { Some(target) };
@@ -557,6 +607,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             show_motivation: s.show_motivation,
             main_cv_id: s.main_cv_id.to_string(),
             show_dev_logs: s.show_dev_logs,
+            auto_extract: s.auto_extract,
             updated_at: Utc::now(),
         };
         let s_ui = settings.clone();
@@ -579,6 +630,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                             show_motivation: s_ui.show_motivation,
                             main_cv_id: s_ui.main_cv_id.into(),
                             show_dev_logs: s_ui.show_dev_logs,
+                            auto_extract: s_ui.auto_extract,
                         });
                         ui.set_status_msg("Sparat & Synkat".into());
                     }
@@ -834,6 +886,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     show_motivation: s.show_motivation,
                     main_cv_id: s.main_cv_id.into(),
                     show_dev_logs: s.show_dev_logs,
+                    auto_extract: s.auto_extract,
                 });
             }
         });
@@ -894,7 +947,7 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
             let formatted_desc = raw_desc.replace("<li>", "\n • ").replace("</li>", "").replace("<ul>", "\n").replace("</ul>", "\n").replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n").replace("<p>", "\n\n").replace("</p>", "").replace("<strong>", "").replace("</strong>", "").replace("<b>", "").replace("</b>", "");
             let mut clean_desc = re_html.replace_all(&formatted_desc, "").to_string();
             if ad.driving_license_required { clean_desc.push_str("\n\nKÖRKORT:\n • Krav på körkort\n"); }
-            JobEntry { id: ad.id.into(), title: ad.headline.into(), employer: ad.employer.and_then(|e| e.name).unwrap_or_default().into(), location: ad.workplace_address.and_then(|a| a.city).unwrap_or_default().into(), description: clean_desc.into(), date: ad.publication_date.split('T').next().unwrap_or("").into(), apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(), rating: ad.rating.unwrap_or(0) as i32, status: match ad.status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 }, status_text: "".into() }
+            JobEntry { id: ad.id.into(), title: ad.headline.into(), employer: ad.employer.and_then(|e| e.name).unwrap_or_default().into(), location: ad.workplace_address.and_then(|a| a.city).unwrap_or_default().into(), description: clean_desc.into(), date: ad.publication_date.split('T').next().unwrap_or("").into(), apply_url: ad.application_details.and_then(|d| d.url).unwrap_or_default().into(), rating: ad.rating.unwrap_or(0) as i32, status: match ad.status { Some(AdStatus::Rejected) => 1, Some(AdStatus::Bookmarked) => 2, Some(AdStatus::ThumbsUp) => 3, Some(AdStatus::Applied) => 4, _ => 0 }, status_text: "".into(), ai_summary: "".into() }
         }).collect();
         entries.sort_by(|a, b| b.date.cmp(&a.date));
         ui.set_jobs(std::rc::Rc::new(slint::VecModel::from(entries)).into()); ui.set_applied_count(applied_count); ui.set_status_msg(msg.into());

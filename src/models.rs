@@ -155,9 +155,13 @@ pub struct AppSettings {
     pub main_cv_id: String,
     #[serde(default)]
     pub show_dev_logs: bool,
+    #[serde(default = "default_true")]
+    pub auto_extract: bool,
     #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
 }
+
+fn default_true() -> bool { true }
 
 /// User documents (CVs, cover letters, etc.)
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -199,6 +203,7 @@ impl Default for AppSettings {
             show_motivation: true,
             main_cv_id: "".to_string(),
             show_dev_logs: false,
+            auto_extract: true,
             updated_at: Utc::now(),
         }
     }
