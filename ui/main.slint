@@ -397,6 +397,7 @@ component InboxPane inherits VerticalLayout {
 component JobDetailPane inherits Rectangle {
     in property <JobEntry> job;
     in property <bool> auto-extract;
+    in property <bool> has-mouse-wheel;
     callback close;
     callback action(string);
     callback copy(string);
@@ -426,29 +427,6 @@ component JobDetailPane inherits Rectangle {
             font-weight: 700;
             color: #ffffff;
             wrap: word-wrap;
-        }
-
-        if job.ai_summary != "" : Rectangle {
-            background: #2a2a2a;
-            border-radius: 4px;
-            border-width: 1px;
-            border-color: #444;
-            VerticalLayout {
-                padding: 12px;
-                spacing: 8px;
-                Text { text: "ANNONSENS KÄRNA (AUTOMATISK EXTRAKTION)"; color: #00ffff; font-weight: 700; font-size: 10px; }
-                Text {
-                    text: job.ai_summary;
-                    color: #eeeeee;
-                    font-size: 13px;
-                    wrap: word-wrap;
-                }
-            }
-        }
-
-        if job.ai_summary == "" && !root.auto-extract : Button {
-            text: "🔍 Extrahera kärnan (Snabb-analys)";
-            clicked => { root.action("analyze"); }
         }
 
         if job.status == 4 : Rectangle {
@@ -492,6 +470,52 @@ component JobDetailPane inherits Rectangle {
             ScrollView {
                 VerticalLayout {
                     padding-right: 25px;
+                    spacing: 15px;
+
+                    if job.ai_summary != "" : Rectangle {
+                        background: #1a1a1a;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #00ffff33;
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 2px;
+                                            HorizontalLayout {
+                                                spacing: 6px;
+                                                Text { text: "💎"; font-size: 12px; vertical-alignment: center; }
+                                                Text { text: "KÄRNAN"; color: #00ffff; font-weight: 800; font-size: 10px; vertical-alignment: center; }
+                                                Rectangle { horizontal-stretch: 1; }
+                                                
+                                                                    // Copy Link
+                                                                    Rectangle {
+                                                                        width: copy-text.width + 10px;
+                                                                        height: 20px;
+                                                                        copy-text := Text {
+                                                                            text: "Kopiera";
+                                                                            color: copy-touch.pressed ? #ffffff : (copy-touch.has-hover ? #00ffff : #666);
+                                                                            font-size: 10px;
+                                                                            vertical-alignment: center;
+                                                                            horizontal-alignment: center;
+                                                                        }
+                                                                        copy-touch := TouchArea {
+                                                                            clicked => { root.copy(job.ai_summary); }
+                                                                        }
+                                                                    }                                                
+                                                Text { text: " | Extraherad lokalt"; color: #333; font-size: 9px; vertical-alignment: center; }
+                                            }                            Text {
+                                text: job.ai_summary;
+                                color: #eeeeee;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                            }
+                        }
+                    }
+
+                    if job.ai_summary == "" && !root.auto-extract : Button {
+                        text: "🔍 Extrahera kärnan (Snabb-analys)";
+                        clicked => { root.action("analyze"); }
+                    }
+
                     Text {
                         text: job.description;
                         color: #dddddd;
@@ -785,6 +809,7 @@ export component App inherits Window {
     preferred-width: 900px;
     preferred-height: 800px;
 
+    in property <bool> has-mouse-wheel: true;
     in-out property <int> selected-index: -1;
     in-out property <[JobEntry]> jobs: [];
     in-out property <bool> searching: false;
@@ -866,6 +891,7 @@ export component App inherits Window {
                     if root.selected-index >= 0 : JobDetailPane {
                         job: root.jobs[root.selected-index];
                         auto-extract: root.settings.auto_extract;
+                        has-mouse-wheel: root.has-mouse-wheel;
                         close => { root.selected-index = -1; }
                         action(act) => { root.job-action(root.jobs[root.selected-index].id, act); }
                         copy(t) => { root.copy-text(t); }
@@ -891,6 +917,7 @@ export component App inherits Window {
                     if root.selected-index >= 0 : JobDetailPane {
                         job: root.jobs[root.selected-index];
                         auto-extract: root.settings.auto_extract;
+                        has-mouse-wheel: root.has-mouse-wheel;
                         close => { root.selected-index = -1; }
                         action(act) => { root.job-action(root.jobs[root.selected-index].id, act); }
                         copy(t) => { root.copy-text(t); }

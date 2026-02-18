@@ -64,84 +64,112 @@ impl LocalAi {
     }
 
     pub fn extractive_summarize(&self, text: &str) -> Result<String> {
-        // 1. Förbered texten - hantera punkter, utropstecken, frågetecken, nya rader och bullets
-        let sentences: Vec<&str> = text.split_inclusive(|c| c == '.' || c == '!' || c == '?' || c == '\n' || c == '•')
-            .map(|s| s.trim())
-            .filter(|s| s.len() > 10)
-            .collect();
+        let lines: Vec<&str> = text.split('\n').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let mut sentences = Vec::new();
+        for line in lines {
+            if (line.len() < 50 && line.ends_with(':')) || (line.len() < 35 && line.chars().all(|c| c.is_uppercase() || c.is_whitespace() || c.is_ascii_punctuation())) {
+                sentences.push(line);
+            } else {
+                for s in line.split_inclusive(|c| c == '.' || c == '!' || c == '?') {
+                    let trimmed = s.trim();
+                    if trimmed.len() > 4 { sentences.push(trimmed); }
+                }
+            }
+        }
 
-        if sentences.is_empty() { return Ok("Kunde inte extrahera tillräckligt med text.".into()); }
+        if sentences.is_empty() { return Ok("Kunde inte analysera innehållet.".into()); }
 
-        // 2. Definiera kluster av ord-stammar (Fuzzy-ish matching)
+        // Definiera ordning och signaler
         let clusters = vec![
-            ("ARBETSPLATSEN", vec!["kult", "miljö", "team", "kolleg", "värder", "visio", "fika", "trygg", "erbjud", "förmån", "kontor", "gemenskap"]),
-            ("ROLLEN", vec!["ansvar", "arbetsuppgift", "roll", "varda", "utför", "daglig", "bidra", "projekt", "fokus", "innebär", "utveckl", "utman"]),
-            ("KRAV", vec!["krav", "erfaren", "utbild", "kompeten", "merit", "sök", "behärsk", "kvalif", "bakgrund", "kunskap", "skall", "bör"])
+            ("ROLLEN", vec!["ansvar", "arbetsuppgift", "roll", "utför", "bidra", "projekt", "fokus", "innebär", "leda", "driva", "task"]),
+            ("KRAV", vec!["krav", "erfaren", "utbild", "kompeten", "merit", "behärsk", "kvalif", "bakgrund", "kunskap", "du har", "förmåga", "skall"]),
+            ("ARBETSPLATSEN", vec!["kult", "team", "kolleg", "värder", "visio", "gemenskap", "miljö", "om oss", "vi är", "erbjuder"])
         ];
 
-        let mut extracted = Vec::new();
+        let mut results_per_cat = std::collections::HashMap::new();
         let mut used_indices = std::collections::HashSet::new();
+        let mut current_header_cat: Option<&str> = None;
 
-        for (cat_name, stems) in clusters {
+        for (cat_name, stems) in clusters.clone() {
             let mut scores: Vec<(usize, f32)> = Vec::new();
 
             for (idx, sent) in sentences.iter().enumerate() {
                 if used_indices.contains(&idx) { continue; }
 
                 let low_sent = sent.to_lowercase();
+                
+                // Rubrik-detektering för kontext
+                if sent.ends_with(':') || (sent.len() < 35 && sent.chars().all(|c| c.is_uppercase() || c.is_whitespace())) {
+                    if low_sent.contains("gör") || low_sent.contains("roll") || low_sent.contains("uppgift") { current_header_cat = Some("ROLLEN"); }
+                    else if low_sent.contains("vem") || low_sent.contains("krav") || low_sent.contains("merit") || low_sent.contains("profil") { current_header_cat = Some("KRAV"); }
+                    else if low_sent.contains("vi ") || low_sent.contains("oss") || low_sent.contains("erbjuder") { current_header_cat = Some("ARBETSPLATSEN"); }
+                    continue;
+                }
+
                 let mut score = 0.0;
 
-                // A. Fuzzy-ish Stam-matchning
+                // Brus-filter
+                if low_sent.contains("http") || low_sent.contains("ansök") || low_sent.contains("läs mer") { continue; }
+                let first_char = sent.chars().next().unwrap_or(' ');
+                if !first_char.is_uppercase() && !sent.starts_with('•') && !sent.starts_with('-') { continue; }
+
+                // Exklusivitet & Special-triggers
+                if cat_name == "KRAV" {
+                    if low_sent.contains("erfarenhet") || low_sent.contains("krav") || low_sent.contains("förmåga") || low_sent.contains("kunskap") { score += 12.0; }
+                    if low_sent.contains("vi ") || low_sent.contains("erbjuder") { score -= 20.0; }
+                }
+                
+                if cat_name == "ARBETSPLATSEN" {
+                    if low_sent.contains("meriterande") || low_sent.contains("erfarenhet") || low_sent.contains("skall") { score -= 20.0; }
+                    if low_sent.contains("vi ") || low_sent.contains("team") || low_sent.contains("miljö") { score += 5.0; }
+                }
+
+                // Stam-matchning
                 for stem in &stems {
-                    if low_sent.contains(stem) { 
-                        score += 1.5; 
-                        if low_sent.starts_with(stem) { score += 0.5; }
-                    }
+                    if low_sent.contains(stem) { score += 3.0; }
                 }
 
-                if score == 0.0 { continue; }
+                if current_header_cat == Some(cat_name) { score += 6.0; }
+                
+                if score <= 2.0 { continue; }
 
-                // B. Struktur-analys
-                if sent.starts_with('-') || sent.starts_with('*') || sent.starts_with('•') {
-                    score += 2.0;
-                }
-
-                // C. Salience (Längd-viktning)
                 let len = sent.len();
-                if len > 60 && len < 160 { score += 1.2; }
-                else if len > 220 { score -= 0.8; }
-
-                // D. Positions-magi
-                let pos_ratio = idx as f32 / sentences.len() as f32;
-                if cat_name == "ARBETSPLATSEN" { score *= 1.0 + (1.0 - pos_ratio); }
-                if cat_name == "KRAV" { score *= 1.0 + pos_ratio; }
-
-                // E. Signal-fraser
-                if cat_name == "KRAV" && (low_sent.contains("vi söker dig") || low_sent.contains("du har")) { score += 3.5; }
-                if cat_name == "ROLLEN" && (low_sent.contains("dina arbetsuppgifter") || low_sent.contains("du kommer att")) { score += 3.5; }
-                if cat_name == "ARBETSPLATSEN" && low_sent.contains("vi erbjuder") { score += 3.5; }
-
+                if len > 40 && len < 180 { score += 2.0; }
+                
                 scores.push((idx, score));
             }
 
             scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-            if let Some(&(idx, _)) = scores.get(0) {
-                extracted.push((idx, cat_name, sentences[idx]));
+            let mut cat_sentences = Vec::new();
+            let mut count = 0;
+            for (idx, _) in scores {
+                if count >= 2 { break; }
+                cat_sentences.push((idx, sentences[idx]));
                 used_indices.insert(idx);
+                count += 1;
+            }
+            // Sortera internt efter originalordning
+            cat_sentences.sort_by_key(|&(idx, _)| idx);
+            results_per_cat.insert(cat_name, cat_sentences);
+        }
+
+        let mut final_result = String::new();
+        // Skriv ut i fix ordning: ROLLEN -> KRAV -> ARBETSPLATSEN
+        for (cat_name, _) in clusters {
+            if let Some(sents) = results_per_cat.get(cat_name) {
+                if !sents.is_empty() {
+                    if !final_result.is_empty() { final_result.push_str("\n"); }
+                    final_result.push_str(&format!("{}:", cat_name));
+                    for (_, text) in sents {
+                        let clean_text = text.trim_start_matches(|c| c == '-' || c == '*' || c == '•' || c == ' ').trim();
+                        final_result.push_str(&format!("\n • {}", clean_text));
+                    }
+                }
             }
         }
 
-        extracted.sort_by_key(|&(idx, _, _)| idx);
-
-        let result = extracted.into_iter()
-            .map(|(_, cat, text)| {
-                let clean_text = text.trim_start_matches(|c| c == '-' || c == '*' || c == '•' || c == ' ').trim();
-                format!("[{}] {}", cat, clean_text)
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        Ok(result)
+        if final_result.is_empty() { return Ok("Ingen kärna identifierad.".into()); }
+        Ok(final_result)
     }
 }

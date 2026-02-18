@@ -987,6 +987,11 @@ pub fn desktop_main() {
     let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()) }).expect("Failed to initialize database");
     let db = Arc::new(db);
     let ui = App::new().expect("Failed to create Slint UI");
+    #[cfg(target_os = "android")]
+    ui.set_has_mouse_wheel(false);
+    #[cfg(not(target_os = "android"))]
+    ui.set_has_mouse_wheel(true);
+
     setup_ui(&ui, rt, db, log_rx);
     let _log_guard = guard;
     ui.run().expect("Failed to run Slint UI");
@@ -1007,6 +1012,11 @@ unsafe fn android_main(app: slint::android::AndroidApp) {
     let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()) }).expect("Failed to initialize database");
     let db = Arc::new(db);
     let ui = App::new().expect("Failed to create Slint UI");
+    #[cfg(target_os = "android")]
+    ui.set_has_mouse_wheel(false);
+    #[cfg(not(target_os = "android"))]
+    ui.set_has_mouse_wheel(true);
+
     setup_ui(&ui, rt, db, log_rx);
     let _log_guard = guard;
     ui.run().expect("Failed to run Slint UI");
