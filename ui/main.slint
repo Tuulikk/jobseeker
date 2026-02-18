@@ -794,7 +794,8 @@ component SettingsPage inherits Rectangle {
                             app_goal_count: goal-input.text.to-float(),
                             show_motivation: root.settings.show_motivation,
                             main_cv_id: root.settings.main_cv_id,
-                            show_dev_logs: root.settings.show_dev_logs
+                            show_dev_logs: root.settings.show_dev_logs,
+                            auto_extract: root.settings.auto_extract
                         });
                     }
                 }
@@ -812,6 +813,7 @@ export component App inherits Window {
     preferred-height: 800px;
 
     in property <bool> has-mouse-wheel: true;
+    in property <bool> is-android: false;
     in-out property <int> selected-index: -1;
     in-out property <[JobEntry]> jobs: [];
     in-out property <bool> searching: false;
@@ -832,7 +834,7 @@ export component App inherits Window {
     in-out property <[DocEntry]> documents: [];
     in-out property <[DictEntry]> dictionary: [];
     in-out property <string> selected-doc-content: "";
-    in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1", app_min_count: 6, app_goal_count: 12, show_motivation: true, show_dev_logs: false };
+    in-out property <AppSettings> settings: { ollama_url: "http://localhost:11434/v1", app_min_count: 6, app_goal_count: 12, show_motivation: true, show_dev_logs: false, auto_extract: true };
     in-out property <bool> show-folder-picker: false;
     in-out property <[FolderEntry]> folder-entries: [];
     in-out property <string> current-folder-path: "";
@@ -989,13 +991,14 @@ export component App inherits Window {
         }
 
         Rectangle {
-            height: 60px;
+            height: root.is-android ? 85px : 60px;
             background: #1a1a1a;
             ScrollView {
                 viewport-width: 550px;
                 HorizontalLayout {
                     alignment: center;
                     padding: 10px;
+                    padding-bottom: root.is-android ? 30px : 10px;
                     spacing: 15px;
                     TabButton { icon: @image-url("../assets/icons/inbox-fill.svg"); text: "Jobb"; active: root.current-tab == 0; clicked => { root.current-tab = 0; } }
                     TabButton { icon: @image-url("../assets/icons/justify.svg"); text: "Statistik"; active: root.current-tab == 1; clicked => { root.current-tab = 1; root.stats_requested(); } }

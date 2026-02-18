@@ -256,7 +256,9 @@ async fn merge_databases(local: &Db, sync_path: &Path) -> anyhow::Result<()> {
         } else { local.save_document(r_doc).await?; stats.1 += 1; }
     }
     for l_doc in &l_docs {
-        if !r_docs.iter().any(|d| d.id == l_doc.id) { remote.save_document(l_doc).await?; }
+        if let Some(r_doc) = r_docs.iter().find(|d| d.id == l_doc.id) {
+            if l_doc.updated_at > r_doc.updated_at { remote.save_document(l_doc).await?; }
+        } else { remote.save_document(l_doc).await?; }
     }
 
     // 4. Merge Ordbok
@@ -268,7 +270,9 @@ async fn merge_databases(local: &Db, sync_path: &Path) -> anyhow::Result<()> {
         } else { local.save_dict_entry(r_ent).await?; stats.2 += 1; }
     }
     for l_ent in &l_dict {
-        if !r_dict.iter().any(|e| e.key == l_ent.key) { remote.save_dict_entry(l_ent).await?; }
+        if let Some(r_ent) = r_dict.iter().find(|e| e.key == l_ent.key) {
+            if l_ent.updated_at > r_ent.updated_at { remote.save_dict_entry(l_ent).await?; }
+        } else { remote.save_dict_entry(l_ent).await?; }
     }
 
     if stats.0 > 0 || stats.1 > 0 || stats.2 > 0 {
@@ -1037,9 +1041,15 @@ pub fn desktop_main() {
     let db = Arc::new(db);
     let ui = App::new().expect("Failed to create Slint UI");
     #[cfg(target_os = "android")]
-    ui.set_has_mouse_wheel(false);
+    {
+        ui.set_has_mouse_wheel(false);
+        ui.set_is_android(true);
+    }
     #[cfg(not(target_os = "android"))]
-    ui.set_has_mouse_wheel(true);
+    {
+        ui.set_has_mouse_wheel(true);
+        ui.set_is_android(false);
+    }
 
     setup_ui(&ui, rt, db, log_rx);
     let _log_guard = guard;
@@ -1062,9 +1072,15 @@ unsafe fn android_main(app: slint::android::AndroidApp) {
     let db = Arc::new(db);
     let ui = App::new().expect("Failed to create Slint UI");
     #[cfg(target_os = "android")]
-    ui.set_has_mouse_wheel(false);
+    {
+        ui.set_has_mouse_wheel(false);
+        ui.set_is_android(true);
+    }
     #[cfg(not(target_os = "android"))]
-    ui.set_has_mouse_wheel(true);
+    {
+        ui.set_has_mouse_wheel(true);
+        ui.set_is_android(false);
+    }
 
     setup_ui(&ui, rt, db, log_rx);
     let _log_guard = guard;

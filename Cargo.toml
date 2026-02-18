@@ -108,7 +108,16 @@ rfd = "0.15"
 
 [profile.release]
 opt-level = "z"
-lto = true
+lto = false
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[profile.release.package.icu_locale_core]
+opt-level = 0
+
+[profile.release.package.tiny-skia]
+opt-level = 0
+
+[profile.release.package.serde_core]
+opt-level = 0
