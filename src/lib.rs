@@ -113,6 +113,9 @@ pub mod extractor;
 pub mod jni_http;
 
 #[cfg(target_os = "android")]
+pub mod android_saf;
+
+#[cfg(target_os = "android")]
 use jni::objects::{JObject, JValue};
 
 use crate::api::JobSearchClient;
@@ -281,6 +284,8 @@ async fn merge_databases(local: &Db, sync_path: &Path) -> anyhow::Result<()> {
         tracing_info!("Synk: Inga ändringar behövdes.");
     }
 
+    // Sync är nu klar
+
     Ok(())
 }
 
@@ -289,10 +294,10 @@ async fn trigger_sync(db: &Db, ui_weak: slint::Weak<App>) {
         let path_raw = settings.sync_path.trim();
         if !path_raw.is_empty() {
             let sync_dir = PathBuf::from(path_raw);
-            tracing_info!("Synk: Kontrollerar sökpath: {:?}", sync_dir);
-            
+            tracing_info!("Synk: Använder sökpath: {:?}", sync_dir);
+
             if !sync_dir.exists() {
-                tracing_info!("Synk: Mappen finns inte, försöker skapa den...");
+                tracing_info!("Synk: Skapar synkmapp...");
                 if let Err(e) = std::fs::create_dir_all(&sync_dir) {
                     tracing_error!("Synk: Kunde inte skapa mappen: {}", e);
                     return;
@@ -300,7 +305,7 @@ async fn trigger_sync(db: &Db, ui_weak: slint::Weak<App>) {
             }
 
             if let Err(e) = merge_databases(db, &sync_dir).await {
-                tracing_error!("Synk: Fel vid synkronisering: {}", e);
+                tracing_error!("Synk: Misslyckades ({}). Välj en annan mapp eller använd app-mappen.", e);
             } else {
                 tracing_info!("Synk: Genomförd mot {:?}", sync_dir);
                 let _ = slint::invoke_from_event_loop(move || {
@@ -732,15 +737,37 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         }
         #[cfg(target_os = "android")]
         {
-            let start_path = "/sdcard";
-            let entries = get_folder_entries(Path::new(start_path));
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_current_folder_path(start_path.into());
-                    ui.set_folder_entries(Rc::new(slint::VecModel::from(entries)).into());
-                    ui.set_show_folder_picker(true);
+            // Testa om vi redan har write access
+            let test_path = PathBuf::from("/sdcard/Documents/.jobseeker_test.tmp");
+            let has_permission = std::fs::write(&test_path, b"test").is_ok();
+            let _ = std::fs::remove_file(&test_path);
+
+            if !has_permission {
+                // Öppna inställningarna för att be om tillstånd
+                if let Err(e) = crate::android_saf::request_all_files_access() {
+                    tracing_error!("Kunde inte öppna inställningar: {}", e);
                 }
-            });
+            }
+
+            // Visa filbläddrare om vi har tillstånd, annars instruktion
+            if has_permission {
+                // Visa filbläddraren - användaren väljer mapp
+                let start_path = "/sdcard";
+                let entries = get_folder_entries(Path::new(start_path));
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_current_folder_path(start_path.into());
+                        ui.set_folder_entries(Rc::new(slint::VecModel::from(entries)).into());
+                        ui.set_show_folder_picker(true);
+                    }
+                });
+            } else {
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_status_msg("Öppnar inställningar. Tryck på Tillåt åtkomst till alla filer där, sedan välj mapp igen.".into());
+                    }
+                });
+            }
         }
     });
 
@@ -1065,6 +1092,13 @@ unsafe fn android_main(app: slint::android::AndroidApp) {
     android_logger::init_once(android_logger::Config::default().with_max_level(log::LevelFilter::Info).with_tag("Jobseeker"));
     tracing_info!("Starting Jobseeker on Android (Pure Rust)");
     setup_crash_handler();
+
+    // Initiera JNI VM för SAF
+    let vm_ptr = app.vm_as_ptr();
+    if let Ok(vm) = unsafe { jni::JavaVM::from_raw(vm_ptr as *mut _) } {
+        crate::android_saf::init_vm(vm);
+    }
+
     slint::android::init(app).expect("Failed to initialize Slint on Android");
     let rt = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     let db_path = get_db_path();
