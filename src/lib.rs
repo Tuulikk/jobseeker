@@ -218,73 +218,219 @@ fn setup_crash_handler() {
 async fn merge_databases(local: &Db, sync_path: &Path) -> anyhow::Result<()> {
     let local_file = get_db_path();
     let sync_file = sync_path.join("jobseeker.redb");
+    let json_file = sync_path.join("jobseeker_sync.json");
 
-    if !sync_file.exists() {
+    if !sync_file.exists() && !json_file.exists() {
+        // Första gången - kopiera DB-filen till synkmappen
         tracing_info!("Synk: Skapar ny databasfil i synkmappen...");
-        std::fs::copy(&local_file, &sync_file)?;
-        tracing_info!("Synk: Initial fil kopierad.");
-        return Ok(());
+        match std::fs::copy(&local_file, &sync_file) {
+            Ok(_) => {
+                tracing_info!("Synk: Initial fil kopierad till {}", sync_file.display());
+                return Ok(());
+            }
+            Err(e) => {
+                tracing_error!("Synk: Kunde inte kopiera DB: {}. Försöker med JSON...", e);
+                // Fallback till JSON
+            }
+        }
     }
 
-    let remote = Db::new(sync_file.to_str().unwrap())?;
+    // Om vi har en JSON-fil, använd den som mellanhand
+    if json_file.exists() {
+        tracing_info!("Synk: Använder JSON som mellanhand...");
+        return merge_via_json(local, &json_file).await;
+    }
+
+    // Om vi bara har DB-filen, konvertera till JSON för merge
+    tracing_info!("Synk: Konverterar DB till JSON för merge...");
+    match export_sync_data(local, &json_file).await {
+        Ok(_) => {
+            tracing_info!("Synk: Data exporterad till JSON. Kommer använda JSON framöver.");
+            return Ok(());
+        }
+        Err(e) => {
+            tracing_error!("Synk: Kunde inte exportera till JSON: {}", e);
+            return Err(e);
+        }
+    }
+}
+
+/// Exportera all data från DB till JSON-fil
+async fn export_sync_data(db: &Db, json_path: &Path) -> anyhow::Result<()> {
+    use serde_json::json;
+
+    let jobs = db.get_filtered_jobs(&[], None, None).await?;
+    let docs = db.get_documents().await?;
+    let dict = db.get_dictionary().await?;
+    let settings = db.load_settings().await?.unwrap_or_default();
+
+    let sync_data = json!({
+        "version": "1.0",
+        "exported_at": Utc::now().to_rfc3339(),
+        "settings": settings,
+        "jobs": jobs,
+        "documents": docs,
+        "dictionary": dict,
+    });
+
+    let json_str = serde_json::to_string_pretty(&sync_data)?;
+    std::fs::write(json_path, json_str)?;
+
+    tracing_info!("Synk: Exporterade {} jobb, {} dokument till JSON", jobs.len(), docs.len());
+    Ok(())
+}
+
+/// Importera data från DB-fil eller JSON-fil till tom databas
+async fn import_from_sync_folder(db: &Db, sync_path: &Path) -> anyhow::Result<bool> {
+    let db_file = sync_path.join("jobseeker.redb");
+    let json_file = sync_path.join("jobseeker_sync.json");
+
+    // Om JSON har data, importera den
+    if json_file.exists() {
+        let json_str = std::fs::read_to_string(&json_file)?;
+        let data: serde_json::Value = serde_json::from_str(&json_str)?;
+
+        let has_jobs = data.get("jobs")
+            .and_then(|v| v.as_array())
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false);
+
+        if has_jobs {
+            return import_json_data(db, &data).await.map(|_| true);
+        }
+    }
+
+    // Om DB-fil finns, öppna den med RedB och exportera till JSON, sen importera
+    if db_file.exists() {
+        tracing_info!("Import: Hittade DB-fil ({} bytes). Öppnar med RedB...", db_file.metadata()?.len());
+
+        match Db::new(db_file.to_str().unwrap()) {
+            Ok(remote_db) => {
+                // Exportera till JSON
+                tracing_info!("Import: Exporterar från DB till JSON...");
+                match export_sync_data(&remote_db, &json_file).await {
+                    Ok(_) => {
+                        tracing_info!("Import: Exporterat! Importerar nu JSON-data...");
+                        drop(remote_db);
+
+                        // Importera från den nyligen skapade JSON-filen
+                        let json_str = std::fs::read_to_string(&json_file)?;
+                        let data: serde_json::Value = serde_json::from_str(&json_str)?;
+                        return import_json_data(db, &data).await.map(|_| true);
+                    }
+                    Err(e) => {
+                        tracing_error!("Import: Kunde inte exportera DB till JSON: {}", e);
+                        return Ok(false);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing_error!("Import: Kunde inte öppna DB-filen med RedB: {}", e);
+                tracing_error!("Import: Detta beror troligen på SAF-begränsningar.");
+                return Ok(false);
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+async fn import_json_data(db: &Db, data: &serde_json::Value) -> anyhow::Result<()> {
+    let mut stats = (0, 0, 0);
+
+    // Import settings
+    if let Some(settings) = data.get("settings") {
+        let settings: AppSettings = serde_json::from_value(settings.clone())?;
+        db.save_settings(&settings).await?;
+        stats.0 += 1;
+    }
+
+    // Import jobs
+    if let Some(jobs) = data.get("jobs").and_then(|v| v.as_array()) {
+        for job_json in jobs {
+            let job: JobAd = serde_json::from_value(job_json.clone())?;
+            if db.save_job_ad(&job).await.is_ok() {
+                stats.1 += 1;
+            }
+        }
+    }
+
+    // Import documents
+    if let Some(docs) = data.get("documents").and_then(|v| v.as_array()) {
+        for doc_json in docs {
+            let doc: UserDocument = serde_json::from_value(doc_json.clone())?;
+            if db.save_document(&doc).await.is_ok() {
+                stats.2 += 1;
+            }
+        }
+    }
+
+    tracing_info!("Import: Laddade {} jobb, {} dokument från JSON", stats.1, stats.2);
+    Ok(())
+}
+
+/// Merge data via JSON-fil
+async fn merge_via_json(local: &Db, json_path: &Path) -> anyhow::Result<()> {
+    use serde_json::Value;
+
+    let json_str = std::fs::read_to_string(json_path)?;
+    let data: Value = serde_json::from_str(&json_str)?;
+
     let mut stats = (0, 0, 0); // (jobs, docs, dict)
 
-    // 1. Merge Inställningar
-    if let (Ok(Some(l_set)), Ok(Some(r_set))) = (local.load_settings().await, remote.load_settings().await) {
-        if r_set.updated_at > l_set.updated_at { local.save_settings(&r_set).await?; }
-        else if l_set.updated_at > r_set.updated_at { remote.save_settings(&l_set).await?; }
+    // Merge settings
+    if let Some(remote_set) = data.get("settings") {
+        let remote_settings: AppSettings = serde_json::from_value(remote_set.clone())?;
+        if let Ok(Some(local_set)) = local.load_settings().await {
+            if remote_settings.updated_at > local_set.updated_at {
+                local.save_settings(&remote_settings).await?;
+                tracing_info!("Synk: Uppdaterade inställningar");
+            }
+        }
     }
 
-    // 2. Merge Jobbannonser
-    let l_jobs = local.get_filtered_jobs(&[], None, None).await?;
-    let r_jobs = remote.get_filtered_jobs(&[], None, None).await?;
-    
-    for r_job in &r_jobs {
-        if let Ok(Some(l_job)) = local.get_job_ad(&r_job.id).await {
-            if r_job.updated_at > l_job.updated_at { local.save_job_ad(r_job).await?; stats.0 += 1; }
-        } else { local.save_job_ad(r_job).await?; stats.0 += 1; }
-    }
-    for l_job in &l_jobs {
-        if let Ok(Some(r_job)) = remote.get_job_ad(&l_job.id).await {
-            if l_job.updated_at > r_job.updated_at { remote.save_job_ad(l_job).await?; }
-        } else { remote.save_job_ad(l_job).await?; }
-    }
-
-    // 3. Merge Dokument
-    let l_docs = local.get_documents().await?;
-    let r_docs = remote.get_documents().await?;
-    for r_doc in &r_docs {
-        if let Some(l_doc) = l_docs.iter().find(|d| d.id == r_doc.id) {
-            if r_doc.updated_at > l_doc.updated_at { local.save_document(r_doc).await?; stats.1 += 1; }
-        } else { local.save_document(r_doc).await?; stats.1 += 1; }
-    }
-    for l_doc in &l_docs {
-        if let Some(r_doc) = r_docs.iter().find(|d| d.id == l_doc.id) {
-            if l_doc.updated_at > r_doc.updated_at { remote.save_document(l_doc).await?; }
-        } else { remote.save_document(l_doc).await?; }
+    // Merge jobs
+    if let Some(remote_jobs) = data.get("jobs").and_then(|v| v.as_array()) {
+        let local_jobs = local.get_filtered_jobs(&[], None, None).await?;
+        for job_json in remote_jobs {
+            let remote_job: JobAd = serde_json::from_value(job_json.clone())?;
+            if let Ok(Some(local_job)) = local.get_job_ad(&remote_job.id).await {
+                if remote_job.updated_at > local_job.updated_at {
+                    local.save_job_ad(&remote_job).await?;
+                    stats.0 += 1;
+                }
+            } else {
+                local.save_job_ad(&remote_job).await?;
+                stats.0 += 1;
+            }
+        }
     }
 
-    // 4. Merge Ordbok
-    let l_dict = local.get_dictionary().await?;
-    let r_dict = remote.get_dictionary().await?;
-    for r_ent in &r_dict {
-        if let Some(l_ent) = l_dict.iter().find(|e| e.key == r_ent.key) {
-            if r_ent.updated_at > l_ent.updated_at { local.save_dict_entry(r_ent).await?; stats.2 += 1; }
-        } else { local.save_dict_entry(r_ent).await?; stats.2 += 1; }
-    }
-    for l_ent in &l_dict {
-        if let Some(r_ent) = r_dict.iter().find(|e| e.key == l_ent.key) {
-            if l_ent.updated_at > r_ent.updated_at { remote.save_dict_entry(l_ent).await?; }
-        } else { remote.save_dict_entry(l_ent).await?; }
+    // Merge documents
+    if let Some(remote_docs) = data.get("documents").and_then(|v| v.as_array()) {
+        let local_docs = local.get_documents().await?;
+        for doc_json in remote_docs {
+            let remote_doc: UserDocument = serde_json::from_value(doc_json.clone())?;
+            if let Some(local_doc) = local_docs.iter().find(|d| d.id == remote_doc.id) {
+                if remote_doc.updated_at > local_doc.updated_at {
+                    local.save_document(&remote_doc).await?;
+                    stats.1 += 1;
+                }
+            } else {
+                local.save_document(&remote_doc).await?;
+                stats.1 += 1;
+            }
+        }
     }
 
-    if stats.0 > 0 || stats.1 > 0 || stats.2 > 0 {
-        tracing_info!("Synk: Klar. Uppdaterade {} jobb, {} dokument, {} ord.", stats.0, stats.1, stats.2);
+    // Uppdatera JSON-filen med ny data från local
+    export_sync_data(local, json_path).await?;
+
+    if stats.0 > 0 || stats.1 > 0 {
+        tracing_info!("Synk: Klar. Uppdaterade {} jobb, {} dokument.", stats.0, stats.1);
     } else {
         tracing_info!("Synk: Inga ändringar behövdes.");
     }
-
-    // Sync är nu klar
 
     Ok(())
 }
@@ -1104,6 +1250,35 @@ unsafe fn android_main(app: slint::android::AndroidApp) {
     let db_path = get_db_path();
     let db = rt.block_on(async { Db::new(db_path.to_str().unwrap()) }).expect("Failed to initialize database");
     let db = Arc::new(db);
+
+    // Importera från synkmapp om databasen är tom
+    let db_clone = db.clone();
+    rt.block_on(async {
+        // Kolla om DB är tom
+        if let Ok(jobs) = db_clone.get_filtered_jobs(&[], None, None).await {
+            if jobs.is_empty() {
+                tracing_info!("Start: Databasen är tom, försöker importera från synkmapp...");
+                if let Ok(Some(settings)) = db_clone.load_settings().await {
+                    let sync_path = settings.sync_path;
+                    if !sync_path.is_empty() {
+                        let sync_path = PathBuf::from(sync_path);
+                        match import_from_sync_folder(&db_clone, &sync_path).await {
+                            Ok(true) => {
+                                tracing_info!("Start: Import slutförd!");
+                            }
+                            Ok(false) => {
+                                tracing_info!("Start: Ingen data hittades att importera");
+                            }
+                            Err(e) => {
+                                tracing_error!("Start: Import misslyckades: {}", e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     let ui = App::new().expect("Failed to create Slint UI");
     #[cfg(target_os = "android")]
     {

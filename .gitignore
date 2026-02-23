@@ -7,6 +7,8 @@ settings.json
 *.log
 .gnawtreewriter_backups/
 .gnawtreewriter_session*
+*.apk
+dist/*.apk
 
 # GnawGuard Auto-ignore
 GnawData/
