@@ -163,6 +163,7 @@ jobs:
 
       - name: Generate Dummy Keystore
         run: |
+          rm -f dummy.keystore
           keytool -genkey -v -keystore dummy.keystore -alias android -keyalg RSA -keysize 2048 -validity 10000 -storepass password -keypass password -dname "CN=Android Debug,O=Android,C=US"
         
       - name: Build APK (Multi-Arch)
