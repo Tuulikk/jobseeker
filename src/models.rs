@@ -79,6 +79,9 @@ pub struct JobAd {
     pub status: Option<AdStatus>,
     #[serde(default)]
     pub applied_at: Option<DateTime<Utc>>,
+    /// Profil-ID för multi-profil-stöd (tom sträng = legacy/default)
+    #[serde(default)]
+    pub profile_id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -159,6 +162,9 @@ pub struct AppSettings {
     pub auto_extract: bool,
     #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
+    /// Profil-ID som dessa inställningar tillhör
+    #[serde(default)]
+    pub profile_id: String,
 }
 
 fn default_true() -> bool { true }
@@ -176,6 +182,9 @@ pub struct UserDocument {
     pub created_at: DateTime<Utc>,
     #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
+    /// Profil-ID som detta dokument tillhör
+    #[serde(default)]
+    pub profile_id: String,
 }
 
 /// Dictionary entries for knowledge base
@@ -183,6 +192,21 @@ pub struct UserDocument {
 pub struct DictEntry {
     pub key: String,
     pub value: String,
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>,
+    /// Profil-ID som detta ordbokentry tillhör
+    #[serde(default)]
+    pub profile_id: String,
+}
+
+/// En profil (tänk Netflix-profil) — egen data, egna inställningar
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Profile {
+    pub id: String,
+    pub name: String,
+    pub icon: String, // emoji eller icon-name
+    #[serde(default = "Utc::now")]
+    pub created_at: DateTime<Utc>,
     #[serde(default = "Utc::now")]
     pub updated_at: DateTime<Utc>,
 }
@@ -205,6 +229,7 @@ impl Default for AppSettings {
             show_dev_logs: false,
             auto_extract: true,
             updated_at: Utc::now(),
+            profile_id: String::new(),
         }
     }
 }

@@ -1,7 +1,7 @@
 use crate::models::JobAd;
 use serde_json::Value;
 use anyhow::{Result, Context};
-use log::{info, error};
+use log::error;
 use reqwest::Client;
 
 pub struct JobSearchClient {

@@ -121,9 +121,26 @@ use jni::objects::{JObject, JValue};
 use crate::api::JobSearchClient;
 use crate::db::Db;
 use crate::ui::*;
-use crate::models::{AdStatus, AppSettings, JobAd, UserDocument, DictEntry};
+use crate::models::{AdStatus, AppSettings, JobAd, UserDocument, DictEntry, Profile};
 
 use std::sync::mpsc;
+
+/// Globalt aktivt profil-ID (tom sträng = legacy/default)
+static CURRENT_PROFILE_ID: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+
+fn init_profile_id() -> std::sync::Mutex<String> {
+    std::sync::Mutex::new(String::new())
+}
+
+fn set_current_profile_id(id: &str) {
+    let lock = CURRENT_PROFILE_ID.get_or_init(init_profile_id);
+    *lock.lock().unwrap() = id.to_string();
+}
+
+fn get_current_profile_id() -> String {
+    let lock = CURRENT_PROFILE_ID.get_or_init(init_profile_id);
+    lock.lock().unwrap().clone()
+}
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
@@ -391,7 +408,6 @@ async fn merge_via_json(local: &Db, json_path: &Path) -> anyhow::Result<()> {
 
     // Merge jobs
     if let Some(remote_jobs) = data.get("jobs").and_then(|v| v.as_array()) {
-        let local_jobs = local.get_filtered_jobs(&[], None, None).await?;
         for job_json in remote_jobs {
             let remote_job: JobAd = serde_json::from_value(job_json.clone())?;
             if let Ok(Some(local_job)) = local.get_job_ad(&remote_job.id).await {
@@ -436,7 +452,8 @@ async fn merge_via_json(local: &Db, json_path: &Path) -> anyhow::Result<()> {
 }
 
 async fn trigger_sync(db: &Db, ui_weak: slint::Weak<App>) {
-    if let Ok(Some(settings)) = db.load_settings().await {
+    let pid = get_current_profile_id();
+    if let Ok(Some(settings)) = db.load_settings_for(&pid).await {
         let path_raw = settings.sync_path.trim();
         if !path_raw.is_empty() {
             let sync_dir = PathBuf::from(path_raw);
@@ -553,6 +570,183 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let _ = std::fs::remove_file(crash_file);
     }
 
+    // --- Profilinitiering ---
+    let db_profiles = db.clone();
+    let ui_profiles = ui.as_weak();
+    rt.spawn(async move {
+        let profiles = db_profiles.get_profiles().await.unwrap_or_default();
+        if profiles.is_empty() {
+            // Skapa standardprofil
+            let default_profile = Profile {
+                id: "default".to_string(),
+                name: "Default".to_string(),
+                icon: "👤".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            let _ = db_profiles.save_profile(&default_profile).await;
+            set_current_profile_id("default");
+            let _ = db_profiles.set_active_profile_id("default").await;
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_profiles.upgrade() {
+                    ui.set_current_profile_id("default".into());
+                    ui.set_current_profile_name("Default".into());
+                    ui.set_current_profile_icon("👤".into());
+                }
+            });
+        } else if profiles.len() == 1 {
+            set_current_profile_id(&profiles[0].id);
+            let _ = db_profiles.set_active_profile_id(&profiles[0].id).await;
+            let p = profiles[0].clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_profiles.upgrade() {
+                    ui.set_current_profile_id(p.id.into());
+                    ui.set_current_profile_name(p.name.into());
+                    ui.set_current_profile_icon(p.icon.into());
+                }
+            });
+        } else {
+            // Flera profiler — visa profilväljare
+            let ui_picker = ui_profiles.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_picker.upgrade() {
+                    let profile_infos: Vec<ProfileInfo> = profiles.iter().map(|p| ProfileInfo {
+                        id: p.id.clone().into(),
+                        name: p.name.clone().into(),
+                        icon: p.icon.clone().into(),
+                    }).collect();
+                    ui.set_profiles(std::rc::Rc::new(slint::VecModel::from(profile_infos)).into());
+                    ui.set_show_profile_picker(true);
+                }
+            });
+        }
+    });
+
+    // --- Profil-callbacks ---
+    let db_sel = db.clone();
+    let rt_sel = rt.clone();
+    let ui_sel = ui.as_weak();
+    ui.on_select_profile(move |id| {
+        let db = db_sel.clone();
+        let ui_weak = ui_sel.clone();
+        let rt = rt_sel.clone();
+        let profile_id = id.to_string();
+        rt.spawn(async move {
+            set_current_profile_id(&profile_id);
+            let _ = db.set_active_profile_id(&profile_id).await;
+            if let Ok(Some(profile)) = db.get_profile(&profile_id).await {
+                let p = profile.clone();
+                if let Ok(Some(settings)) = db.load_settings_for(&profile_id).await {
+                    let s = settings.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_current_profile_id(p.id.clone().into());
+                            ui.set_current_profile_name(p.name.clone().into());
+                            ui.set_current_profile_icon(p.icon.clone().into());
+                            ui.set_settings(crate::ui::AppSettings {
+                                keywords: s.keywords.into(),
+                                blacklist_keywords: s.blacklist_keywords.into(),
+                                locations_p1: normalize_locations(&s.locations_p1).into(),
+                                locations_p2: normalize_locations(&s.locations_p2).into(),
+                                locations_p3: normalize_locations(&s.locations_p3).into(),
+                                my_profile: s.my_profile.into(),
+                                ollama_url: s.ollama_url.into(),
+                                sync_path: s.sync_path.into(),
+                                app_min_count: s.app_min_count,
+                                app_goal_count: s.app_goal_count,
+                                show_motivation: s.show_motivation,
+                                main_cv_id: s.main_cv_id.into(),
+                                show_dev_logs: s.show_dev_logs,
+                                auto_extract: s.auto_extract,
+                            });
+                        }
+                    });
+                }
+            }
+        });
+    });
+
+    let db_create = db.clone();
+    let rt_create = rt.clone();
+    let ui_create = ui.as_weak();
+    ui.on_create_profile(move |name| {
+        let db = db_create.clone();
+        let ui_weak = ui_create.clone();
+        let rt = rt_create.clone();
+        let name_str = name.to_string();
+        rt.spawn(async move {
+            let id = format!("profile_{}", Utc::now().timestamp());
+            let new_profile = Profile {
+                id: id.clone(),
+                name: name_str,
+                icon: "👤".to_string(),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            let _ = db.save_profile(&new_profile).await;
+            // Ladda om profillistan
+            if let Ok(profiles) = db.get_profiles().await {
+                let infos: Vec<ProfileInfo> = profiles.iter().map(|p| ProfileInfo {
+                    id: p.id.clone().into(),
+                    name: p.name.clone().into(),
+                    icon: p.icon.clone().into(),
+                }).collect();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_profiles(std::rc::Rc::new(slint::VecModel::from(infos)).into());
+                    }
+                });
+            }
+        });
+    });
+
+    let db_del = db.clone();
+    let ui_del = ui.as_weak();
+    ui.on_delete_profile(move |id| {
+        let db = db_del.clone();
+        let ui_weak = ui_del.clone();
+        let id_str = id.to_string();
+        tokio::spawn(async move {
+            let _ = db.delete_profile(&id_str).await;
+            if let Ok(profiles) = db.get_profiles().await {
+                let infos: Vec<ProfileInfo> = profiles.iter().map(|p| ProfileInfo {
+                    id: p.id.clone().into(),
+                    name: p.name.clone().into(),
+                    icon: p.icon.clone().into(),
+                }).collect();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_profiles(std::rc::Rc::new(slint::VecModel::from(infos)).into());
+                    }
+                });
+            }
+        });
+    });
+
+    let ui_switch = ui.as_weak();
+    let db_switch = db.clone();
+    let rt_switch = rt.clone();
+    ui.on_switch_profile(move || {
+        let ui_weak = ui_switch.clone();
+        let db = db_switch.clone();
+        let rt = rt_switch.clone();
+        rt.spawn(async move {
+            if let Ok(profiles) = db.get_profiles().await {
+                let infos: Vec<ProfileInfo> = profiles.iter().map(|p| ProfileInfo {
+                    id: p.id.clone().into(),
+                    name: p.name.clone().into(),
+                    icon: p.icon.clone().into(),
+                }).collect();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.set_profiles(std::rc::Rc::new(slint::VecModel::from(infos)).into());
+                        ui.set_show_profile_picker(true);
+                    }
+                });
+            }
+        });
+    });
+
     let db_for_stats = db.clone();
     let ui_for_stats = ui.as_weak();
     let rt_for_stats = rt.clone();
@@ -568,7 +762,8 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
 
         if let Some((year, month)) = month_info {
             rt.spawn(async move {
-                if let Ok(ads) = db.get_filtered_jobs(&[], Some(year), Some(month)).await {
+                let pid = get_current_profile_id();
+                if let Ok(ads) = db.get_filtered_jobs_for(&pid, &[], Some(year), Some(month)).await {
                     let total_count = ads.len() as i32;
                     let (mut applied, mut bookmarked, mut thumbsup, mut rejected) = (0, 0, 0, 0);
                     let mut counts = std::collections::HashMap::new();
@@ -613,14 +808,15 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                 let parts: Vec<&str> = month_str.split('-').collect();
                 let year = parts[0].parse().unwrap_or(2026);
                 let month = parts[1].parse().unwrap_or(1);
-                let settings = db.load_settings().await.unwrap_or_default().unwrap_or_default();
+                let pid = get_current_profile_id();
+                let settings = db.load_settings_for(&pid).await.unwrap_or_default().unwrap_or_default();
                 
                 let mut report = format!("AKTIVITETSRAPPORT - {}\n==========================================\n\n", month_display.to_uppercase());
                 if include_params {
                     report.push_str(&format!("SÖKPARAMETRAR:\n• Sökord: {}\n• Prio 1: {}\n• Prio 2: {}\n\n", settings.keywords, normalize_locations(&settings.locations_p1), normalize_locations(&settings.locations_p2)));
                 }
                 if include_jobs {
-                    if let Ok(ads) = db.get_filtered_jobs(&[AdStatus::Applied], Some(year), Some(month)).await {
+                    if let Ok(ads) = db.get_filtered_jobs_for(&pid, &[AdStatus::Applied], Some(year), Some(month)).await {
                         report.push_str(&format!("SÖKTA JOBB ({} st):\n", ads.len()));
                         for ad in ads {
                             let date = ad.applied_at.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_else(|| "Okänt datum".to_string());
@@ -631,7 +827,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
                     }
                 }
                 if include_analysis {
-                    if let Ok(ads) = db.get_filtered_jobs(&[], Some(year), Some(month)).await {
+                    if let Ok(ads) = db.get_filtered_jobs_for(&pid, &[], Some(year), Some(month)).await {
                         let app = ads.iter().filter(|a| a.status == Some(AdStatus::Applied)).count();
                         let rej = ads.iter().filter(|a| a.status == Some(AdStatus::Rejected)).count();
                         report.push_str(&format!("AKTIVITETSANALYS:\n• Totalt granskade: {}\n• Konvertering: {} sökta, {} avvisade\n", ads.len(), app, rej));
@@ -684,7 +880,8 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             if let Some(ui) = ui_weak.upgrade() { ui.set_active_month(nms.clone().into()); ui.set_active_month_display(nmd.clone().into()); }
             let ui_f = ui_weak.clone();
             rt.spawn(async move {
-                if let Ok(ads) = db.get_filtered_jobs(&[], Some(ny), Some(nm as u32)).await {
+                let pid = get_current_profile_id();
+                if let Ok(ads) = db.get_filtered_jobs_for(&pid, &[], Some(ny), Some(nm as u32)).await {
                     let app_count = ads.iter().filter(|ad| ad.status == Some(AdStatus::Applied)).count() as i32;
                     let re_html = Regex::new(r"<[^>]*>").expect("Invalid regex");
                     let entries: Vec<JobEntry> = ads.into_iter().map(|ad| {
@@ -723,11 +920,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
     });
 
     let ui_job_sel = ui.as_weak();
-    let db_job_sel = db.clone();
     ui.on_job_selected(move |id, idx| {
         tracing_info!("UI: Jobb valt: {} (index {})", id, idx);
         let ui_weak = ui_job_sel.clone();
-        let db = db_job_sel.clone();
         let id_str = id.to_string();
         
         slint::invoke_from_event_loop(move || {
@@ -814,6 +1009,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
             show_dev_logs: s.show_dev_logs,
             auto_extract: s.auto_extract,
             updated_at: Utc::now(),
+            profile_id: get_current_profile_id(),
         };
         let s_ui = settings.clone();
         rt_set.spawn(async move {
@@ -996,7 +1192,7 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let content_str = content.to_string();
         rt_save.spawn(async move {
             if let Ok(mut docs) = db.get_documents().await {
-                if let Some(mut doc) = docs.iter_mut().find(|d| d.id == id_str) {
+                if let Some(doc) = docs.iter_mut().find(|d| d.id == id_str) {
                     doc.content = content_str.clone();
                     let _ = db.save_document(doc).await;
                     trigger_sync(&db, ui_weak.clone()).await;
@@ -1066,7 +1262,8 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let key_str = key.to_string();
         let value_str = value.to_string();
         rt_add.spawn(async move {
-            let entry = DictEntry { key: key_str, value: value_str, updated_at: Utc::now() };
+            let pid = get_current_profile_id();
+            let entry = DictEntry { key: key_str, value: value_str, updated_at: Utc::now(), profile_id: pid };
             let _ = db.save_dict_entry(&entry).await;
             trigger_sync(&db, ui_weak.clone()).await;
             let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_weak.upgrade() { ui.set_status_msg("Ord tillagt i ordboken".into()); } });
@@ -1086,13 +1283,14 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         });
     });
 
-    // Initial laddning
+    // Initial laddning (profil-medveten)
     let (db_i, ui_i, rt_i) = (db.clone(), ui.as_weak(), rt.clone());
     let db_path_str = get_db_path().to_string_lossy().to_string();
     let rt_i_initial = rt_i.clone();
     rt_i_initial.spawn(async move {
         trigger_sync(&db_i, ui_i.clone()).await;
-        let settings = db_i.load_settings().await.unwrap_or_default().unwrap_or_default();
+        let pid = get_current_profile_id();
+        let settings = db_i.load_settings_for(&pid).await.unwrap_or_default().unwrap_or_default();
         let (s, u_s) = (settings.clone(), ui_i.clone());
         let d_path = db_path_str.clone();
         let _ = slint::invoke_from_event_loop(move || {
@@ -1120,8 +1318,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let db_docs = db_i.clone();
         let ui_docs = ui_i.clone();
         let rt_docs = rt_i.clone();
+        let pid_docs = pid.clone();
         rt_docs.spawn(async move {
-            if let Ok(docs) = db_docs.get_documents().await {
+            if let Ok(docs) = db_docs.get_documents_for(&pid_docs).await {
                 let entries: Vec<DocEntry> = docs.into_iter().map(|d| DocEntry { id: d.id.into(), name: d.name.into(), doc_type: d.doc_type.into(), is_main: d.is_main }).collect();
                 let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_docs.upgrade() { ui.set_documents(Rc::new(slint::VecModel::from(entries)).into()); } });
             }
@@ -1130,8 +1329,9 @@ fn setup_ui(ui: &App, rt: Arc<Runtime>, db: Arc<Db>, log_rx: mpsc::Receiver<Stri
         let db_dict = db_i.clone();
         let ui_dict = ui_i.clone();
         let rt_dict = rt_i.clone();
+        let pid_dict = pid.clone();
         rt_dict.spawn(async move {
-            if let Ok(entries) = db_dict.get_dict_entries().await {
+            if let Ok(entries) = db_dict.get_dict_entries_for(&pid_dict).await {
                 let dict_entries: Vec<crate::ui::DictEntry> = entries.into_iter().map(|e| crate::ui::DictEntry { key: e.key.into(), value: e.value.into() }).collect();
                 let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_dict.upgrade() { ui.set_dictionary(Rc::new(slint::VecModel::from(dict_entries)).into()); } });
             }
@@ -1179,7 +1379,8 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
         ui.set_jobs(std::rc::Rc::new(slint::VecModel::from(entries)).into()); ui.set_applied_count(applied_count); ui.set_status_msg(msg.into());
     };
 
-    if let Ok(existing_ads) = db.get_filtered_jobs(&[], Some(y), Some(m)).await {
+    let profile_id_for_search = get_current_profile_id();
+    if let Ok(existing_ads) = db.get_filtered_jobs_for(&profile_id_for_search, &[], Some(y), Some(m)).await {
         let ui_e2 = ui_weak.clone(); let muns_e2 = municipalities.clone(); let loc_d = locations_str.clone();
         let _ = slint::invoke_from_event_loop(move || { if let Some(ui) = ui_e2.upgrade() { let msg = format!("Visar sparade jobb för {}. Söker efter nytt...", loc_d); refresh_ui_from_db(&ui, existing_ads, prio, muns_e2, msg); } });
     }
@@ -1187,12 +1388,17 @@ async fn perform_search(api_client: Arc<JobSearchClient>, db: Arc<Db>, ui_weak: 
     let mut new_count = 0; let blacklist: Vec<String> = settings.blacklist_keywords.split(',').map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect();
     for keyword in &query_parts {
         match api_client.search(keyword, &municipalities, 100).await {
-            Ok(ads) => { for mut ad in ads { ad.search_keyword = Some(keyword.clone()); let is_blacklisted = blacklist.iter().any(|word| ad.headline.to_lowercase().contains(word) || ad.description.as_ref().and_then(|d| d.text.as_deref()).map(|t| t.to_lowercase().contains(word)).unwrap_or(false)); if !is_blacklisted { if let Ok(None) = db.get_job_ad(&ad.id).await { if db.save_job_ad(&ad).await.is_ok() { new_count += 1; } } } } },
+            Ok(ads) => { for mut ad in ads { 
+                ad.search_keyword = Some(keyword.clone());
+                ad.profile_id = profile_id_for_search.clone(); // Sätt profil på nya annonser
+                let is_blacklisted = blacklist.iter().any(|word| ad.headline.to_lowercase().contains(word) || ad.description.as_ref().and_then(|d| d.text.as_deref()).map(|t| t.to_lowercase().contains(word)).unwrap_or(false)); 
+                if !is_blacklisted { if let Ok(None) = db.get_job_ad(&ad.id).await { if db.save_job_ad(&ad).await.is_ok() { new_count += 1; } } } 
+            } },
             Err(e) => { tracing_error!("Sökning på '{}' misslyckades: {}", keyword, e); }
         }
     }
 
-    if let Ok(final_ads) = db.get_filtered_jobs(&[], Some(y), Some(m)).await {
+    if let Ok(final_ads) = db.get_filtered_jobs_for(&profile_id_for_search, &[], Some(y), Some(m)).await {
         trigger_sync(&db, ui_weak.clone()).await;
         tracing_info!("Search: Klart! Hittade {} nya unika annonser för denna månad", new_count);
         let ui_f = ui_weak.clone(); let muns_f = municipalities.clone();

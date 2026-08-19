@@ -2,6 +2,12 @@ import { Button, LineEdit, ScrollView, TextEdit, CheckBox, HorizontalBox, Vertic
 import { ProfilePage, DocEntry } from "ProfilePage.slint";
 import { KnowledgePage, DictEntry } from "KnowledgePage.slint";
 
+export struct ProfileInfo {
+    id: string,
+    name: string,
+    icon: string,
+}
+
 export struct KeywordStat {
     name: string,
     count: int,
@@ -804,6 +810,109 @@ component SettingsPage inherits Rectangle {
     }
 }
 
+// --- Profilväljare (visas vid start om flera profiler finns) ---
+component ProfilePicker inherits Rectangle {
+    in property <[ProfileInfo]> profiles;
+    in property <string> current-profile-name: "";
+    callback select-profile(string);
+    callback create-profile(string);
+    callback delete-profile(string);
+
+    background: #0a0a0a;
+
+    VerticalLayout {
+        padding: 40px;
+        spacing: 20px;
+        alignment: center;
+
+        Text {
+            text: "Vem söker jobb?";
+            font-size: 28px;
+            font-weight: 700;
+            color: #ffffff;
+            horizontal-alignment: center;
+        }
+
+        Rectangle {
+            height: 10px;
+        }
+
+        // Profillista
+        VerticalLayout {
+            spacing: 12px;
+            alignment: center;
+            for profile in root.profiles : Rectangle {
+                width: 280px;
+                height: 70px;
+                background: profile-touch.pressed ? #2d2d3a : profile-touch.has-hover ? #252525 : #1a1a1a;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: profile-touch.has-hover ? #4a90e2 : #333;
+
+                profile-touch := TouchArea {
+                    clicked => { root.select-profile(profile.id); }
+                }
+
+                HorizontalLayout {
+                    padding: 15px;
+                    spacing: 15px;
+                    alignment: start;
+                    Text {
+                        text: profile.icon;
+                        font-size: 28px;
+                    }
+                    Text {
+                        text: profile.name;
+                        color: #ffffff;
+                        font-size: 18px;
+                        font-weight: 600;
+                        horizontal-stretch: 1;
+                    }
+                    if root.profiles.length > 1 : Rectangle {
+                        width: 30px;
+                        height: 30px;
+                        background: #441111;
+                        border-radius: 4px;
+                        del-touch := TouchArea { clicked => { root.delete-profile(profile.id); } }
+                        HorizontalLayout {
+                            padding: 4px;
+                            Text { text: "✕"; color: #ff6666; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        Rectangle { height: 20px; }
+
+        // Skapa ny profil
+        HorizontalLayout {
+            alignment: center;
+            spacing: 10px;
+            new-input := LineEdit {
+                placeholder-text: "Nytt profilnamn...";
+                width: 200px;
+                font-size: 14px;
+            }
+            Button {
+                text: "➕ Skapa";
+                enabled: new-input.text != "";
+                clicked => {
+                    root.create-profile(new-input.text);
+                    new-input.text = "";
+                }
+            }
+        }
+
+        Text {
+            text: "All data (jobb, CV, inställningar) är separat per profil.";
+            color: #555;
+            font-size: 11px;
+            horizontal-alignment: center;
+        }
+    }
+}
+
 export component App inherits Window {
     title: "Jobseeker 2026";
     min-width: 380px;
@@ -840,6 +949,17 @@ export component App inherits Window {
     in-out property <string> current-folder-path: "";
     in-out property <[LogEntry]> static-logs: [];
     in-out property <string> log-filter: "ALL";
+
+    // --- Profilhantering ---
+    in-out property <bool> show-profile-picker: false;
+    in-out property <[ProfileInfo]> profiles: [];
+    in-out property <string> current-profile-id: "";
+    in-out property <string> current-profile-name: "";
+    in-out property <string> current-profile-icon: "";
+    callback select-profile(string);
+    callback create-profile(string);
+    callback delete-profile(string);
+    callback switch-profile();
 
     callback search-pressed(string);
     callback search-prio(int);
@@ -986,6 +1106,24 @@ export component App inherits Window {
             HorizontalLayout {
                 padding-left: 10px;
                 padding-right: 10px;
+                spacing: 8px;
+                // Profilnamn + byte-knapp
+                if root.current-profile-id != "" : Rectangle {
+                    height: 18px;
+                    border-radius: 9px;
+                    background: #1a2a3a;
+                    TouchArea {
+                        clicked => { root.switch-profile(); }
+                    }
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 4px;
+                        Text { text: root.current-profile-icon; font-size: 12px; vertical-alignment: center; }
+                        Text { text: root.current-profile-name; color: #4a90e2; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
                 Text { text: root.status-msg; color: #666666; font-size: 12px; horizontal-alignment: right; vertical-alignment: center; }
             }
         }
@@ -1022,6 +1160,20 @@ export component App inherits Window {
                 go-back => { root.folder_go_back(); }
                 cancel => { root.show-folder-picker = false; }
                 confirm => { root.settings.sync_path = root.current-folder-path; root.show-folder-picker = false; }
+            }
+        }
+
+        // Profilväljare (overlay)
+        if root.show-profile-picker : Rectangle {
+            background: #000000aa;
+            ProfilePicker {
+                width: 100%;
+                height: 100%;
+                profiles: root.profiles;
+                current-profile-name: root.current-profile-name;
+                select-profile(id) => { root.show-profile-picker = false; root.select-profile(id); }
+                create-profile(name) => { root.create-profile(name); }
+                delete-profile(id) => { root.delete-profile(id); }
             }
         }
     }
