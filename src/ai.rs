@@ -48,7 +48,7 @@ impl AiRanker {
         let response = self.client.chat().create(request).await?;
         let content = response.choices[0].message.content.clone().unwrap_or_default();
         let rating = content.trim().chars()
-            .find(|c| c.is_ascii_digit())
+            .rfind(|c| c.is_ascii_digit())
             .and_then(|c| c.to_digit(10))
             .unwrap_or(0) as u8;
 
